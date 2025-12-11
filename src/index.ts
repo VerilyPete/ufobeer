@@ -851,9 +851,12 @@ async function handleEnrichmentTrigger(
 ): Promise<Response> {
   const dailyLimit = parseInt(env.DAILY_ENRICHMENT_LIMIT || '500');
   const monthlyLimit = parseInt(env.MONTHLY_ENRICHMENT_LIMIT || '2000');
-  const today = new Date().toISOString().split('T')[0];
+  const now = new Date();
+  const today = now.toISOString().split('T')[0];
   const monthStart = today.slice(0, 7) + '-01';
-  const monthEnd = today.slice(0, 7) + '-31';
+  // Calculate last day of current month correctly
+  const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const monthEnd = today.slice(0, 7) + '-' + String(lastDayOfMonth).padStart(2, '0');
 
   try {
     // Parse request body
@@ -908,16 +911,27 @@ async function handleEnrichmentTrigger(
     }
 
     // Get current quota usage (read-only - no reservation!)
-    const dailyCount = await env.DB.prepare(
-      `SELECT request_count FROM enrichment_limits WHERE date = ?`
-    ).bind(today).first<{ request_count: number }>();
-    const dailyUsed = dailyCount?.request_count || 0;
+    let dailyUsed = 0;
+    let monthlyUsed = 0;
+    try {
+      const dailyCount = await env.DB.prepare(
+        `SELECT request_count FROM enrichment_limits WHERE date = ?`
+      ).bind(today).first<{ request_count: number }>();
+      dailyUsed = dailyCount?.request_count || 0;
 
-    const monthlyCount = await env.DB.prepare(
-      `SELECT SUM(request_count) as total FROM enrichment_limits
-       WHERE date >= ? AND date <= ?`
-    ).bind(monthStart, monthEnd).first<{ total: number }>();
-    const monthlyUsed = monthlyCount?.total || 0;
+      const monthlyCount = await env.DB.prepare(
+        `SELECT SUM(request_count) as total FROM enrichment_limits
+         WHERE date >= ? AND date <= ?`
+      ).bind(monthStart, monthEnd).first<{ total: number }>();
+      monthlyUsed = monthlyCount?.total || 0;
+    } catch (dbError) {
+      console.error(`[trigger] D1 unavailable for quota check:`, dbError);
+      return errorResponse(
+        'Database temporarily unavailable',
+        'DB_UNAVAILABLE',
+        { requestId: reqCtx.requestId, headers, status: 503 }
+      );
+    }
 
     // Layer 2: Monthly limit check
     if (monthlyUsed >= monthlyLimit) {
@@ -932,9 +946,10 @@ async function handleEnrichmentTrigger(
       return buildResponse(0, 'daily_limit', dailyUsed, monthlyUsed);
     }
 
-    // Calculate effective batch size: min(requested, dailyRemaining, 100)
+    // Calculate effective batch size: min(requested, dailyRemaining, monthlyRemaining, 100)
     // 100 is the max for sendBatch()
-    const effectiveBatchSize = Math.min(requestedLimit, dailyRemaining, 100);
+    const monthlyRemaining = monthlyLimit - monthlyUsed;
+    const effectiveBatchSize = Math.min(requestedLimit, dailyRemaining, monthlyRemaining, 100);
 
     // Query beers with NULL ABV
     let query = `
