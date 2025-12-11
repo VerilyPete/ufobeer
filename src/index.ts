@@ -69,6 +69,7 @@ interface FlyingSaucerBeer {
   id: string;
   brew_name: string;
   brewer: string;
+  brew_description?: string;
   container_type?: string;
   [key: string]: unknown;
 }
@@ -1061,16 +1062,65 @@ async function cleanupOldDlqMessages(
 // ============================================================================
 
 /**
+ * Extract ABV percentage from beer description HTML.
+ * Ported from mobile app's beerGlassType.ts extractABV function.
+ *
+ * Supports multiple formats:
+ * - "5.2%" or "8%"
+ * - "5.2 ABV" or "ABV 5.2"
+ * - "5.2% ABV" or "ABV: 5.2%"
+ *
+ * @param description - HTML description string containing ABV percentage
+ * @returns ABV as a number or null if not found/invalid
+ */
+function extractABV(description: string | undefined): number | null {
+  if (!description) return null;
+
+  // Strip HTML tags to get plain text
+  const plainText = description.replace(/<[^>]*>/g, '');
+
+  // Pattern 1: Look for percentage pattern (e.g., "5.2%" or "8%")
+  const percentageMatch = plainText.match(/\b(\d+(?:\.\d+)?)\s*%/);
+  if (percentageMatch && percentageMatch[1]) {
+    const abv = parseFloat(percentageMatch[1]);
+    if (!isNaN(abv) && abv >= 0 && abv <= 100) {
+      return abv;
+    }
+  }
+
+  // Pattern 2: Look for "ABV" near a number (e.g., "5.2 ABV", "ABV 5.2", "ABV: 5.2")
+  const abvPattern = /(?:ABV[:\s]*\b(\d+(?:\.\d+)?)|\b(\d+(?:\.\d+)?)\s*ABV)/i;
+  const abvMatch = plainText.match(abvPattern);
+
+  if (abvMatch) {
+    // Match could be in group 1 (ABV first) or group 2 (number first)
+    const abvString = abvMatch[1] || abvMatch[2];
+    if (abvString) {
+      const abv = parseFloat(abvString);
+      if (!isNaN(abv) && abv >= 0 && abv <= 100) {
+        return abv;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Insert placeholder records for beers that need enrichment.
  * Uses INSERT OR IGNORE so existing beers are not overwritten.
  * Uses chunking to respect D1's parameter limits.
+ *
+ * IMPORTANT: Extracts ABV from brew_description when available.
+ * Only beers where ABV couldn't be parsed will have NULL abv and
+ * be candidates for Perplexity enrichment.
  *
  * This syncs beers from Flying Saucer to our enriched_beers table,
  * enabling the trigger endpoint and cron to find beers to enrich.
  */
 async function insertPlaceholders(
   db: D1Database,
-  beers: Array<{ id: string; brew_name: string; brewer: string }>,
+  beers: Array<{ id: string; brew_name: string; brewer: string; brew_description?: string }>,
   requestId: string
 ): Promise<void> {
   if (beers.length === 0) {
@@ -1080,12 +1130,26 @@ async function insertPlaceholders(
   const CHUNK_SIZE = 25; // D1 has limits on batched operations
   const now = Date.now();
 
+  let withAbv = 0;
+  let withoutAbv = 0;
+
   for (let i = 0; i < beers.length; i += CHUNK_SIZE) {
     const chunk = beers.slice(i, i + CHUNK_SIZE);
     const stmt = db.prepare(
-      'INSERT OR IGNORE INTO enriched_beers (id, brew_name, brewer, updated_at) VALUES (?, ?, ?, ?)'
+      'INSERT OR IGNORE INTO enriched_beers (id, brew_name, brewer, abv, confidence, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
     );
-    const batch = chunk.map(b => stmt.bind(b.id, b.brew_name, b.brewer, now));
+    const batch = chunk.map(b => {
+      const abv = extractABV(b.brew_description);
+      if (abv !== null) {
+        withAbv++;
+      } else {
+        withoutAbv++;
+      }
+      // Confidence 0.9 for description-extracted ABV (reliable but not verified)
+      // NULL confidence for beers needing enrichment
+      const confidence = abv !== null ? 0.9 : null;
+      return stmt.bind(b.id, b.brew_name, b.brewer, abv, confidence, now);
+    });
 
     try {
       await db.batch(batch);
@@ -1095,7 +1159,7 @@ async function insertPlaceholders(
     }
   }
 
-  console.log(`[insertPlaceholders] Synced ${beers.length} beers to enriched_beers table, requestId=${requestId}`);
+  console.log(`[insertPlaceholders] Synced ${beers.length} beers (${withAbv} with ABV, ${withoutAbv} need enrichment), requestId=${requestId}`);
 }
 
 // ============================================================================
@@ -1180,11 +1244,14 @@ async function handleGetBeers(
     });
 
     // 5. Sync beers to enriched_beers table (background task)
-    // This populates the table so cron/trigger can find beers to enrich
+    // This populates the table so cron/trigger can find beers to enrich.
+    // ABV is extracted from brew_description when available - only beers
+    // without parseable ABV will be queued for Perplexity enrichment.
     const beersForPlaceholders = rawBeers.map(beer => ({
       id: beer.id,
       brew_name: beer.brew_name,
       brewer: beer.brewer,
+      brew_description: beer.brew_description,
     }));
     ctx.waitUntil(insertPlaceholders(env.DB, beersForPlaceholders, reqCtx.requestId));
 
