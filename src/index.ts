@@ -1057,6 +1057,48 @@ async function cleanupOldDlqMessages(
 }
 
 // ============================================================================
+// Database Helpers
+// ============================================================================
+
+/**
+ * Insert placeholder records for beers that need enrichment.
+ * Uses INSERT OR IGNORE so existing beers are not overwritten.
+ * Uses chunking to respect D1's parameter limits.
+ *
+ * This syncs beers from Flying Saucer to our enriched_beers table,
+ * enabling the trigger endpoint and cron to find beers to enrich.
+ */
+async function insertPlaceholders(
+  db: D1Database,
+  beers: Array<{ id: string; brew_name: string; brewer: string }>,
+  requestId: string
+): Promise<void> {
+  if (beers.length === 0) {
+    return;
+  }
+
+  const CHUNK_SIZE = 25; // D1 has limits on batched operations
+  const now = Date.now();
+
+  for (let i = 0; i < beers.length; i += CHUNK_SIZE) {
+    const chunk = beers.slice(i, i + CHUNK_SIZE);
+    const stmt = db.prepare(
+      'INSERT OR IGNORE INTO enriched_beers (id, brew_name, brewer, updated_at) VALUES (?, ?, ?, ?)'
+    );
+    const batch = chunk.map(b => stmt.bind(b.id, b.brew_name, b.brewer, now));
+
+    try {
+      await db.batch(batch);
+    } catch (error) {
+      console.error(`[insertPlaceholders] Error inserting chunk ${i / CHUNK_SIZE + 1}:`, error);
+      // Continue with next chunk - don't fail the entire operation
+    }
+  }
+
+  console.log(`[insertPlaceholders] Synced ${beers.length} beers to enriched_beers table, requestId=${requestId}`);
+}
+
+// ============================================================================
 // Endpoint Handlers
 // ============================================================================
 
@@ -1136,6 +1178,15 @@ async function handleGetBeers(
         enrichment_confidence: enrichment?.confidence ?? null,
       };
     });
+
+    // 5. Sync beers to enriched_beers table (background task)
+    // This populates the table so cron/trigger can find beers to enrich
+    const beersForPlaceholders = rawBeers.map(beer => ({
+      id: beer.id,
+      brew_name: beer.brew_name,
+      brewer: beer.brewer,
+    }));
+    ctx.waitUntil(insertPlaceholders(env.DB, beersForPlaceholders, reqCtx.requestId));
 
     return {
       response: Response.json({
