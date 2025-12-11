@@ -387,3 +387,64 @@ export function trackDlqConsumer(
     ],
   });
 }
+
+/**
+ * Metrics for tracking admin enrichment trigger operations.
+ */
+export interface AdminTriggerMetrics {
+  beersQueued: number;
+  dailyRemaining: number;
+  monthlyRemaining: number;
+  durationMs: number;
+  success: boolean;
+  /** Reason for skipping enrichment (non-error early exit) */
+  skipReason?: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers';
+  /** Error type for actual failures */
+  errorType?: string;
+}
+
+/**
+ * Track admin enrichment trigger operations.
+ *
+ * Index: "admin:enrich_trigger" for grouping trigger operations
+ */
+export function trackAdminTrigger(
+  analytics: AnalyticsEngineDataset | undefined,
+  metrics: AdminTriggerMetrics
+): void {
+  // Determine blob5 value: skipReason for non-error exits, errorType for actual errors
+  let blob5Value: string;
+  if (metrics.errorType) {
+    blob5Value = metrics.errorType;
+  } else if (metrics.skipReason) {
+    blob5Value = `skip:${metrics.skipReason}`;
+  } else {
+    blob5Value = metrics.success ? 'success' : 'trigger_error';
+  }
+
+  safeWriteDataPoint(analytics, {
+    indexes: ['admin:enrich_trigger'],
+    blobs: [
+      '/admin/enrich/trigger',    // blob1: endpoint
+      'POST',                     // blob2: method
+      '',                         // blob3: store_id (N/A for now)
+      metrics.success ? '2xx' : '5xx', // blob4: status_category
+      blob5Value,                 // blob5: error_type or skip_reason
+      '',                         // blob6: client_id (admin ops are privileged)
+      'admin_trigger',            // blob7: event_type
+      '',                         // blob8: enrichment_source (N/A)
+    ],
+    doubles: [
+      metrics.durationMs,         // double1: response_time_ms
+      1,                          // double2: request_count
+      0,                          // double3: beers_returned
+      metrics.beersQueued,        // double4: enrichment_count (beers queued)
+      0,                          // double5: cache_hit
+      metrics.success ? 0 : 1,    // double6: error_count
+      0,                          // double7: rate_limit_triggered
+      0,                          // double8: upstream_latency_ms
+      metrics.dailyRemaining,     // double9: daily_remaining
+      metrics.monthlyRemaining,   // double10: monthly_remaining
+    ],
+  });
+}

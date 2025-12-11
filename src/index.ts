@@ -6,6 +6,7 @@ import {
   trackRateLimit,
   trackAdminDlq,
   trackDlqConsumer,
+  trackAdminTrigger,
 } from './analytics';
 
 // Types for queue messages
@@ -350,6 +351,36 @@ interface DlqReplayRequest {
 
 interface DlqAcknowledgeRequest {
   ids: number[];  // D1 row IDs to acknowledge
+}
+
+// ============================================================================
+// Manual Enrichment Trigger Types
+// ============================================================================
+
+interface TriggerEnrichmentRequest {
+  /** Maximum number of beers to queue (default: 50, max: 100) */
+  limit?: number;
+  /** Only queue beers that have never been attempted (exclude DLQ failures) */
+  exclude_failures?: boolean;
+}
+
+interface QuotaStatus {
+  used: number;
+  limit: number;
+  remaining: number;
+}
+
+interface TriggerEnrichmentData {
+  beers_queued: number;
+  skip_reason?: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers';
+  quota: {
+    daily: QuotaStatus;
+    monthly: QuotaStatus;
+  };
+  enabled: boolean;
+  filters: {
+    exclude_failures: boolean;
+  };
 }
 
 // ============================================================================
@@ -795,6 +826,164 @@ async function handleDlqAcknowledge(
     return errorResponse(
       'Failed to acknowledge messages',
       'DB_ERROR',
+      { requestId: reqCtx.requestId, headers, status: 500 }
+    );
+  }
+}
+
+// ============================================================================
+// Manual Enrichment Trigger Handler
+// ============================================================================
+
+/**
+ * POST /admin/enrich/trigger - Manually trigger enrichment queue processing
+ *
+ * IMPORTANT: This endpoint only CHECKS quota and queues beers.
+ * The queue consumer is the single source of truth for quota reservation.
+ * This avoids double-counting that would occur if both trigger and consumer
+ * reserved quota.
+ */
+async function handleEnrichmentTrigger(
+  request: Request,
+  env: Env,
+  headers: Record<string, string>,
+  reqCtx: RequestContext
+): Promise<Response> {
+  const dailyLimit = parseInt(env.DAILY_ENRICHMENT_LIMIT || '500');
+  const monthlyLimit = parseInt(env.MONTHLY_ENRICHMENT_LIMIT || '2000');
+  const today = new Date().toISOString().split('T')[0];
+  const monthStart = today.slice(0, 7) + '-01';
+  const monthEnd = today.slice(0, 7) + '-31';
+
+  try {
+    // Parse request body
+    const body = await request.json().catch(() => ({})) as TriggerEnrichmentRequest;
+    const requestedLimit = Math.min(Math.max(1, body.limit || 50), 100); // Clamp to 1-100
+    const excludeFailures = body.exclude_failures ?? false;
+
+    // Helper to build response
+    const buildResponse = (
+      beersQueued: number,
+      skipReason: TriggerEnrichmentData['skip_reason'] | undefined,
+      dailyUsed: number,
+      monthlyUsed: number
+    ): Response => {
+      const data: TriggerEnrichmentData = {
+        beers_queued: beersQueued,
+        skip_reason: skipReason,
+        quota: {
+          daily: {
+            used: dailyUsed,
+            limit: dailyLimit,
+            remaining: Math.max(0, dailyLimit - dailyUsed),
+          },
+          monthly: {
+            used: monthlyUsed,
+            limit: monthlyLimit,
+            remaining: Math.max(0, monthlyLimit - monthlyUsed),
+          },
+        },
+        enabled: env.ENRICHMENT_ENABLED !== 'false',
+        filters: {
+          exclude_failures: excludeFailures,
+        },
+      };
+
+      // Remove skip_reason if not set
+      if (!data.skip_reason) {
+        delete data.skip_reason;
+      }
+
+      return Response.json({
+        success: true,
+        requestId: reqCtx.requestId,
+        data,
+      }, { headers });
+    };
+
+    // Layer 3: Kill switch check
+    if (env.ENRICHMENT_ENABLED === 'false') {
+      console.log(`[trigger] Kill switch active, requestId=${reqCtx.requestId}`);
+      return buildResponse(0, 'kill_switch', 0, 0);
+    }
+
+    // Get current quota usage (read-only - no reservation!)
+    const dailyCount = await env.DB.prepare(
+      `SELECT request_count FROM enrichment_limits WHERE date = ?`
+    ).bind(today).first<{ request_count: number }>();
+    const dailyUsed = dailyCount?.request_count || 0;
+
+    const monthlyCount = await env.DB.prepare(
+      `SELECT SUM(request_count) as total FROM enrichment_limits
+       WHERE date >= ? AND date <= ?`
+    ).bind(monthStart, monthEnd).first<{ total: number }>();
+    const monthlyUsed = monthlyCount?.total || 0;
+
+    // Layer 2: Monthly limit check
+    if (monthlyUsed >= monthlyLimit) {
+      console.log(`[trigger] Monthly limit reached (${monthlyUsed}/${monthlyLimit}), requestId=${reqCtx.requestId}`);
+      return buildResponse(0, 'monthly_limit', dailyUsed, monthlyUsed);
+    }
+
+    // Layer 1: Daily limit check
+    const dailyRemaining = dailyLimit - dailyUsed;
+    if (dailyRemaining <= 0) {
+      console.log(`[trigger] Daily limit reached (${dailyUsed}/${dailyLimit}), requestId=${reqCtx.requestId}`);
+      return buildResponse(0, 'daily_limit', dailyUsed, monthlyUsed);
+    }
+
+    // Calculate effective batch size: min(requested, dailyRemaining, 100)
+    // 100 is the max for sendBatch()
+    const effectiveBatchSize = Math.min(requestedLimit, dailyRemaining, 100);
+
+    // Query beers with NULL ABV
+    let query = `
+      SELECT id, brew_name, brewer
+      FROM enriched_beers
+      WHERE abv IS NULL
+    `;
+
+    // Optionally exclude beers that have failed (exist in DLQ)
+    if (excludeFailures) {
+      query += `
+        AND id NOT IN (
+          SELECT beer_id FROM dlq_messages WHERE status = 'pending'
+        )
+      `;
+    }
+
+    query += `LIMIT ?`;
+
+    const beersToEnrich = await env.DB.prepare(query)
+      .bind(effectiveBatchSize)
+      .all<{ id: string; brew_name: string; brewer: string }>();
+
+    if (!beersToEnrich.results || beersToEnrich.results.length === 0) {
+      console.log(`[trigger] No eligible beers found, requestId=${reqCtx.requestId}`);
+      return buildResponse(0, 'no_eligible_beers', dailyUsed, monthlyUsed);
+    }
+
+    // Queue beers for enrichment using sendBatch (max 100 messages)
+    await env.ENRICHMENT_QUEUE.sendBatch(
+      beersToEnrich.results.map((beer) => ({
+        body: {
+          beerId: beer.id,
+          beerName: beer.brew_name,
+          brewer: beer.brewer,
+        },
+      }))
+    );
+
+    const beersQueued = beersToEnrich.results.length;
+    console.log(`[trigger] Queued ${beersQueued} beers for enrichment, requestId=${reqCtx.requestId}, excludeFailures=${excludeFailures}`);
+
+    return buildResponse(beersQueued, undefined, dailyUsed, monthlyUsed);
+
+  } catch (error) {
+    console.error(`[trigger] Failed to trigger enrichment:`, error);
+    return errorResponse(
+      'Failed to trigger enrichment',
+      'TRIGGER_ERROR',
       { requestId: reqCtx.requestId, headers, status: 500 }
     );
   }
@@ -1312,6 +1501,57 @@ export default {
         ctx.waitUntil(writeAdminAuditLog(env.DB, requestContext, 'dlq_acknowledge', {
           acknowledged_count: acknowledgedCount,
         }, adminSecretHash));
+
+        return result;
+      }
+
+      // Route: POST /admin/enrich/trigger - Manually trigger enrichment
+      if (url.pathname === '/admin/enrich/trigger' && request.method === 'POST') {
+        const operationStart = Date.now();
+        const result = await handleEnrichmentTrigger(request, env, { ...corsHeaders, ...rateLimitHeaders }, requestContext);
+
+        // Parse response to get beers queued count for analytics/logging
+        let beersQueued = 0;
+        let skipReason: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers' | undefined;
+        let dailyRemaining = 0;
+        let monthlyRemaining = 0;
+        try {
+          const responseBody = await result.clone().json() as {
+            data?: {
+              beers_queued?: number;
+              skip_reason?: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers';
+              quota?: {
+                daily?: { remaining?: number };
+                monthly?: { remaining?: number };
+              };
+            }
+          };
+          beersQueued = responseBody.data?.beers_queued || 0;
+          skipReason = responseBody.data?.skip_reason;
+          dailyRemaining = responseBody.data?.quota?.daily?.remaining || 0;
+          monthlyRemaining = responseBody.data?.quota?.monthly?.remaining || 0;
+        } catch {
+          // Ignore parse errors
+        }
+
+        // Track analytics
+        trackAdminTrigger(env.ANALYTICS, {
+          beersQueued,
+          dailyRemaining,
+          monthlyRemaining,
+          durationMs: Date.now() - operationStart,
+          success: result.status === 200,
+          skipReason,
+        });
+
+        // Write admin audit log
+        ctx.waitUntil(writeAdminAuditLog(env.DB, requestContext, 'enrich_trigger', {
+          beers_queued: beersQueued,
+          skip_reason: skipReason,
+          duration_ms: Date.now() - operationStart,
+        }, adminSecretHash));
+
+        console.log(`[admin] enrich_trigger completed: beersQueued=${beersQueued}, skipReason=${skipReason || 'none'}, durationMs=${Date.now() - operationStart}, requestId=${requestContext.requestId}`);
 
         return result;
       }
