@@ -48,6 +48,36 @@ const VALID_STORE_IDS = new Set([
   '13879',    // Sugar Land
 ]);
 
+// Blocklist of brew names to skip during enrichment
+// These are flights, mixed drinks, non-alcoholic items, etc.
+const ENRICHMENT_BLOCKLIST = new Set([
+  'Black Velvet',
+  'Build Your Flight',
+  "Dealer's Choice Flight",
+  'Irish Car Bomb',
+  'Michelada',
+]);
+
+// Patterns to match for blocklist (case-insensitive)
+// Matches: "Fall Favorites Flight SL 2025", "Sour Flight", etc.
+const ENRICHMENT_BLOCKLIST_PATTERNS = [
+  /\bflight\b/i,           // Any item containing "flight"
+  /\broot beer\b/i,        // Root beer (non-alcoholic)
+  /\bbeer and cheese\b/i,  // Beer and cheese pairings
+];
+
+/**
+ * Check if a beer name should be skipped for enrichment
+ */
+function shouldSkipEnrichment(brewName: string): boolean {
+  // Check exact matches
+  if (ENRICHMENT_BLOCKLIST.has(brewName)) {
+    return true;
+  }
+  // Check patterns
+  return ENRICHMENT_BLOCKLIST_PATTERNS.some(pattern => pattern.test(brewName));
+}
+
 // Future locations (uncomment when ready to expand):
 // '13885',    // Little Rock
 // '13888',    // Charlotte
@@ -979,9 +1009,24 @@ async function handleEnrichmentTrigger(
       return buildResponse(0, 'no_eligible_beers', dailyUsed, monthlyUsed);
     }
 
+    // Filter out blocklisted items (flights, mixed drinks, etc.)
+    const eligibleBeers = beersToEnrich.results.filter(
+      beer => !shouldSkipEnrichment(beer.brew_name)
+    );
+
+    if (eligibleBeers.length === 0) {
+      console.log(`[trigger] All ${beersToEnrich.results.length} beers are blocklisted, requestId=${reqCtx.requestId}`);
+      return buildResponse(0, 'no_eligible_beers', dailyUsed, monthlyUsed);
+    }
+
+    const skippedCount = beersToEnrich.results.length - eligibleBeers.length;
+    if (skippedCount > 0) {
+      console.log(`[trigger] Skipped ${skippedCount} blocklisted items`);
+    }
+
     // Queue beers for enrichment using sendBatch (max 100 messages)
     await env.ENRICHMENT_QUEUE.sendBatch(
-      beersToEnrich.results.map((beer) => ({
+      eligibleBeers.map((beer) => ({
         body: {
           beerId: beer.id,
           beerName: beer.brew_name,
@@ -990,7 +1035,7 @@ async function handleEnrichmentTrigger(
       }))
     );
 
-    const beersQueued = beersToEnrich.results.length;
+    const beersQueued = eligibleBeers.length;
     console.log(`[trigger] Queued ${beersQueued} beers for enrichment, requestId=${reqCtx.requestId}, excludeFailures=${excludeFailures}`);
 
     return buildResponse(beersQueued, undefined, dailyUsed, monthlyUsed);
@@ -1827,10 +1872,33 @@ export default {
         return;
       }
 
+      // Filter out blocklisted items (flights, mixed drinks, etc.)
+      const eligibleBeers = beersToEnrich.results.filter(
+        beer => !shouldSkipEnrichment(beer.brew_name)
+      );
+
+      if (eligibleBeers.length === 0) {
+        console.log(`[cron] All ${beersToEnrich.results.length} beers are blocklisted`);
+        trackCron(env.ANALYTICS, {
+          beersQueued: 0,
+          dailyRemaining: remainingToday,
+          monthlyRemaining: monthlyLimit - monthlyUsed,
+          durationMs: Date.now() - cronStartTime,
+          success: true,
+          skipReason: 'no_beers',
+        });
+        return;
+      }
+
+      const skippedCount = beersToEnrich.results.length - eligibleBeers.length;
+      if (skippedCount > 0) {
+        console.log(`[cron] Skipped ${skippedCount} blocklisted items`);
+      }
+
       // Queue each beer for enrichment (processed in parallel by consumers)
       // Using sendBatch for efficiency instead of individual sends
       await env.ENRICHMENT_QUEUE.sendBatch(
-        beersToEnrich.results.map((beer) => ({
+        eligibleBeers.map((beer) => ({
           body: {
             beerId: beer.id,
             beerName: beer.brew_name,
@@ -1839,7 +1907,7 @@ export default {
         }))
       );
 
-      const beersQueued = beersToEnrich.results.length;
+      const beersQueued = eligibleBeers.length;
       console.log(`Queued ${beersQueued} beers for enrichment (${remainingToday - beersQueued} slots remaining today)`);
 
       // Track successful cron execution
