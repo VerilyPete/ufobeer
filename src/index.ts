@@ -1135,9 +1135,18 @@ async function insertPlaceholders(
 
   for (let i = 0; i < beers.length; i += CHUNK_SIZE) {
     const chunk = beers.slice(i, i + CHUNK_SIZE);
-    const stmt = db.prepare(
-      'INSERT OR IGNORE INTO enriched_beers (id, brew_name, brewer, abv, confidence, enrichment_source, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    );
+    // Use INSERT ... ON CONFLICT UPDATE to:
+    // 1. Always update last_seen_at when beer is seen (for cleanup tracking)
+    // 2. Only set ABV/confidence/source if currently NULL (preserve Perplexity data)
+    const stmt = db.prepare(`
+      INSERT INTO enriched_beers (id, brew_name, brewer, abv, confidence, enrichment_source, updated_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        last_seen_at = excluded.last_seen_at,
+        abv = COALESCE(enriched_beers.abv, excluded.abv),
+        confidence = COALESCE(enriched_beers.confidence, excluded.confidence),
+        enrichment_source = COALESCE(enriched_beers.enrichment_source, excluded.enrichment_source)
+    `);
     const batch = chunk.map(b => {
       const abv = extractABV(b.brew_description);
       if (abv !== null) {
@@ -1151,7 +1160,8 @@ async function insertPlaceholders(
       // Source: 'description' for parsed ABV, NULL for beers needing enrichment
       // (Perplexity consumer will set 'perplexity' when it enriches)
       const source = abv !== null ? 'description' : null;
-      return stmt.bind(b.id, b.brew_name, b.brewer, abv, confidence, source, now);
+      // last_seen_at = now for both insert and update
+      return stmt.bind(b.id, b.brew_name, b.brewer, abv, confidence, source, now, now);
     });
 
     try {

@@ -9,8 +9,9 @@ CREATE TABLE IF NOT EXISTS enriched_beers (
     brewer TEXT,
     abv REAL,
     confidence REAL DEFAULT 0.5,
-    enrichment_source TEXT DEFAULT 'perplexity',
+    enrichment_source TEXT DEFAULT 'perplexity',  -- 'description' | 'perplexity'
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
+    last_seen_at INTEGER,                          -- When beer was last on a taplist
     last_verified_at INTEGER DEFAULT NULL,
     is_verified INTEGER DEFAULT 0
 );
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS enriched_beers (
 CREATE INDEX IF NOT EXISTS idx_beer_name ON enriched_beers(brew_name);
 CREATE INDEX IF NOT EXISTS idx_brewer ON enriched_beers(brewer);
 CREATE INDEX IF NOT EXISTS idx_needs_enrichment ON enriched_beers(abv) WHERE abv IS NULL;
+CREATE INDEX IF NOT EXISTS idx_source_last_seen ON enriched_beers(enrichment_source, last_seen_at);
 
 -- ============================================================================
 -- system_state: Key-value store for locks and configuration
