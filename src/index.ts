@@ -8,88 +8,26 @@ import {
   trackDlqConsumer,
   trackAdminTrigger,
 } from './analytics';
-
-// Types for queue messages
-interface EnrichmentMessage {
-  beerId: string;
-  beerName: string;
-  brewer: string;
-}
-
-export interface Env {
-  // Database
-  DB: D1Database;
-
-  // Queue (from Phase 1) - used for enrichment and DLQ replay
-  ENRICHMENT_QUEUE: Queue<EnrichmentMessage>;
-
-  // Analytics Engine (optional - graceful degradation if not configured)
-  ANALYTICS?: AnalyticsEngineDataset;
-
-  // Secrets (set via wrangler secret put)
-  API_KEY: string;
-  FLYING_SAUCER_API_BASE: string;
-  PERPLEXITY_API_KEY?: string;
-  ADMIN_SECRET?: string; // Required for /admin/* routes
-
-  // Environment variables (set in wrangler.jsonc vars)
-  ALLOWED_ORIGIN: string;
-  RATE_LIMIT_RPM: string;
-
-  // Circuit breaker (from Phase 1)
-  DAILY_ENRICHMENT_LIMIT?: string;
-  MONTHLY_ENRICHMENT_LIMIT?: string;
-  ENRICHMENT_ENABLED?: string;
-}
-
-// Valid Flying Saucer store IDs
-// Starting with Sugar Land only - add more locations as needed
-const VALID_STORE_IDS = new Set([
-  '13879',    // Sugar Land
-]);
-
-// Blocklist of brew names to skip during enrichment
-// These are flights, mixed drinks, non-alcoholic items, etc.
-const ENRICHMENT_BLOCKLIST = new Set([
-  'Black Velvet',
-  'Build Your Flight',
-  "Dealer's Choice Flight",
-  'Irish Car Bomb',
-  'Michelada',
-]);
-
-// Patterns to match for blocklist (case-insensitive)
-// Matches: "Fall Favorites Flight SL 2025", "Sour Flight", etc.
-const ENRICHMENT_BLOCKLIST_PATTERNS = [
-  /\bflight\b/i,           // Any item containing "flight"
-  /\broot beer\b/i,        // Root beer (non-alcoholic)
-  /\bbeer and cheese\b/i,  // Beer and cheese pairings
-];
-
-/**
- * Check if a beer name should be skipped for enrichment
- */
-function shouldSkipEnrichment(brewName: string): boolean {
-  // Check exact matches
-  if (ENRICHMENT_BLOCKLIST.has(brewName)) {
-    return true;
-  }
-  // Check patterns
-  return ENRICHMENT_BLOCKLIST_PATTERNS.some(pattern => pattern.test(brewName));
-}
-
-// Future locations (uncomment when ready to expand):
-// '13885',    // Little Rock
-// '13888',    // Charlotte
-// '13877',    // Raleigh
-// '13883',    // Cordova
-// '13881',    // Memphis
-// '18686214', // Cypress Waters
-// '13891',    // Fort Worth
-// '13884',    // The Lake
-// '18262641', // DFW Airport
-// '13880',    // Houston
-// '13882',    // San Antonio
+import {
+  timingSafeCompare,
+  hashApiKey,
+  validateApiKey,
+  authorizeAdmin,
+  generateRequestId,
+  getClientIp,
+  getClientIdentifier,
+  createRequestContext,
+} from './auth';
+import {
+  insertPlaceholders,
+  extractABV,
+  getEnrichmentQuotaStatus,
+} from './db';
+import type { Env, EnrichmentMessage, RequestContext } from './types';
+import { VALID_STORE_IDS, shouldSkipEnrichment } from './config';
+import { getCorsHeaders, errorResponse } from './context';
+import { checkRateLimit } from './rate-limit';
+import { writeAuditLog, writeAdminAuditLog } from './audit';
 
 // ============================================================================
 // Type Guards
@@ -130,223 +68,6 @@ function hasBeerStock(item: unknown): item is { brewInStock: unknown[] } {
     'brewInStock' in item &&
     Array.isArray((item as { brewInStock?: unknown }).brewInStock)
   );
-}
-
-// ============================================================================
-// Security Helpers
-// ============================================================================
-
-/**
- * Timing-safe string comparison to prevent timing attacks on API key validation.
- */
-async function timingSafeCompare(a: string, b: string): Promise<boolean> {
-  if (a.length !== b.length) {
-    // Still do a comparison to avoid leaking length info via timing
-    const encoder = new TextEncoder();
-    const aEncoded = encoder.encode(a);
-    const bEncoded = encoder.encode(a); // Compare a with itself
-    await crypto.subtle.timingSafeEqual(aEncoded, bEncoded);
-    return false;
-  }
-  const encoder = new TextEncoder();
-  const aEncoded = encoder.encode(a);
-  const bEncoded = encoder.encode(b);
-  return crypto.subtle.timingSafeEqual(aEncoded, bEncoded);
-}
-
-/**
- * Hash an API key for storage (we don't want to log actual keys).
- */
-async function hashApiKey(apiKey: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(apiKey);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-/**
- * Get CORS headers. Fails explicitly if ALLOWED_ORIGIN is not configured.
- */
-function getCorsHeaders(env: Env): Record<string, string> | null {
-  if (!env.ALLOWED_ORIGIN) {
-    console.error('ALLOWED_ORIGIN not configured - CORS will be blocked');
-    return null;
-  }
-  return {
-    'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN,
-    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, X-Client-ID',
-    'Access-Control-Max-Age': '86400',
-  };
-}
-
-// ============================================================================
-// Rate Limiting
-// ============================================================================
-
-/**
- * Check and update rate limit for a client.
- * Returns true if request is allowed, false if rate limited.
- */
-async function checkRateLimit(
-  db: D1Database,
-  clientIdentifier: string,
-  limitPerMinute: number
-): Promise<{ allowed: boolean; remaining: number; resetAt: number }> {
-  const now = Date.now();
-  const minuteBucket = Math.floor(now / 60000);
-  const resetAt = (minuteBucket + 1) * 60000;
-
-  try {
-    // Atomic upsert - increment counter
-    await db.prepare(`
-      INSERT INTO rate_limits (client_identifier, minute_bucket, request_count)
-      VALUES (?, ?, 1)
-      ON CONFLICT(client_identifier, minute_bucket)
-      DO UPDATE SET request_count = request_count + 1
-    `).bind(clientIdentifier, minuteBucket).run();
-
-    // Check new count
-    const result = await db.prepare(
-      'SELECT request_count FROM rate_limits WHERE client_identifier = ? AND minute_bucket = ?'
-    ).bind(clientIdentifier, minuteBucket).first<{ request_count: number }>();
-
-    const count = result?.request_count || 1;
-
-    if (count > limitPerMinute) {
-      return { allowed: false, remaining: 0, resetAt };
-    }
-
-    // Occasional cleanup (1% of requests)
-    if (Math.random() < 0.01) {
-      await db.prepare('DELETE FROM rate_limits WHERE minute_bucket < ?')
-        .bind(minuteBucket - 60).run();
-    }
-
-    return { allowed: true, remaining: Math.max(0, limitPerMinute - count), resetAt };
-  } catch (error) {
-    // On error, allow request but log
-    console.error('Rate limit check failed:', error);
-    return { allowed: true, remaining: limitPerMinute, resetAt };
-  }
-}
-
-// ============================================================================
-// Audit Logging
-// ============================================================================
-
-interface RequestContext {
-  requestId: string;
-  startTime: number;
-  clientIdentifier: string;
-  apiKeyHash: string | null;
-  clientIp: string | null;
-  userAgent: string | null;
-}
-
-/**
- * Write an audit log entry for a request.
- */
-async function writeAuditLog(
-  db: D1Database,
-  ctx: RequestContext,
-  method: string,
-  path: string,
-  statusCode: number,
-  error?: string
-): Promise<void> {
-  const responseTimeMs = Date.now() - ctx.startTime;
-
-  try {
-    await db.prepare(`
-      INSERT INTO audit_log (request_id, timestamp, method, path, api_key_hash, client_ip, user_agent, status_code, response_time_ms, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      ctx.requestId,
-      ctx.startTime,
-      method,
-      path,
-      ctx.apiKeyHash,
-      ctx.clientIp,
-      ctx.userAgent,
-      statusCode,
-      responseTimeMs,
-      error || null
-    ).run();
-
-    // Cleanup old entries (older than 7 days) - 0.1% of requests
-    if (Math.random() < 0.001) {
-      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      await db.prepare('DELETE FROM audit_log WHERE timestamp < ?').bind(sevenDaysAgo).run();
-    }
-  } catch (err) {
-    console.error('Failed to write audit log:', err);
-  }
-}
-
-// ============================================================================
-// Admin Authentication
-// ============================================================================
-
-/**
- * Authorize admin access for /admin/* routes.
- * Requires both valid API key (already checked) AND valid ADMIN_SECRET.
- */
-async function authorizeAdmin(
-  request: Request,
-  env: Env,
-  reqCtx: RequestContext
-): Promise<{ authorized: boolean; error?: string }> {
-  // Check if ADMIN_SECRET is configured
-  if (!env.ADMIN_SECRET) {
-    console.error('ADMIN_SECRET not configured - admin endpoints disabled');
-    return { authorized: false, error: 'Admin endpoints not configured' };
-  }
-
-  // Check for X-Admin-Secret header
-  const adminSecret = request.headers.get('X-Admin-Secret');
-  if (!adminSecret) {
-    return { authorized: false, error: 'Missing admin credentials' };
-  }
-
-  // Timing-safe comparison
-  if (!(await timingSafeCompare(adminSecret, env.ADMIN_SECRET))) {
-    return { authorized: false, error: 'Invalid admin credentials' };
-  }
-
-  return { authorized: true };
-}
-
-/**
- * Write admin audit log entry for privileged operations.
- */
-async function writeAdminAuditLog(
-  db: D1Database,
-  ctx: RequestContext,
-  operation: string,
-  details: Record<string, unknown>,
-  adminSecretHash: string
-): Promise<void> {
-  try {
-    await db.prepare(`
-      INSERT INTO audit_log (request_id, timestamp, method, path, api_key_hash, client_ip, user_agent, status_code, response_time_ms, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      ctx.requestId,
-      ctx.startTime,
-      'ADMIN',
-      operation,
-      adminSecretHash,
-      ctx.clientIp,
-      ctx.userAgent,
-      200,
-      Date.now() - ctx.startTime,
-      JSON.stringify(details)
-    ).run();
-  } catch (err) {
-    console.error('Failed to write admin audit log:', err);
-  }
 }
 
 // ============================================================================
@@ -412,40 +133,6 @@ interface TriggerEnrichmentData {
   filters: {
     exclude_failures: boolean;
   };
-}
-
-// ============================================================================
-// Error Response Helper
-// ============================================================================
-
-interface ErrorResponseOptions {
-  requestId: string;
-  headers: Record<string, string>;
-  status?: number;
-}
-
-/**
- * Create a standardized error response.
- */
-function errorResponse(
-  message: string,
-  code: string,
-  options: ErrorResponseOptions
-): Response {
-  return Response.json(
-    {
-      success: false,
-      error: {
-        message,
-        code,
-      },
-      requestId: options.requestId,
-    },
-    {
-      status: options.status || 400,
-      headers: options.headers,
-    }
-  );
 }
 
 // ============================================================================
@@ -1103,138 +790,6 @@ async function cleanupOldDlqMessages(
 }
 
 // ============================================================================
-// Database Helpers
-// ============================================================================
-
-/**
- * Extract ABV percentage from beer description HTML.
- * Ported from mobile app's beerGlassType.ts extractABV function.
- *
- * Supports multiple formats:
- * - "5.2%" or "8%"
- * - "5.2 ABV" or "ABV 5.2"
- * - "5.2% ABV" or "ABV: 5.2%"
- *
- * @param description - HTML description string containing ABV percentage
- * @returns ABV as a number or null if not found/invalid
- */
-function extractABV(description: string | undefined): number | null {
-  if (!description) return null;
-
-  // Strip HTML tags to get plain text
-  const plainText = description.replace(/<[^>]*>/g, '');
-
-  // Pattern 1: Look for percentage pattern (e.g., "5.2%" or "8%")
-  const percentageMatch = plainText.match(/\b(\d+(?:\.\d+)?)\s*%/);
-  if (percentageMatch && percentageMatch[1]) {
-    const abv = parseFloat(percentageMatch[1]);
-    if (!isNaN(abv) && abv >= 0 && abv <= 100) {
-      return abv;
-    }
-  }
-
-  // Pattern 2: Look for "ABV" near a number (e.g., "5.2 ABV", "ABV 5.2", "ABV: 5.2")
-  const abvPattern = /(?:ABV[:\s]*\b(\d+(?:\.\d+)?)|\b(\d+(?:\.\d+)?)\s*ABV)/i;
-  const abvMatch = plainText.match(abvPattern);
-
-  if (abvMatch) {
-    // Match could be in group 1 (ABV first) or group 2 (number first)
-    const abvString = abvMatch[1] || abvMatch[2];
-    if (abvString) {
-      const abv = parseFloat(abvString);
-      if (!isNaN(abv) && abv >= 0 && abv <= 100) {
-        return abv;
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * Insert placeholder records for beers that need enrichment.
- * Uses INSERT OR IGNORE so existing beers are not overwritten.
- * Uses chunking to respect D1's parameter limits.
- *
- * IMPORTANT: Extracts ABV from brew_description when available.
- * Only beers where ABV couldn't be parsed will have NULL abv and
- * be candidates for Perplexity enrichment.
- *
- * This syncs beers from Flying Saucer to our enriched_beers table,
- * enabling the trigger endpoint and cron to find beers to enrich.
- */
-async function insertPlaceholders(
-  db: D1Database,
-  beers: Array<{ id: string; brew_name: string; brewer: string; brew_description?: string }>,
-  requestId: string
-): Promise<void> {
-  if (beers.length === 0) {
-    return;
-  }
-
-  const CHUNK_SIZE = 25; // D1 has limits on batched operations
-  const now = Date.now();
-
-  let withAbv = 0;
-  let withoutAbv = 0;
-
-  for (let i = 0; i < beers.length; i += CHUNK_SIZE) {
-    const chunk = beers.slice(i, i + CHUNK_SIZE);
-    // Use INSERT ... ON CONFLICT UPDATE to:
-    // 1. Always update last_seen_at when beer is seen (for cleanup tracking)
-    // 2. Only set ABV/confidence/source if currently NULL (preserve Perplexity data)
-    const stmt = db.prepare(`
-      INSERT INTO enriched_beers (id, brew_name, brewer, abv, confidence, enrichment_source, updated_at, last_seen_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        last_seen_at = excluded.last_seen_at,
-        -- Only update ABV/confidence/source if we have a parsed ABV from description
-        -- (don't overwrite Perplexity data with NULL)
-        abv = CASE
-          WHEN enriched_beers.enrichment_source = 'perplexity' THEN enriched_beers.abv
-          WHEN excluded.abv IS NOT NULL THEN excluded.abv
-          ELSE enriched_beers.abv
-        END,
-        confidence = CASE
-          WHEN enriched_beers.enrichment_source = 'perplexity' THEN enriched_beers.confidence
-          WHEN excluded.abv IS NOT NULL THEN excluded.confidence
-          ELSE enriched_beers.confidence
-        END,
-        enrichment_source = CASE
-          WHEN enriched_beers.enrichment_source = 'perplexity' THEN 'perplexity'
-          WHEN excluded.abv IS NOT NULL THEN 'description'
-          ELSE enriched_beers.enrichment_source
-        END
-    `);
-    const batch = chunk.map(b => {
-      const abv = extractABV(b.brew_description);
-      if (abv !== null) {
-        withAbv++;
-      } else {
-        withoutAbv++;
-      }
-      // Confidence 0.9 for description-extracted ABV (reliable but not verified)
-      // NULL confidence for beers needing enrichment
-      const confidence = abv !== null ? 0.9 : null;
-      // Source: 'description' for parsed ABV, NULL for beers needing enrichment
-      // (Perplexity consumer will set 'perplexity' when it enriches)
-      const source = abv !== null ? 'description' : null;
-      // last_seen_at = now for both insert and update
-      return stmt.bind(b.id, b.brew_name, b.brewer, abv, confidence, source, now, now);
-    });
-
-    try {
-      await db.batch(batch);
-    } catch (error) {
-      console.error(`[insertPlaceholders] Error inserting chunk ${i / CHUNK_SIZE + 1}:`, error);
-      // Continue with next chunk - don't fail the entire operation
-    }
-  }
-
-  console.log(`[insertPlaceholders] Synced ${beers.length} beers (${withAbv} with ABV, ${withoutAbv} need enrichment), requestId=${requestId}`);
-}
-
-// ============================================================================
 // Endpoint Handlers
 // ============================================================================
 
@@ -1422,17 +977,7 @@ export default {
     const corsHeaders = getCorsHeaders(env);
 
     // Create request context
-    const clientIp = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For');
-    const clientIdentifier = request.headers.get('X-Client-ID') || clientIp || 'unknown';
-
-    const requestContext: RequestContext = {
-      requestId: crypto.randomUUID(),
-      startTime: Date.now(),
-      clientIdentifier: clientIdentifier.substring(0, 64),
-      apiKeyHash: null,
-      clientIp,
-      userAgent: request.headers.get('User-Agent'),
-    };
+    const requestContext = createRequestContext(request);
 
     // Track metrics for the current request (populated by handlers)
     let beersReturnedCount: number | undefined;
@@ -1483,11 +1028,9 @@ export default {
     }
 
     // Authenticate
-    const apiKey = request.headers.get('X-API-Key');
-    if (!apiKey || !(await timingSafeCompare(apiKey, env.API_KEY))) {
+    if (!(await validateApiKey(request, env, requestContext))) {
       return respond({ error: 'Unauthorized' }, 401, corsHeaders, 'Invalid API key');
     }
-    requestContext.apiKeyHash = await hashApiKey(apiKey);
 
     // Rate limit
     const rateLimit = parseInt(env.RATE_LIMIT_RPM, 10) || 60;
