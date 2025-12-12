@@ -1136,7 +1136,7 @@ async function insertPlaceholders(
   for (let i = 0; i < beers.length; i += CHUNK_SIZE) {
     const chunk = beers.slice(i, i + CHUNK_SIZE);
     const stmt = db.prepare(
-      'INSERT OR IGNORE INTO enriched_beers (id, brew_name, brewer, abv, confidence, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT OR IGNORE INTO enriched_beers (id, brew_name, brewer, abv, confidence, enrichment_source, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
     );
     const batch = chunk.map(b => {
       const abv = extractABV(b.brew_description);
@@ -1148,7 +1148,10 @@ async function insertPlaceholders(
       // Confidence 0.9 for description-extracted ABV (reliable but not verified)
       // NULL confidence for beers needing enrichment
       const confidence = abv !== null ? 0.9 : null;
-      return stmt.bind(b.id, b.brew_name, b.brewer, abv, confidence, now);
+      // Source: 'description' for parsed ABV, NULL for beers needing enrichment
+      // (Perplexity consumer will set 'perplexity' when it enriches)
+      const source = abv !== null ? 'description' : null;
+      return stmt.bind(b.id, b.brew_name, b.brewer, abv, confidence, source, now);
     });
 
     try {
@@ -1226,11 +1229,11 @@ async function handleGetBeers(
 
     // 3. Fetch enrichment data from D1
     const { results } = await env.DB.prepare(
-      'SELECT id, abv, confidence FROM enriched_beers'
-    ).all<{ id: string; abv: number | null; confidence: number }>();
+      'SELECT id, abv, confidence, enrichment_source FROM enriched_beers'
+    ).all<{ id: string; abv: number | null; confidence: number; enrichment_source: string | null }>();
 
     const enrichmentMap = new Map(
-      results.map(r => [r.id, { abv: r.abv, confidence: r.confidence }])
+      results.map(r => [r.id, { abv: r.abv, confidence: r.confidence, source: r.enrichment_source }])
     );
 
     // 4. Merge data
@@ -1240,6 +1243,7 @@ async function handleGetBeers(
         ...beer,
         enriched_abv: enrichment?.abv ?? null,
         enrichment_confidence: enrichment?.confidence ?? null,
+        enrichment_source: enrichment?.source ?? null,
       };
     });
 
@@ -1305,20 +1309,22 @@ async function handleBatchLookup(
     // Build parameterized query
     const placeholders = limitedIds.map(() => '?').join(',');
     const { results } = await env.DB.prepare(
-      `SELECT id, abv, confidence, is_verified FROM enriched_beers WHERE id IN (${placeholders})`
+      `SELECT id, abv, confidence, enrichment_source, is_verified FROM enriched_beers WHERE id IN (${placeholders})`
     ).bind(...limitedIds).all<{
       id: string;
       abv: number | null;
       confidence: number;
+      enrichment_source: string | null;
       is_verified: number;
     }>();
 
     // Format response
-    const enrichmentData: Record<string, { abv: number | null; confidence: number; is_verified: boolean }> = {};
+    const enrichmentData: Record<string, { abv: number | null; confidence: number; source: string | null; is_verified: boolean }> = {};
     for (const row of results) {
       enrichmentData[row.id] = {
         abv: row.abv,
         confidence: row.confidence,
+        source: row.enrichment_source,
         is_verified: Boolean(row.is_verified),
       };
     }
