@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS enriched_beers (
     brewer TEXT,
     abv REAL,
     confidence REAL DEFAULT 0.5,
-    enrichment_source TEXT DEFAULT 'perplexity',  -- 'description' | 'perplexity'
+    enrichment_source TEXT DEFAULT NULL,  -- 'description' | 'perplexity' | NULL (not yet enriched)
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
     last_seen_at INTEGER,                          -- When beer was last on a taplist
     last_verified_at INTEGER DEFAULT NULL,

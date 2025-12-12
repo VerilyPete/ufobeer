@@ -1143,9 +1143,23 @@ async function insertPlaceholders(
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         last_seen_at = excluded.last_seen_at,
-        abv = COALESCE(enriched_beers.abv, excluded.abv),
-        confidence = COALESCE(enriched_beers.confidence, excluded.confidence),
-        enrichment_source = COALESCE(enriched_beers.enrichment_source, excluded.enrichment_source)
+        -- Only update ABV/confidence/source if we have a parsed ABV from description
+        -- (don't overwrite Perplexity data with NULL)
+        abv = CASE
+          WHEN enriched_beers.enrichment_source = 'perplexity' THEN enriched_beers.abv
+          WHEN excluded.abv IS NOT NULL THEN excluded.abv
+          ELSE enriched_beers.abv
+        END,
+        confidence = CASE
+          WHEN enriched_beers.enrichment_source = 'perplexity' THEN enriched_beers.confidence
+          WHEN excluded.abv IS NOT NULL THEN excluded.confidence
+          ELSE enriched_beers.confidence
+        END,
+        enrichment_source = CASE
+          WHEN enriched_beers.enrichment_source = 'perplexity' THEN 'perplexity'
+          WHEN excluded.abv IS NOT NULL THEN 'description'
+          ELSE enriched_beers.enrichment_source
+        END
     `);
     const batch = chunk.map(b => {
       const abv = extractABV(b.brew_description);
@@ -2077,7 +2091,7 @@ async function handleEnrichmentBatch(
       if (abv !== null) {
         await env.DB.prepare(`
           UPDATE enriched_beers
-          SET abv = ?, confidence = 0.7, updated_at = ?
+          SET abv = ?, confidence = 0.7, enrichment_source = 'perplexity', updated_at = ?
           WHERE id = ?
         `).bind(abv, Date.now(), beerId).run();
 
