@@ -31,6 +31,8 @@ src/
 │   ├── index.ts          # Re-exports
 │   ├── helpers.ts        # Database helpers, insertPlaceholders (~200 lines)
 │   └── quota.ts          # Quota tracking and checks (~150 lines)
+├── services/
+│   └── perplexity.ts     # Perplexity API client for ABV lookups (~100 lines)
 ├── handlers/
 │   ├── index.ts          # Re-exports
 │   ├── enrichment.ts     # Enrichment trigger + force handlers (~300 lines)
@@ -40,7 +42,7 @@ src/
 │   └── scheduled.ts      # Cron job handler (~200 lines)
 └── queue/
     ├── index.ts          # Re-exports
-    ├── enrichment.ts     # Queue consumer for enrichment (~400 lines)
+    ├── enrichment.ts     # Queue consumer for enrichment (~300 lines)
     └── dlq.ts            # Queue consumer for DLQ (~100 lines)
 ```
 
@@ -49,6 +51,37 @@ src/
 - **Added `context.ts`**: Middleware pattern for CORS, error handling, analytics, request context
 - **Added `handlers/scheduled.ts`**: Extract cron job business logic from index.ts
 - **Slimmer `index.ts`**: Now truly minimal (~200 lines) - just dispatches to handlers
+
+---
+
+## Phases 1-6 Review (Completed)
+
+**Review Date**: 2024-12-12
+**Status**: ✅ Approved to proceed with Phases 7-9
+
+### Review Findings
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Module extractions | ✅ Pass | Follow Workers best practices |
+| Circular dependencies | ✅ Pass | Clean dependency graph with types.ts as leaf |
+| Bundle size | ✅ Pass | 64.55 KiB / 13.39 KiB gzipped |
+| TypeScript compilation | ✅ Pass | `tsc --noEmit` succeeds |
+| Dry-run deployment | ✅ Pass | `wrangler deploy --dry-run` succeeds |
+
+### Issues Found (to address in Phases 7-9)
+
+1. **Duplicate types in index.ts**: The current `index.ts` still contains duplicate interface definitions (`FlyingSaucerBeer`, `DlqMessageRow`, `PaginationCursor`, etc.) that already exist in `types.ts`. These must be removed and replaced with imports.
+
+2. **Unused import**: `extractABV` is imported in `index.ts` but never used directly (it's called internally by `insertPlaceholders`). Remove from imports.
+
+3. **`validateForceEnrichmentRequest()` placement**: Currently in `types.ts` but contains validation logic beyond type checking. Consider moving to `handlers/enrichment.ts` during Phase 7.
+
+### Recommendations for Phases 7-9
+
+1. **Extract Perplexity API logic**: Move `fetchAbvFromPerplexity()` to `src/services/perplexity.ts` to keep `queue/enrichment.ts` focused on queue processing logic.
+
+2. **Enforce handler isolation**: No handler should import from another handler. Shared logic must live in utilities (`db/`, `config.ts`, `services/`) or be passed via context.
 
 ---
 
@@ -237,21 +270,40 @@ export default {
 
 ---
 
+### Phase 7.5: Extract Perplexity Service (`src/services/perplexity.ts`)
+
+> **New phase** added per review recommendation to keep queue handlers focused on queue processing logic.
+
+**Contents:**
+- `fetchAbvFromPerplexity()` function
+- Perplexity API request/response handling
+- ABV parsing from API response
+
+**Lines:** ~100
+
+**Dependencies:**
+- `types.ts` (for `Env`)
+
+**Rationale:** Separating the external API client from queue processing improves testability and follows single responsibility principle. The queue consumer calls this service but doesn't need to know API implementation details.
+
+---
+
 ### Phase 8: Extract Queue Handlers (`src/queue/`)
 
 #### `src/queue/enrichment.ts`
 **Contents:**
 - `handleEnrichmentBatch()` function
-- Perplexity API call logic
 - ABV update logic
-- DLQ write logic
+- Rate limiting and quota checks
+- DLQ retry logic
 
-**Lines:** ~400
+**Lines:** ~300
 
 **Dependencies:**
 - `types.ts`
+- `services/perplexity.ts` (for `fetchAbvFromPerplexity`)
 - `db/quota.ts`
-- `audit.ts`
+- `analytics.ts`
 
 #### `src/queue/dlq.ts`
 **Contents:**
@@ -275,6 +327,29 @@ export default {
 - `queue` handler dispatch to `handleEnrichmentBatch`
 
 **Lines:** ~200
+
+#### Cleanup Tasks (from review)
+
+These issues were identified during the Phase 1-6 review and must be addressed:
+
+- [ ] **Remove duplicate interfaces** from index.ts:
+  - `FlyingSaucerBeer` → import from `types.ts`
+  - `DlqMessageRow` → import from `types.ts`
+  - `PaginationCursor` → import from `types.ts`
+  - `DlqReplayRequest` → import from `types.ts`
+  - `DlqAcknowledgeRequest` → import from `types.ts`
+  - `TriggerEnrichmentRequest` → import from `types.ts`
+  - `QuotaStatus` → import from `types.ts`
+  - `TriggerEnrichmentData` → import from `types.ts`
+  - `GetBeersResult` → import from `types.ts`
+
+- [ ] **Remove duplicate type guards** from index.ts:
+  - `isValidBeer()` → import from `types.ts`
+  - `hasBeerStock()` → import from `types.ts`
+
+- [ ] **Remove unused import**: `extractABV` (only used internally by `insertPlaceholders`)
+
+- [ ] **Move `validateForceEnrichmentRequest()`** from `types.ts` to `handlers/enrichment.ts` (contains validation logic beyond type checking)
 
 **Final Structure:**
 ```typescript
@@ -371,11 +446,13 @@ Execute phases in order to minimize broken builds:
 | 5 | Phase 4 | Extract rate-limit.ts | `tsc --noEmit` |
 | 6 | Phase 5 | Extract audit.ts | `tsc --noEmit` |
 | 7 | Phase 6 | Extract db/ modules | `tsc --noEmit` |
+| - | **Review** | ✅ Phases 1-6 reviewed and approved | See review section |
 | 8 | Phase 7 | Extract handlers/ (incl. scheduled.ts) | `tsc --noEmit` + `wrangler deploy --dry-run` |
-| 9 | Phase 8 | Extract queue/ | `tsc --noEmit` + `wrangler deploy --dry-run` |
-| 10 | Phase 9 | Clean up index.ts | `wrangler deploy --dry-run` |
-| 11 | Verify | Run smoke tests | Compare with baselines |
-| 12 | Deploy | Deploy to staging | Full integration test |
+| 9 | Phase 7.5 | Extract services/perplexity.ts | `tsc --noEmit` |
+| 10 | Phase 8 | Extract queue/ | `tsc --noEmit` + `wrangler deploy --dry-run` |
+| 11 | Phase 9 | Clean up index.ts + remove duplicates | `wrangler deploy --dry-run` |
+| 12 | Verify | Run smoke tests | Compare with baselines |
+| 13 | Deploy | Deploy to staging | Full integration test |
 
 ### Pre-flight Smoke Test (Step 0)
 
@@ -536,7 +613,7 @@ export { handleScheduledEnrichment } from './scheduled';
 
 ```typescript
 // src/db/index.ts
-export { insertPlaceholders, extractABV } from './helpers';
+export { insertPlaceholders } from './helpers';  // Note: extractABV is internal, not exported
 export { getEnrichmentQuotaStatus, reserveEnrichmentQuota } from './quota';
 ```
 
@@ -570,6 +647,7 @@ The isolated modules can now be unit tested:
 | `db/quota.ts` | `getEnrichmentQuotaStatus()` | Medium - rate limiting |
 | `auth.ts` | `validateApiKey()`, `authorizeAdmin()` | Medium - security |
 | `handlers/enrichment.ts` | `validateForceEnrichmentRequest()` | High - input validation |
+| `services/perplexity.ts` | `fetchAbvFromPerplexity()` | Medium - external API (mock tests) |
 
 Example test structure:
 ```typescript
