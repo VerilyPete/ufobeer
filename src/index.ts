@@ -2132,6 +2132,11 @@ async function fetchAbvFromPerplexity(
         ],
         max_tokens: 50,
         temperature: 0.1,
+        // Explicitly enable web search - "low" is most cost-effective for simple ABV lookups
+        // Pricing: $5 per 1K requests (low), $8 (medium), $12 (high)
+        web_search_options: {
+          search_context_size: 'low',
+        },
       }),
     });
 
