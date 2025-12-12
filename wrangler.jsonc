@@ -28,7 +28,11 @@
 				"max_batch_size": 1,
 				"max_batch_timeout": 30,
 				"max_retries": 3,
-				"max_concurrency": 10,
+				// Reduced from 10 to 1 to avoid Perplexity rate limits (429 errors)
+				// Single consumer processes one message at a time with delays
+				"max_concurrency": 1,
+				// Add retry delay to spread out retries (seconds)
+				"retry_delay": 60,
 				"dead_letter_queue": "beer-enrichment-dlq",
 			},
 			// DLQ consumer - stores failed messages to D1 for admin inspection

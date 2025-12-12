@@ -2027,10 +2027,19 @@ async function handleEnrichmentBatch(
     return;
   }
 
+  // Delay between API calls to avoid rate limits (Perplexity allows ~50-100 RPM)
+  const API_DELAY_MS = 2000; // 2 seconds between calls = 30 requests/minute max
+
   // Process messages one at a time with atomic reservation
-  for (const message of batch.messages) {
+  for (let i = 0; i < batch.messages.length; i++) {
+    const message = batch.messages[i];
     const { beerId, beerName, brewer } = message.body;
     const enrichmentStartTime = Date.now();
+
+    // Add delay between API calls (skip delay for first message)
+    if (i > 0) {
+      await new Promise(resolve => setTimeout(resolve, API_DELAY_MS));
+    }
 
     try {
       // Layer 1: Atomic reservation - reserve slot BEFORE API call
@@ -2091,7 +2100,17 @@ async function handleEnrichmentBatch(
 
       // Note: Counter was already incremented via reservation
       // This is intentional - we want to track failed API calls too
-      message.retry();
+
+      // Check if this is a rate limit error (429) - use longer delay
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('429')) {
+        // Rate limited - retry after 2 minutes to let the rate limit window reset
+        console.log(`Rate limited for ${beerId}, retrying in 120 seconds`);
+        message.retry({ delaySeconds: 120 });
+      } else {
+        // Other errors - use default retry delay (60 seconds from wrangler.jsonc)
+        message.retry();
+      }
     }
   }
 }
