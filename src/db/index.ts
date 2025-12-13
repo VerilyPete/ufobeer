@@ -4,4 +4,5 @@
  */
 
 export { insertPlaceholders, extractABV } from './helpers';
+export type { InsertPlaceholdersResult } from './helpers';
 export { getEnrichmentQuotaStatus } from './quota';

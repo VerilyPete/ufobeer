@@ -17,6 +17,7 @@ import type {
 } from '../types';
 import { isValidBeer, hasBeerStock } from '../types';
 import { insertPlaceholders } from '../db';
+import { queueBeersForEnrichment } from '../queue';
 
 // ============================================================================
 // Beer List Handler (GET /beers)
@@ -106,7 +107,22 @@ export async function handleBeerList(
       brewer: beer.brewer,
       brew_description: beer.brew_description,
     }));
-    ctx.waitUntil(insertPlaceholders(env.DB, beersForPlaceholders, reqCtx.requestId));
+    ctx.waitUntil(
+      insertPlaceholders(env.DB, beersForPlaceholders, reqCtx.requestId)
+        .then(result => {
+          if (result.needsEnrichment.length > 0) {
+            return queueBeersForEnrichment(env, result.needsEnrichment, reqCtx.requestId);
+          }
+          return { queued: 0, skipped: 0 };
+        })
+        .catch(err => {
+          console.error(JSON.stringify({
+            event: 'background_enrichment_error',
+            requestId: reqCtx.requestId,
+            error: err instanceof Error ? err.message : String(err),
+          }));
+        })
+    );
 
     return {
       response: Response.json({

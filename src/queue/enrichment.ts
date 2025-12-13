@@ -83,6 +83,18 @@ export async function handleEnrichmentBatch(
   for (let i = 0; i < batch.messages.length; i++) {
     const message = batch.messages[i];
     const { beerId, beerName, brewer } = message.body;
+
+    // Check if beer already has ABV (from description parsing or previous enrichment)
+    const existing = await env.DB.prepare(
+      'SELECT abv FROM enriched_beers WHERE id = ?'
+    ).bind(beerId).first<{ abv: number | null }>();
+
+    if (existing !== null && existing.abv !== null) {
+      console.log(`[enrichment] Skipping ${beerId}: already has ABV`);
+      message.ack();
+      continue;
+    }
+
     const enrichmentStartTime = Date.now();
 
     // Add delay between API calls (skip delay for first message)

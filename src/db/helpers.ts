@@ -4,6 +4,20 @@
  */
 
 /**
+ * Result of inserting placeholder records for beers.
+ * Used to track which beers need Perplexity enrichment.
+ */
+export interface InsertPlaceholdersResult {
+  totalSynced: number;
+  withAbv: number;
+  needsEnrichment: Array<{
+    id: string;
+    brew_name: string;
+    brewer: string;
+  }>;
+}
+
+/**
  * Extract ABV percentage from beer description HTML.
  * Returns null if no valid ABV found.
  *
@@ -64,16 +78,16 @@ export async function insertPlaceholders(
   db: D1Database,
   beers: Array<{ id: string; brew_name: string; brewer: string; brew_description?: string }>,
   requestId: string
-): Promise<void> {
+): Promise<InsertPlaceholdersResult> {
   if (beers.length === 0) {
-    return;
+    return { totalSynced: 0, withAbv: 0, needsEnrichment: [] };
   }
 
   const CHUNK_SIZE = 25; // D1 has limits on batched operations
   const now = Date.now();
 
   let withAbv = 0;
-  let withoutAbv = 0;
+  const needsEnrichment: Array<{ id: string; brew_name: string; brewer: string }> = [];
 
   for (let i = 0; i < beers.length; i += CHUNK_SIZE) {
     const chunk = beers.slice(i, i + CHUNK_SIZE);
@@ -108,7 +122,7 @@ export async function insertPlaceholders(
       if (abv !== null) {
         withAbv++;
       } else {
-        withoutAbv++;
+        needsEnrichment.push({ id: b.id, brew_name: b.brew_name, brewer: b.brewer });
       }
       // Confidence 0.9 for description-extracted ABV (reliable but not verified)
       // NULL confidence for beers needing enrichment
@@ -128,5 +142,7 @@ export async function insertPlaceholders(
     }
   }
 
-  console.log(`[insertPlaceholders] Synced ${beers.length} beers (${withAbv} with ABV, ${withoutAbv} need enrichment), requestId=${requestId}`);
+  console.log(`[insertPlaceholders] Synced ${beers.length} beers (${withAbv} with ABV, ${needsEnrichment.length} need enrichment), requestId=${requestId}`);
+
+  return { totalSynced: beers.length, withAbv, needsEnrichment };
 }

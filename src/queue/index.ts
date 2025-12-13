@@ -10,3 +10,4 @@
 
 export { handleEnrichmentBatch } from './enrichment';
 export { handleDlqBatch } from './dlq';
+export { queueBeersForEnrichment } from './helpers';
