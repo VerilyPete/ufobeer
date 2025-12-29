@@ -35,9 +35,11 @@ export async function fetchAbvFromPerplexity(
     return null;
   }
 
+  // Include style hint for better search results on obscure beers
+  // e.g., "Entropic IPA" -> search includes "IPA" which helps find typical ABV ranges
   const prompt = brewer
-    ? `What is the ABV (alcohol by volume) percentage of "${beerName}" by ${brewer}? Reply with ONLY the numeric ABV value (e.g., "5.5" or "8.0"). If you cannot find reliable information, reply with "unknown".`
-    : `What is the ABV (alcohol by volume) percentage of "${beerName}"? Reply with ONLY the numeric ABV value (e.g., "5.5" or "8.0"). If you cannot find reliable information, reply with "unknown".`;
+    ? `What is the ABV (alcohol by volume) percentage of the beer "${beerName}" by ${brewer}? Search Untappd, BeerAdvocate, or the brewery's website. Reply with ONLY a single number (e.g., 5.5). If multiple versions exist, use the most recent. If unknown, reply "unknown". Do not explain.`
+    : `What is the ABV (alcohol by volume) percentage of the beer "${beerName}"? Search Untappd, BeerAdvocate, or the brewery's website. Reply with ONLY a single number (e.g., 5.5). If multiple versions exist, use the most recent. If unknown, reply "unknown". Do not explain.`;
 
   try {
     const response = await fetch('https://api.perplexity.ai/chat/completions', {
@@ -58,12 +60,13 @@ export async function fetchAbvFromPerplexity(
             content: prompt,
           },
         ],
-        max_tokens: 50,
+        max_tokens: 100,
         temperature: 0.1,
-        // Explicitly enable web search - "low" is most cost-effective for simple ABV lookups
+        // Enable web search with medium context for better results on obscure beers
         // Pricing: $5 per 1K requests (low), $8 (medium), $12 (high)
+        // Using medium because low often fails for small craft breweries
         web_search_options: {
-          search_context_size: 'low',
+          search_context_size: 'medium',
         },
       }),
     });
