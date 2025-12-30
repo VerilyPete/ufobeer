@@ -13,13 +13,34 @@ CREATE TABLE IF NOT EXISTS enriched_beers (
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
     last_seen_at INTEGER,                          -- When beer was last on a taplist
     last_verified_at INTEGER DEFAULT NULL,
-    is_verified INTEGER DEFAULT 0
+    is_verified INTEGER DEFAULT 0,
+    -- Description cleanup columns (LLM-based pipeline)
+    brew_description_original TEXT,                -- Raw description from Flying Saucer API
+    brew_description_cleaned TEXT,                 -- Cleaned version after LLM processing
+    description_hash TEXT,                         -- SHA-256 hash (truncated) for change detection
+    description_cleaned_at INTEGER,                -- Timestamp when cleanup was performed
+    cleanup_source TEXT,                           -- 'workers-ai' | 'groq' | NULL (not yet cleaned)
+    queued_for_cleanup_at INTEGER                  -- When beer was queued for cleanup (prevents re-queueing)
 );
 
 CREATE INDEX IF NOT EXISTS idx_beer_name ON enriched_beers(brew_name);
 CREATE INDEX IF NOT EXISTS idx_brewer ON enriched_beers(brewer);
 CREATE INDEX IF NOT EXISTS idx_needs_enrichment ON enriched_beers(abv) WHERE abv IS NULL;
 CREATE INDEX IF NOT EXISTS idx_source_last_seen ON enriched_beers(enrichment_source, last_seen_at);
+
+-- Partial index for efficient "missing cleanup" queries
+-- Used by POST /admin/cleanup/trigger with mode=missing
+-- Excludes beers already queued for cleanup to prevent re-queueing
+CREATE INDEX IF NOT EXISTS idx_beers_missing_cleanup
+ON enriched_beers(id)
+WHERE brew_description_original IS NOT NULL
+  AND brew_description_cleaned IS NULL
+  AND queued_for_cleanup_at IS NULL;
+
+-- Partial index for recently queued beers (from migration 0004)
+CREATE INDEX IF NOT EXISTS idx_enriched_beers_queued_cleanup
+ON enriched_beers(queued_for_cleanup_at)
+WHERE queued_for_cleanup_at IS NOT NULL;
 
 -- ============================================================================
 -- system_state: Key-value store for locks and configuration
@@ -127,3 +148,30 @@ CREATE INDEX IF NOT EXISTS idx_dlq_replayed_at ON dlq_messages(replayed_at);
 
 -- Index for cursor-based pagination
 CREATE INDEX IF NOT EXISTS idx_dlq_status_failed_id ON dlq_messages(status, failed_at, id);
+
+-- ============================================================================
+-- Description Cleanup Columns (added to enriched_beers)
+-- ============================================================================
+-- These columns support the LLM-based description cleanup pipeline.
+-- brew_description_original: Raw description from Flying Saucer API
+-- brew_description_cleaned: Cleaned version after LLM processing
+-- description_hash: MD5 hash for change detection
+-- description_cleaned_at: Timestamp when cleanup was performed
+-- cleanup_source: 'workers-ai' | 'groq' | NULL (not yet cleaned)
+
+-- Note: Run these ALTER TABLE statements manually for existing databases:
+-- ALTER TABLE enriched_beers ADD COLUMN brew_description_original TEXT;
+-- ALTER TABLE enriched_beers ADD COLUMN brew_description_cleaned TEXT;
+-- ALTER TABLE enriched_beers ADD COLUMN description_hash TEXT;
+-- ALTER TABLE enriched_beers ADD COLUMN description_cleaned_at INTEGER;
+-- ALTER TABLE enriched_beers ADD COLUMN cleanup_source TEXT;
+
+-- ============================================================================
+-- cleanup_limits: Quota tracking for Workers AI cleanup calls
+-- ============================================================================
+-- Tracks daily request counts to enforce spending limits on LLM inference
+CREATE TABLE IF NOT EXISTS cleanup_limits (
+    date TEXT PRIMARY KEY,          -- "2025-01-15" format
+    request_count INTEGER NOT NULL DEFAULT 0,
+    last_updated INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
+);

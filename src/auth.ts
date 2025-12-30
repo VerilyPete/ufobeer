@@ -56,6 +56,13 @@ export async function validateApiKey(
   const apiKey = request.headers.get('X-API-Key');
 
   if (!apiKey) {
+    console.warn(JSON.stringify({
+      event: 'auth_failed',
+      reason: 'missing_api_key',
+      requestId: reqCtx.requestId,
+      clientIp: reqCtx.clientIp,
+      userAgent: reqCtx.userAgent,
+    }));
     return false;
   }
 
@@ -64,6 +71,15 @@ export async function validateApiKey(
   if (isValid) {
     // Store hashed API key in context for audit logging
     reqCtx.apiKeyHash = await hashApiKey(apiKey);
+  } else {
+    console.warn(JSON.stringify({
+      event: 'auth_failed',
+      reason: 'invalid_api_key',
+      requestId: reqCtx.requestId,
+      clientIp: reqCtx.clientIp,
+      userAgent: reqCtx.userAgent,
+      apiKeyPrefix: apiKey.substring(0, 4) + '...', // First 4 chars for debugging
+    }));
   }
 
   return isValid;

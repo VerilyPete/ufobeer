@@ -18,10 +18,22 @@ export {
 } from './dlq';
 
 // Beer handlers
-export { handleBeerList, handleBatchLookup } from './beers';
+export {
+  handleBeerList,
+  handleBatchLookup,
+  handleBeerSync,
+  validateBeerInput,
+  syncBeersWithBatchHandling,
+} from './beers';
+
+// Beer handler types (for testing)
+export type { BeerValidationResult, SyncBatchResult } from './beers';
 
 // Health handler
 export { handleHealthCheck } from './health';
 
 // Scheduled handler
 export { handleScheduledEnrichment } from './scheduled';
+
+// Cleanup trigger handler
+export { handleCleanupTrigger } from './cleanupTrigger';

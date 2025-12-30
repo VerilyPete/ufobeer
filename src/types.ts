@@ -13,6 +13,12 @@ export interface Env {
   // Queue (from Phase 1) - used for enrichment and DLQ replay
   ENRICHMENT_QUEUE: Queue<EnrichmentMessage>;
 
+  // Queue for description cleanup (LLM-based)
+  CLEANUP_QUEUE: Queue<CleanupMessage>;
+
+  // Workers AI binding for description cleanup
+  AI: Ai;
+
   // Analytics Engine (optional - graceful degradation if not configured)
   ANALYTICS?: AnalyticsEngineDataset;
 
@@ -30,6 +36,10 @@ export interface Env {
   DAILY_ENRICHMENT_LIMIT?: string;
   MONTHLY_ENRICHMENT_LIMIT?: string;
   ENRICHMENT_ENABLED?: string;
+
+  // Cleanup limits (optional)
+  DAILY_CLEANUP_LIMIT?: string;
+  MAX_CLEANUP_CONCURRENCY?: string;
 }
 
 // ============================================================================
@@ -44,6 +54,18 @@ export interface EnrichmentMessage {
   beerId: string;
   beerName: string;
   brewer: string;
+}
+
+/**
+ * Message format for description cleanup queue.
+ * Sent from API → Queue → Consumer → Workers AI → Database update.
+ * If ABV cannot be extracted after cleanup, forwards to enrichment queue.
+ */
+export interface CleanupMessage {
+  beerId: string;
+  beerName: string;
+  brewer: string;
+  brewDescription: string;
 }
 
 // ============================================================================
@@ -273,6 +295,8 @@ export interface ErrorResponseOptions {
   requestId: string;
   headers: Record<string, string>;
   status?: number;
+  /** Additional fields to include in the error response */
+  extra?: Record<string, unknown>;
 }
 
 /**
@@ -314,4 +338,150 @@ export function hasBeerStock(item: unknown): item is { brewInStock: unknown[] } 
     'brewInStock' in item &&
     Array.isArray((item as { brewInStock?: unknown }).brewInStock)
   );
+}
+
+// ============================================================================
+// Beer Sync Types (Batch Endpoint Enhancement)
+// ============================================================================
+
+/**
+ * Request body for POST /beers/sync.
+ * Accepts beer data from mobile client for syncing to enriched_beers table.
+ */
+export interface SyncBeersRequest {
+  beers: Array<{
+    id: string;
+    brew_name: string;
+    brewer?: string;
+    brew_description?: string;
+  }>;
+}
+
+/**
+ * Response for POST /beers/sync.
+ * Returns counts of synced and queued beers.
+ */
+export interface SyncBeersResponse {
+  synced: number;
+  queued_for_cleanup: number;
+  requestId: string;
+  errors?: string[];
+}
+
+/**
+ * Updated response type for POST /beers/batch.
+ * Now includes missing IDs and merged descriptions (consistent with GET /beers).
+ * Field names aligned with mobile app expectations.
+ */
+export interface BatchLookupResponse {
+  enrichments: Record<string, {
+    enriched_abv: number | null;
+    enrichment_confidence: number;
+    enrichment_source: string | null;
+    is_verified: boolean;
+    /** Merged description: prefers cleaned version, falls back to original (like GET /beers) */
+    brew_description: string | null;
+    /** True if the brew_description came from the cleaned version */
+    has_cleaned_description: boolean;
+  }>;
+  missing: string[];
+  requestId: string;
+}
+
+/**
+ * Constants for sync endpoint validation.
+ */
+export const SYNC_CONSTANTS = {
+  MAX_BATCH_SIZE: 50,
+  MAX_DESC_LENGTH: 2000,
+  MAX_BREW_NAME_LENGTH: 200,
+  MAX_ID_LENGTH: 50,
+  RATE_LIMIT_RPM: 10,
+  REQUEUE_COOLDOWN_MS: 24 * 60 * 60 * 1000, // 24 hours
+} as const;
+
+// ============================================================================
+// Cleanup Trigger Types
+// ============================================================================
+
+/**
+ * Request body for POST /admin/cleanup/trigger
+ */
+export interface TriggerCleanupRequest {
+  /** Operation mode: 'all' resets and re-queues, 'missing' only queues unprocessed */
+  mode: 'all' | 'missing';
+  /** Max beers to process (1-500, default 500) */
+  limit?: number;
+  /** Preview without making changes */
+  dry_run?: boolean;
+  /** Required for mode: 'all' to prevent accidents */
+  confirm?: boolean;
+}
+
+/**
+ * Preview data returned when confirm is missing for mode: 'all'
+ */
+export interface CleanupPreview {
+  /** Number of beers that would have cleanup fields reset */
+  beers_would_reset: number;
+  /** Number of beers that would be skipped (blocklisted) */
+  beers_would_skip: number;
+  /** Total beers matching criteria */
+  beers_total: number;
+}
+
+/**
+ * Response data for POST /admin/cleanup/trigger
+ */
+export interface TriggerCleanupData {
+  /** Unique operation ID for tracking */
+  operation_id: string;
+  /** Beers sent to queue */
+  beers_queued: number;
+  /** Beers skipped (blocklisted) */
+  beers_skipped: number;
+  /** Beers reset (only present for mode: 'all') */
+  beers_reset?: number;
+  /** Beers matching but not processed (due to limit) */
+  beers_remaining: number;
+  /** Operation mode used */
+  mode: 'all' | 'missing';
+  /** Was this a dry run */
+  dry_run: boolean;
+  /** Present if no beers queued */
+  skip_reason?: 'no_eligible_beers';
+  /** Quota information */
+  quota: {
+    daily: {
+      used: number;
+      limit: number;
+      remaining: number;
+      projected_after: number;
+    };
+  };
+}
+
+/**
+ * Constants for cleanup trigger endpoint.
+ */
+export const CLEANUP_TRIGGER_CONSTANTS = {
+  /** Maximum beers per trigger request */
+  MAX_LIMIT: 500,
+  /** Default beers per trigger request */
+  DEFAULT_LIMIT: 500,
+  /** Cooldown between trigger operations (5 minutes) */
+  COOLDOWN_MS: 5 * 60 * 1000,
+  /** system_state key for cooldown tracking */
+  COOLDOWN_KEY: 'cleanup_trigger_last_run',
+  /** D1 batch size limit for database operations */
+  D1_BATCH_SIZE: 100,
+} as const;
+
+/**
+ * Validation result for cleanup trigger request.
+ */
+export interface CleanupTriggerValidationResult {
+  valid: boolean;
+  error?: string;
+  errorCode?: string;
 }

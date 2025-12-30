@@ -2,6 +2,9 @@
 	"name": "ufobeer",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-01-01",
+	"ai": {
+		"binding": "AI"
+	},
 	"analytics_engine_datasets": [
 		{
 			"binding": "ANALYTICS",
@@ -20,6 +23,10 @@
 			{
 				"queue": "beer-enrichment",
 				"binding": "ENRICHMENT_QUEUE",
+			},
+			{
+				"queue": "description-cleanup",
+				"binding": "CLEANUP_QUEUE",
 			},
 		],
 		"consumers": [
@@ -43,6 +50,25 @@
 				"max_retries": 3,
 				"max_batch_timeout": 60,
 			},
+			// Cleanup consumer - LLM-based description cleanup with Workers AI
+			// max_batch_size: 25 to batch LLM calls efficiently with p-limit concurrency
+			// max_concurrency: 1 - parallelism is within-batch via p-limit
+			{
+				"queue": "description-cleanup",
+				"max_batch_size": 25,
+				"max_batch_timeout": 30,
+				"max_retries": 2,
+				"max_concurrency": 1,
+				"retry_delay": 30,
+				"dead_letter_queue": "description-cleanup-dlq",
+			},
+			// Cleanup DLQ consumer - stores failed cleanup messages to D1
+			{
+				"queue": "description-cleanup-dlq",
+				"max_batch_size": 10,
+				"max_retries": 3,
+				"max_batch_timeout": 60,
+			},
 		],
 	},
 	"vars": {
@@ -52,6 +78,8 @@
 		"DAILY_ENRICHMENT_LIMIT": "500",
 		"MONTHLY_ENRICHMENT_LIMIT": "2000",
 		"ENRICHMENT_ENABLED": "true",
+		"MAX_CLEANUP_CONCURRENCY": "10",
+		"DAILY_CLEANUP_LIMIT": "1000",
 	},
 	"triggers": {
 		"crons": [

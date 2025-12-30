@@ -134,6 +134,7 @@ export function errorResponse(
         code,
       },
       requestId: options.requestId,
+      ...(options.extra ?? {}),
     },
     {
       status: options.status || 400,

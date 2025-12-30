@@ -404,6 +404,43 @@ export interface AdminTriggerMetrics {
 }
 
 /**
+ * Metrics for tracking admin cleanup trigger operations.
+ */
+export interface CleanupTriggerMetrics {
+  action: string;
+  mode: string;
+  beersQueued: number;
+  beersSkipped: number;
+  beersReset: number;
+  durationMs: number;
+  dryRun: boolean;
+}
+
+/**
+ * Track admin cleanup trigger operations.
+ *
+ * Index: "admin:cleanup_trigger" for grouping cleanup trigger operations
+ */
+export function trackCleanupTrigger(
+  analytics: AnalyticsEngineDataset | undefined,
+  metrics: CleanupTriggerMetrics
+): void {
+  safeWriteDataPoint(analytics, {
+    indexes: [metrics.dryRun ? 'dry_run' : 'execute'],
+    blobs: [
+      metrics.action,               // blob1: action (cleanup_trigger)
+      metrics.mode,                 // blob2: mode (all, missing)
+    ],
+    doubles: [
+      metrics.beersQueued,          // double1: beers_queued
+      metrics.beersSkipped,         // double2: beers_skipped
+      metrics.beersReset,           // double3: beers_reset
+      metrics.durationMs,           // double4: duration_ms
+    ],
+  });
+}
+
+/**
  * Track admin enrichment trigger operations.
  *
  * Index: "admin:enrich_trigger" for grouping trigger operations

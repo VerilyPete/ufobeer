@@ -11,6 +11,26 @@
  */
 
 /**
+ * Generate a rate limit key for a specific endpoint.
+ * This enables per-endpoint rate limiting where different endpoints
+ * can have different rate limits without affecting each other.
+ *
+ * @param clientIdentifier - The client's unique identifier (IP or API key hash)
+ * @param endpoint - The endpoint name (e.g., 'sync', 'batch')
+ * @returns A composite key for rate limiting
+ *
+ * @example
+ * ```typescript
+ * const syncKey = getEndpointRateLimitKey('client-hash-123', 'sync');
+ * // Returns: 'client-hash-123:sync'
+ * const rateLimitResult = await checkRateLimit(env.DB, syncKey, 10);
+ * ```
+ */
+export function getEndpointRateLimitKey(clientIdentifier: string, endpoint: string): string {
+  return `${clientIdentifier}:${endpoint}`;
+}
+
+/**
  * Result of a rate limit check.
  */
 export interface RateLimitResult {

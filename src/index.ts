@@ -7,6 +7,7 @@
  * - POST /beers/batch - Batch lookup enrichment data
  * - GET /health - Health check with quota status
  * - POST /admin/enrich/trigger - Manual enrichment trigger
+ * - POST /admin/cleanup/trigger - Manual cleanup trigger
  * - GET /admin/dlq - List DLQ messages
  * - GET /admin/dlq/stats - DLQ statistics
  * - POST /admin/dlq/replay - Replay DLQ messages
@@ -21,6 +22,7 @@ import {
   trackRateLimit,
   trackAdminDlq,
   trackAdminTrigger,
+  trackCleanupTrigger,
 } from './analytics';
 import {
   hashApiKey,
@@ -28,10 +30,10 @@ import {
   authorizeAdmin,
   createRequestContext,
 } from './auth';
-import type { Env, EnrichmentMessage } from './types';
+import type { Env, EnrichmentMessage, CleanupMessage } from './types';
 import { VALID_STORE_IDS } from './config';
 import { getCorsHeaders } from './context';
-import { checkRateLimit } from './rate-limit';
+import { checkRateLimit, getEndpointRateLimitKey } from './rate-limit';
 import { writeAuditLog, writeAdminAuditLog } from './audit';
 import {
   handleEnrichmentTrigger,
@@ -41,10 +43,13 @@ import {
   handleDlqAcknowledge,
   handleBeerList,
   handleBatchLookup,
+  handleBeerSync,
   handleHealthCheck,
   handleScheduledEnrichment,
+  handleCleanupTrigger,
 } from './handlers';
-import { handleEnrichmentBatch, handleDlqBatch } from './queue';
+import { SYNC_CONSTANTS } from './types';
+import { handleEnrichmentBatch, handleCleanupBatch, handleDlqBatch, handleCleanupDlqBatch } from './queue';
 
 // ============================================================================
 // Main Export
@@ -189,6 +194,51 @@ export default {
       return result;
     }
 
+    // Route: POST /beers/sync (with stricter per-endpoint rate limiting)
+    if (url.pathname === '/beers/sync' && request.method === 'POST') {
+      // Sync endpoint has stricter rate limit (10 RPM) independent of other endpoints
+      const syncRateLimitKey = getEndpointRateLimitKey(requestContext.clientIdentifier, 'sync');
+      const syncRateLimitResult = await checkRateLimit(env.DB, syncRateLimitKey, SYNC_CONSTANTS.RATE_LIMIT_RPM);
+
+      if (!syncRateLimitResult.allowed) {
+        trackRateLimit(env.ANALYTICS, requestContext.clientIdentifier, url.pathname);
+        return respond(
+          {
+            error: 'Rate limit exceeded for sync endpoint',
+            requestId: requestContext.requestId,
+            retry_after_seconds: Math.ceil((syncRateLimitResult.resetAt - Date.now()) / 1000)
+          },
+          429,
+          {
+            ...corsHeaders,
+            'X-RateLimit-Limit': String(SYNC_CONSTANTS.RATE_LIMIT_RPM),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': String(Math.floor(syncRateLimitResult.resetAt / 1000)),
+            'Retry-After': String(Math.ceil((syncRateLimitResult.resetAt - Date.now()) / 1000)),
+          },
+          'Rate limited (sync)'
+        );
+      }
+
+      const result = await handleBeerSync(request, env, {
+        ...corsHeaders,
+        ...rateLimitHeaders,
+        // Override rate limit headers with sync-specific values
+        'X-RateLimit-Limit': String(SYNC_CONSTANTS.RATE_LIMIT_RPM),
+        'X-RateLimit-Remaining': String(syncRateLimitResult.remaining),
+        'X-RateLimit-Reset': String(Math.floor(syncRateLimitResult.resetAt / 1000)),
+      }, requestContext);
+      trackRequest(env.ANALYTICS, {
+        endpoint: url.pathname,
+        method: request.method,
+        statusCode: result.status,
+        clientId: requestContext.clientIdentifier,
+        responseTimeMs: Date.now() - requestContext.startTime,
+      });
+      ctx.waitUntil(writeAuditLog(env.DB, requestContext, request.method, url.pathname, result.status));
+      return result;
+    }
+
     // ========================================================================
     // Admin Routes - Require additional ADMIN_SECRET authentication
     // ========================================================================
@@ -279,6 +329,57 @@ export default {
         return result;
       }
 
+      // Route: POST /admin/cleanup/trigger
+      if (url.pathname === '/admin/cleanup/trigger' && request.method === 'POST') {
+        const operationStart = Date.now();
+        const result = await handleCleanupTrigger(request, env, { ...corsHeaders, ...rateLimitHeaders }, requestContext);
+
+        // Extract response data for logging and analytics
+        let beersQueued = 0;
+        let beersSkipped = 0;
+        let beersReset = 0;
+        let mode = 'unknown';
+        let dryRun = false;
+        try {
+          const responseBody = await result.clone().json() as {
+            data?: { beers_queued?: number; beers_skipped?: number; beers_reset?: number; mode?: string; operation_id?: string; dry_run?: boolean }
+          };
+          beersQueued = responseBody.data?.beers_queued ?? 0;
+          beersSkipped = responseBody.data?.beers_skipped ?? 0;
+          beersReset = responseBody.data?.beers_reset ?? 0;
+          mode = responseBody.data?.mode ?? 'unknown';
+          dryRun = responseBody.data?.dry_run ?? false;
+        } catch { /* ignore parse errors */ }
+
+        // Analytics tracking
+        if (env.ANALYTICS) {
+          ctx.waitUntil(
+            Promise.resolve(trackCleanupTrigger(env.ANALYTICS, {
+              action: 'cleanup_trigger',
+              mode,
+              beersQueued,
+              beersSkipped,
+              beersReset,
+              durationMs: Date.now() - operationStart,
+              dryRun,
+            }))
+          );
+        }
+
+        // Audit log
+        ctx.waitUntil(
+          writeAdminAuditLog(env.DB, requestContext, 'cleanup_trigger', {
+            beers_queued: beersQueued,
+            mode,
+            duration_ms: Date.now() - operationStart,
+          }, adminSecretHash)
+        );
+
+        console.log(`[admin] cleanup_trigger completed: beersQueued=${beersQueued}, mode=${mode}, durationMs=${Date.now() - operationStart}, requestId=${requestContext.requestId}`);
+
+        return result;
+      }
+
       // Admin route not found
       return respond(
         { error: 'Admin endpoint not found', requestId: requestContext.requestId },
@@ -302,7 +403,7 @@ export default {
 
   // Queue consumer: Route to appropriate handler based on queue name
   async queue(
-    batch: MessageBatch<EnrichmentMessage>,
+    batch: MessageBatch<EnrichmentMessage | CleanupMessage>,
     env: Env,
     ctx: ExecutionContext
   ): Promise<void> {
@@ -310,9 +411,13 @@ export default {
     console.log(`Queue batch received: messageCount=${batch.messages.length}, queue=${batch.queue}, requestId=${requestId}`);
 
     if (batch.queue === 'beer-enrichment-dlq') {
-      await handleDlqBatch(batch, env, requestId);
+      await handleDlqBatch(batch as MessageBatch<EnrichmentMessage>, env, requestId);
     } else if (batch.queue === 'beer-enrichment') {
-      await handleEnrichmentBatch(batch, env);
+      await handleEnrichmentBatch(batch as MessageBatch<EnrichmentMessage>, env);
+    } else if (batch.queue === 'description-cleanup') {
+      await handleCleanupBatch(batch as MessageBatch<CleanupMessage>, env);
+    } else if (batch.queue === 'description-cleanup-dlq') {
+      await handleCleanupDlqBatch(batch as MessageBatch<CleanupMessage>, env, requestId);
     } else {
       console.warn(`Unknown queue: ${batch.queue}, acknowledging messages to prevent infinite loops`);
       for (const message of batch.messages) {
