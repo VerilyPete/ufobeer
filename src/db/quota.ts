@@ -4,6 +4,7 @@
  */
 
 import type { Env, EnrichmentQuotaStatus } from '../types';
+import { getToday, getMonthStart, getMonthEnd } from '../utils/date';
 
 /**
  * Get enrichment quota status with circuit breaker checks.
@@ -22,12 +23,9 @@ export async function getEnrichmentQuotaStatus(
 ): Promise<EnrichmentQuotaStatus> {
   const dailyLimit = parseInt(env.DAILY_ENRICHMENT_LIMIT || '500');
   const monthlyLimit = parseInt(env.MONTHLY_ENRICHMENT_LIMIT || '2000');
-  const now = new Date();
-  const today = now.toISOString().split('T')[0];
-  const monthStart = today.slice(0, 7) + '-01';
-  // Calculate last day of current month
-  const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const monthEnd = today.slice(0, 7) + '-' + String(lastDayOfMonth).padStart(2, '0');
+  const today = getToday();
+  const monthStart = getMonthStart();
+  const monthEnd = getMonthEnd();
 
   // Layer 3: Kill switch check
   if (env.ENRICHMENT_ENABLED === 'false') {

@@ -9,6 +9,7 @@
  */
 
 import type { Env } from '../types';
+import { MIN_BEER_ABV, MAX_BEER_ABV } from '../constants';
 
 /**
  * Fetch ABV from Perplexity API for a given beer.
@@ -90,8 +91,8 @@ export async function fetchAbvFromPerplexity(
     const abvMatch = content.match(/(\d+\.?\d*)/);
     if (abvMatch) {
       const abv = parseFloat(abvMatch[1]);
-      // Sanity check: ABV should be between 0 and 70
-      if (abv >= 0 && abv <= 70) {
+      // Sanity check: ABV should be within plausible range
+      if (abv >= MIN_BEER_ABV && abv <= MAX_BEER_ABV) {
         return abv;
       }
     }

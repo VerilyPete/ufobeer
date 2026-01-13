@@ -3,6 +3,7 @@
 // ============================================================================
 
 import type { RequestContext } from './types';
+import { AUDIT_CLEANUP_PROBABILITY, AUDIT_RETENTION_DAYS } from './constants';
 
 /**
  * Write an audit log entry for a request.
@@ -42,10 +43,15 @@ export async function writeAuditLog(
       error || null
     ).run();
 
-    // Cleanup old entries (older than 7 days) - 0.1% of requests
-    if (Math.random() < 0.001) {
-      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      await db.prepare('DELETE FROM audit_log WHERE timestamp < ? LIMIT 10000').bind(sevenDaysAgo).run();
+    // Cleanup old entries probabilistically (0.1% of requests)
+    // This approach spreads cleanup load across requests and avoids
+    // coordinated cleanup spikes. The randomness is acceptable because:
+    // 1. Cleanup is idempotent - extra runs are harmless
+    // 2. Missed cleanups are caught on subsequent requests
+    if (Math.random() < AUDIT_CLEANUP_PROBABILITY) {
+      const retentionMs = AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+      const cutoffTime = Date.now() - retentionMs;
+      await db.prepare('DELETE FROM audit_log WHERE timestamp < ? LIMIT 10000').bind(cutoffTime).run();
     }
   } catch (err) {
     console.error('Failed to write audit log:', err);

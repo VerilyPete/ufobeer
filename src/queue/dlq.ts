@@ -11,6 +11,19 @@ import type { Env, EnrichmentMessage, CleanupMessage } from '../types';
 import { trackDlqConsumer } from '../analytics';
 
 /**
+ * Truncate a value for logging to avoid bloating log output.
+ * @param value - Value to truncate (will be stringified if not a string)
+ * @param maxLength - Maximum length before truncation (default 500)
+ */
+function truncateForLog(value: unknown, maxLength = 500): string {
+  const str = typeof value === 'string' ? value : JSON.stringify(value);
+  if (str.length <= maxLength) {
+    return str;
+  }
+  return str.substring(0, maxLength) + '... [truncated]';
+}
+
+/**
  * Handle a batch of messages from the beer-enrichment-dlq queue.
  *
  * Each message represents a failed enrichment attempt that exhausted retries
@@ -41,9 +54,26 @@ export async function handleDlqBatch(
         durationMs: Date.now() - storeStartTime,
       });
 
-      console.log(`DLQ message stored: messageId=${message.id}, beerId=${message.body?.beerId}, attempts=${message.attempts}, requestId=${requestId}`);
+      console.log(JSON.stringify({
+        level: 'info',
+        event: 'dlq.message.stored',
+        messageId: message.id,
+        beerId: message.body?.beerId,
+        attempts: message.attempts,
+        requestId,
+        body: truncateForLog(message.body),
+        timestamp: Date.now(),
+      }));
     } catch (error) {
-      console.error(`Failed to store DLQ message: messageId=${message.id}, error=${String(error)}, requestId=${requestId}`);
+      console.error(JSON.stringify({
+        level: 'error',
+        event: 'dlq.message.store.failed',
+        messageId: message.id,
+        beerId: message.body?.beerId,
+        error: error instanceof Error ? error.message : String(error),
+        requestId,
+        timestamp: Date.now(),
+      }));
 
       // Track failed storage attempt
       trackDlqConsumer(env.ANALYTICS, {
@@ -61,7 +91,13 @@ export async function handleDlqBatch(
     }
   }
 
-  console.log(`DLQ batch processed: processedCount=${batch.messages.length}, requestId=${requestId}`);
+  console.log(JSON.stringify({
+    level: 'info',
+    event: 'dlq.batch.processed',
+    processedCount: batch.messages.length,
+    requestId,
+    timestamp: Date.now(),
+  }));
 }
 
 /**
@@ -71,7 +107,7 @@ export async function handleDlqBatch(
  *
  * @param db - D1 database binding
  * @param message - The queue message to store
- * @param sourceQueue - The queue name the message came from (unused, we hardcode 'beer-enrichment')
+ * @param sourceQueue - The queue name the message came from
  */
 export async function storeDlqMessage(
   db: D1Database,
@@ -100,7 +136,7 @@ export async function storeDlqMessage(
     body.brewer || null,
     now,
     message.attempts,
-    'beer-enrichment', // Original source queue, not the DLQ
+    sourceQueue,
     JSON.stringify(body)
   ).run();
 }
@@ -136,9 +172,26 @@ export async function handleCleanupDlqBatch(
         durationMs: Date.now() - storeStartTime,
       });
 
-      console.log(`Cleanup DLQ message stored: messageId=${message.id}, beerId=${message.body?.beerId}, attempts=${message.attempts}, requestId=${requestId}`);
+      console.log(JSON.stringify({
+        level: 'info',
+        event: 'cleanup.dlq.message.stored',
+        messageId: message.id,
+        beerId: message.body?.beerId,
+        attempts: message.attempts,
+        requestId,
+        body: truncateForLog(message.body),
+        timestamp: Date.now(),
+      }));
     } catch (error) {
-      console.error(`Failed to store cleanup DLQ message: messageId=${message.id}, error=${String(error)}, requestId=${requestId}`);
+      console.error(JSON.stringify({
+        level: 'error',
+        event: 'cleanup.dlq.message.store.failed',
+        messageId: message.id,
+        beerId: message.body?.beerId,
+        error: error instanceof Error ? error.message : String(error),
+        requestId,
+        timestamp: Date.now(),
+      }));
 
       trackDlqConsumer(env.ANALYTICS, {
         beerId: message.body?.beerId || 'unknown',
@@ -153,7 +206,13 @@ export async function handleCleanupDlqBatch(
     }
   }
 
-  console.log(`Cleanup DLQ batch processed: processedCount=${batch.messages.length}, requestId=${requestId}`);
+  console.log(JSON.stringify({
+    level: 'info',
+    event: 'cleanup.dlq.batch.processed',
+    processedCount: batch.messages.length,
+    requestId,
+    timestamp: Date.now(),
+  }));
 }
 
 /**

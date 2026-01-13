@@ -17,6 +17,7 @@
 import type { Env, EnrichmentMessage } from '../types';
 import { fetchAbvFromPerplexity } from '../services/perplexity';
 import { trackEnrichment } from '../analytics';
+import { getToday, getMonthStart, getMonthEnd } from '../utils/date';
 
 /**
  * Handle a batch of messages from the beer-enrichment queue.
@@ -46,9 +47,9 @@ export async function handleEnrichmentBatch(
     return;
   }
 
-  const today = new Date().toISOString().split('T')[0];
-  const monthStart = today.slice(0, 7) + '-01';
-  const monthEnd = today.slice(0, 7) + '-31';
+  const today = getToday();
+  const monthStart = getMonthStart();
+  const monthEnd = getMonthEnd();
   const dailyLimit = parseInt(env.DAILY_ENRICHMENT_LIMIT || '500');
   const monthlyLimit = parseInt(env.MONTHLY_ENRICHMENT_LIMIT || '2000');
 

@@ -1,0 +1,63 @@
+# mixed.artillery.yml - Mixed workload load test
+# Usage: artillery run mixed.artillery.yml
+
+config:
+  target: "{{ $processEnvironment.BASE_URL }}"
+  phases:
+    - duration: 30
+      arrivalRate: 10
+      name: "Warm up"
+    - duration: 120
+      arrivalRate: 30
+      name: "Sustained load"
+    - duration: 30
+      arrivalRate: 10
+      name: "Cool down"
+  defaults:
+    headers:
+      Content-Type: "application/json"
+      X-API-Key: "{{ $processEnvironment.API_KEY }}"
+  processor: "./mixed.functions.js"
+  plugins:
+    expect: {}
+    metrics-by-endpoint: {}
+  ensure:
+    p95: 500
+    maxErrorRate: 5
+
+scenarios:
+  # 10% sync requests
+  - name: "Sync beers"
+    weight: 1
+    flow:
+      - function: "generateBeers"
+      - post:
+          url: "/beers/sync"
+          json:
+            beers: "{{ beers }}"
+          expect:
+            - statusCode:
+                - 200
+                - 429
+
+  # 50% batch requests
+  - name: "Batch lookup"
+    weight: 5
+    flow:
+      - function: "generateBeerIds"
+      - post:
+          url: "/beers/batch"
+          json:
+            ids: "{{ beerIds }}"
+          expect:
+            - statusCode: 200
+
+  # 40% beers list requests
+  - name: "Get beers"
+    weight: 4
+    flow:
+      - function: "selectStoreId"
+      - get:
+          url: "/beers?sid={{ storeId }}"
+          expect:
+            - statusCode: 200

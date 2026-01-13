@@ -5,6 +5,7 @@
 
 import { hashDescription } from '../utils/hash';
 import { shouldSkipEnrichment } from '../config';
+import { D1_MAX_PARAMS_PER_STATEMENT, D1_MAX_STATEMENTS_PER_BATCH } from '../constants';
 
 // ============================================================================
 // Enrichment Data Types
@@ -47,8 +48,8 @@ export async function getEnrichmentForBeerIds(
     return enrichmentMap;
   }
 
-  // D1 has a 100 parameter limit - use 90 for safety margin
-  const CHUNK_SIZE = 90;
+  // D1 has a 100 parameter limit - use constant for safety margin
+  const CHUNK_SIZE = D1_MAX_PARAMS_PER_STATEMENT;
 
   // Build batch of prepared statements
   const statements: D1PreparedStatement[] = [];
@@ -130,6 +131,11 @@ export interface InsertPlaceholdersResult {
     brewer: string;
     brew_description: string;
   }>;
+  /** Beers that failed to process during placeholder insertion */
+  failed: Array<{
+    id: string;
+    error: string;
+  }>;
 }
 
 /**
@@ -180,7 +186,7 @@ export function extractABV(description: string | undefined): number | null {
 /**
  * Insert placeholder records for beers that need enrichment or cleanup.
  * Uses INSERT OR IGNORE so existing beers are not overwritten.
- * Uses chunking to respect D1's parameter limits.
+ * Uses batched queries to respect D1's parameter limits and minimize round trips.
  *
  * IMPORTANT: Now implements description change detection.
  * - If description changed (hash mismatch): Queue for cleanup, NOT Perplexity
@@ -189,6 +195,12 @@ export function extractABV(description: string | undefined): number | null {
  *
  * This syncs beers from Flying Saucer to our enriched_beers table,
  * enabling the trigger endpoint and cron to find beers to enrich.
+ *
+ * Performance: Uses batched queries instead of N+1 pattern.
+ * - Pre-calculates all hashes in parallel
+ * - Batches SELECT queries (90 params per statement, D1 limit)
+ * - Batches INSERT/UPDATE statements (100 statements per batch, D1 limit)
+ * - Reduces from O(2n) to O(4) database round trips
  */
 export async function insertPlaceholders(
   db: D1Database,
@@ -196,7 +208,7 @@ export async function insertPlaceholders(
   requestId: string
 ): Promise<InsertPlaceholdersResult> {
   if (beers.length === 0) {
-    return { totalSynced: 0, withAbv: 0, needsEnrichment: [], needsCleanup: [] };
+    return { totalSynced: 0, withAbv: 0, needsEnrichment: [], needsCleanup: [], failed: [] };
   }
 
   const now = Date.now();
@@ -204,49 +216,158 @@ export async function insertPlaceholders(
   let withAbv = 0;
   const needsEnrichment: Array<{ id: string; brew_name: string; brewer: string }> = [];
   const needsCleanup: Array<{ id: string; brew_name: string; brewer: string; brew_description: string }> = [];
+  const failed: Array<{ id: string; error: string }> = [];
 
-  // Process each beer individually to handle hash comparison
+  // ============================================================================
+  // Step 1: Pre-calculate all description hashes in parallel
+  // ============================================================================
+  const hashPromises = beers.map(async (beer) => ({
+    id: beer.id,
+    hash: beer.brew_description ? await hashDescription(beer.brew_description) : null,
+  }));
+  const beerHashes = await Promise.all(hashPromises);
+  const hashMap = new Map(beerHashes.map((h) => [h.id, h.hash]));
+
+  // ============================================================================
+  // Step 2: Batch SELECT queries for existing records
+  // Reuses the chunking pattern from getEnrichmentForBeerIds
+  // ============================================================================
+  const CHUNK_SIZE = D1_MAX_PARAMS_PER_STATEMENT; // D1 has 100 param limit
+  const existingMap = new Map<string, { description_hash: string | null; abv: number | null }>();
+  const selectStatements: D1PreparedStatement[] = [];
+
+  for (let i = 0; i < beers.length; i += CHUNK_SIZE) {
+    const chunk = beers.slice(i, i + CHUNK_SIZE);
+    const placeholders = chunk.map(() => '?').join(',');
+    selectStatements.push(
+      db
+        .prepare(`SELECT id, description_hash, abv FROM enriched_beers WHERE id IN (${placeholders})`)
+        .bind(...chunk.map((b) => b.id))
+    );
+  }
+
+  try {
+    const selectResults = await db.batch(selectStatements);
+    for (const result of selectResults) {
+      const rows = result.results as
+        | Array<{ id: string; description_hash: string | null; abv: number | null }>
+        | undefined;
+      if (rows) {
+        for (const row of rows) {
+          existingMap.set(row.id, { description_hash: row.description_hash, abv: row.abv });
+        }
+      }
+    }
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: 'insertPlaceholders.select.failed',
+        error: error instanceof Error ? error.message : String(error),
+        requestId,
+        beerCount: beers.length,
+      })
+    );
+    throw error;
+  }
+
+  // ============================================================================
+  // Step 3: Build all INSERT/UPDATE statements based on existing data
+  // ============================================================================
+  const writeStatements: D1PreparedStatement[] = [];
+  // Track which beer ID corresponds to each statement (for failure tracking)
+  const statementToBeerIdMap: string[] = [];
+
   for (const beer of beers) {
-    const descriptionHash = beer.brew_description
-      ? await hashDescription(beer.brew_description)
-      : null;
+    const descriptionHash = hashMap.get(beer.id) ?? null;
+    const existing = existingMap.get(beer.id);
+    const descriptionChanged = descriptionHash !== existing?.description_hash;
 
-    try {
-      // Check if description changed
-      const existing = await db.prepare(
-        'SELECT description_hash, abv FROM enriched_beers WHERE id = ?'
-      ).bind(beer.id).first<{ description_hash: string | null; abv: number | null }>();
+    if (descriptionChanged && beer.brew_description) {
+      // Description changed - queue for cleanup, invalidate old cleaned version
+      needsCleanup.push({
+        id: beer.id,
+        brew_name: beer.brew_name,
+        brewer: beer.brewer,
+        brew_description: beer.brew_description,
+      });
 
-      const descriptionChanged = descriptionHash !== existing?.description_hash;
+      // Update DB: store original description, hash, null out cleaned
+      writeStatements.push(
+        db
+          .prepare(
+            `INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, brew_description_cleaned, last_seen_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             brew_name = excluded.brew_name,
+             brewer = excluded.brewer,
+             brew_description_original = excluded.brew_description_original,
+             description_hash = excluded.description_hash,
+             brew_description_cleaned = NULL,
+             description_cleaned_at = NULL,
+             cleanup_source = NULL,
+             last_seen_at = excluded.last_seen_at,
+             updated_at = excluded.updated_at`
+          )
+          .bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description, descriptionHash, now, now)
+      );
+      statementToBeerIdMap.push(beer.id);
+    } else if (existing?.abv === null) {
+      // Description unchanged (or new beer without description), but ABV still missing
+      // Queue for Perplexity (cleanup already done or not needed)
+      // Skip blocklisted beers (flights, root beer, etc.)
+      if (!shouldSkipEnrichment(beer.brew_name)) {
+        needsEnrichment.push({
+          id: beer.id,
+          brew_name: beer.brew_name,
+          brewer: beer.brewer,
+        });
+      }
 
-      if (descriptionChanged && beer.brew_description) {
-        // Description changed - queue for cleanup, invalidate old cleaned version
+      // Just update last_seen_at for existing beers, or insert new placeholder
+      writeStatements.push(
+        db
+          .prepare(
+            `INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             last_seen_at = excluded.last_seen_at`
+          )
+          .bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description || null, descriptionHash, now, now)
+      );
+      statementToBeerIdMap.push(beer.id);
+    } else if (existing === undefined) {
+      // New beer - try to extract ABV from description
+      const abv = extractABV(beer.brew_description);
+      if (abv !== null) {
+        withAbv++;
+        writeStatements.push(
+          db
+            .prepare(
+              `INSERT INTO enriched_beers (id, brew_name, brewer, abv, confidence, enrichment_source, brew_description_original, description_hash, last_seen_at, updated_at)
+             VALUES (?, ?, ?, ?, 0.9, 'description', ?, ?, ?, ?)`
+            )
+            .bind(beer.id, beer.brew_name, beer.brewer, abv, beer.brew_description || null, descriptionHash, now, now)
+        );
+        statementToBeerIdMap.push(beer.id);
+      } else if (beer.brew_description) {
+        // New beer with description but no ABV - queue for cleanup
         needsCleanup.push({
           id: beer.id,
           brew_name: beer.brew_name,
           brewer: beer.brewer,
           brew_description: beer.brew_description,
         });
-
-        // Update DB: store original description, hash, null out cleaned
-        await db.prepare(`
-          INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, brew_description_cleaned, last_seen_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            brew_name = excluded.brew_name,
-            brewer = excluded.brewer,
-            brew_description_original = excluded.brew_description_original,
-            description_hash = excluded.description_hash,
-            brew_description_cleaned = NULL,
-            description_cleaned_at = NULL,
-            cleanup_source = NULL,
-            last_seen_at = excluded.last_seen_at,
-            updated_at = excluded.updated_at
-        `).bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description, descriptionHash, now, now).run();
-
-      } else if (existing?.abv === null) {
-        // Description unchanged (or new beer without description), but ABV still missing
-        // Queue for Perplexity (cleanup already done or not needed)
+        writeStatements.push(
+          db
+            .prepare(
+              `INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`
+            )
+            .bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description, descriptionHash, now, now)
+        );
+        statementToBeerIdMap.push(beer.id);
+      } else {
+        // New beer without description - queue for Perplexity
         // Skip blocklisted beers (flights, root beer, etc.)
         if (!shouldSkipEnrichment(beer.brew_name)) {
           needsEnrichment.push({
@@ -255,64 +376,66 @@ export async function insertPlaceholders(
             brewer: beer.brewer,
           });
         }
-
-        // Just update last_seen_at for existing beers, or insert new placeholder
-        await db.prepare(`
-          INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            last_seen_at = excluded.last_seen_at
-        `).bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description || null, descriptionHash, now, now).run();
-
-      } else if (existing === null) {
-        // New beer - try to extract ABV from description
-        const abv = extractABV(beer.brew_description);
-        if (abv !== null) {
-          withAbv++;
-          await db.prepare(`
-            INSERT INTO enriched_beers (id, brew_name, brewer, abv, confidence, enrichment_source, brew_description_original, description_hash, last_seen_at, updated_at)
-            VALUES (?, ?, ?, ?, 0.9, 'description', ?, ?, ?, ?)
-          `).bind(beer.id, beer.brew_name, beer.brewer, abv, beer.brew_description || null, descriptionHash, now, now).run();
-        } else if (beer.brew_description) {
-          // New beer with description but no ABV - queue for cleanup
-          needsCleanup.push({
-            id: beer.id,
-            brew_name: beer.brew_name,
-            brewer: beer.brewer,
-            brew_description: beer.brew_description,
-          });
-          await db.prepare(`
-            INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description, descriptionHash, now, now).run();
-        } else {
-          // New beer without description - queue for Perplexity
-          // Skip blocklisted beers (flights, root beer, etc.)
-          if (!shouldSkipEnrichment(beer.brew_name)) {
-            needsEnrichment.push({
-              id: beer.id,
-              brew_name: beer.brew_name,
-              brewer: beer.brewer,
-            });
-          }
-          await db.prepare(`
-            INSERT INTO enriched_beers (id, brew_name, brewer, last_seen_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-          `).bind(beer.id, beer.brew_name, beer.brewer, now, now).run();
-        }
-      } else {
-        // Description unchanged and ABV exists - just update last_seen_at
-        await db.prepare(`
-          UPDATE enriched_beers SET last_seen_at = ? WHERE id = ?
-        `).bind(now, beer.id).run();
+        writeStatements.push(
+          db
+            .prepare(
+              `INSERT INTO enriched_beers (id, brew_name, brewer, last_seen_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)`
+            )
+            .bind(beer.id, beer.brew_name, beer.brewer, now, now)
+        );
+        statementToBeerIdMap.push(beer.id);
       }
-    } catch (error) {
-      console.error(`[insertPlaceholders] Error processing beer ${beer.id}:`, error);
-      // Continue with next beer - don't fail the entire operation
+    } else {
+      // Description unchanged and ABV exists - just update last_seen_at
+      writeStatements.push(db.prepare(`UPDATE enriched_beers SET last_seen_at = ? WHERE id = ?`).bind(now, beer.id));
+      statementToBeerIdMap.push(beer.id);
     }
   }
 
-  console.log(`[insertPlaceholders] Synced ${beers.length} beers (${withAbv} with ABV, ${needsEnrichment.length} need enrichment, ${needsCleanup.length} need cleanup), requestId=${requestId}`);
+  // ============================================================================
+  // Step 4: Execute write statements in batches (D1 limit)
+  // Track individual failures instead of throwing on batch error
+  // ============================================================================
+  const WRITE_BATCH_SIZE = D1_MAX_STATEMENTS_PER_BATCH;
+  for (let i = 0; i < writeStatements.length; i += WRITE_BATCH_SIZE) {
+    const batchEnd = Math.min(i + WRITE_BATCH_SIZE, writeStatements.length);
+    try {
+      await db.batch(writeStatements.slice(i, batchEnd));
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(
+        JSON.stringify({
+          event: 'insertPlaceholders.write.failed',
+          error: errorMessage,
+          requestId,
+          batchIndex: i,
+          batchSize: batchEnd - i,
+        })
+      );
+      // Track all beers in this batch as failed
+      for (let j = i; j < batchEnd; j++) {
+        const beerId = statementToBeerIdMap[j];
+        if (beerId) {
+          failed.push({ id: beerId, error: errorMessage });
+        }
+      }
+    }
+  }
 
-  return { totalSynced: beers.length, withAbv, needsEnrichment, needsCleanup };
+  console.log(
+    JSON.stringify({
+      event: 'insertPlaceholders.complete',
+      totalSynced: beers.length,
+      withAbv,
+      needsEnrichment: needsEnrichment.length,
+      needsCleanup: needsCleanup.length,
+      failed: failed.length,
+      selectBatches: selectStatements.length,
+      writeBatches: Math.ceil(writeStatements.length / WRITE_BATCH_SIZE),
+      requestId,
+    })
+  );
+
+  return { totalSynced: beers.length, withAbv, needsEnrichment, needsCleanup, failed };
 }

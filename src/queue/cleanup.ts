@@ -15,9 +15,14 @@
  * @module queue/cleanup
  */
 
-import type { Env, CleanupMessage } from '../types';
+import type { Env, CleanupMessage, EnrichmentMessage } from '../types';
 import pLimit from 'p-limit';
 import { extractABV } from '../db/helpers';
+import {
+  MIN_CLEANUP_LENGTH_RATIO,
+  MAX_CLEANUP_LENGTH_RATIO,
+  ABV_CONFIDENCE_FROM_DESCRIPTION,
+} from '../constants';
 import {
   withTimeout,
   isCircuitBreakerOpen,
@@ -107,16 +112,6 @@ interface BatchOperations {
 }
 
 /**
- * Message format for Perplexity enrichment queue.
- * Exported for use by Phase 6 handleFallbackBatch.
- */
-export interface EnrichmentMessage {
-  beerId: string;
-  beerName: string;
-  brewer: string;
-}
-
-/**
  * Result from processAIConcurrently for each message.
  */
 export interface AIResult {
@@ -161,39 +156,6 @@ function stripResponsePrefixes(text: string): string {
 
   // Remove any leading newlines/whitespace after stripping prefix
   return result.replace(/^[\s\n]+/, '').trim();
-}
-
-// ============================================================================
-// Quota Management
-// ============================================================================
-
-/**
- * Check if we're within daily cleanup quota.
- * Returns true if we can process more cleanup requests.
- */
-export async function checkCleanupQuota(db: D1Database, limit?: number): Promise<boolean> {
-  const dailyLimit = limit ?? DEFAULT_DAILY_CLEANUP_LIMIT;
-  const today = new Date().toISOString().split('T')[0];
-  const result = await db.prepare(
-    'SELECT request_count FROM cleanup_limits WHERE date = ?'
-  ).bind(today).first<{ request_count: number }>();
-
-  return (result?.request_count ?? 0) < dailyLimit;
-}
-
-/**
- * Increment the daily cleanup quota counter.
- */
-export async function incrementCleanupQuota(db: D1Database): Promise<void> {
-  const today = new Date().toISOString().split('T')[0];
-  const now = Date.now();
-  await db.prepare(`
-    INSERT INTO cleanup_limits (date, request_count, last_updated)
-    VALUES (?, 1, ?)
-    ON CONFLICT(date) DO UPDATE SET
-      request_count = request_count + 1,
-      last_updated = excluded.last_updated
-  `).bind(today, now).run();
 }
 
 // ============================================================================
@@ -265,7 +227,7 @@ async function cleanDescriptionSafely(
   // Validation 2: Length shouldn't change much (only removing HTML artifacts)
   // Tighter bounds since we're only removing artifacts, not rewriting
   const lengthRatio = cleaned.length / original.length;
-  if (lengthRatio < 0.7 || lengthRatio > 1.1) {
+  if (lengthRatio < MIN_CLEANUP_LENGTH_RATIO || lengthRatio > MAX_CLEANUP_LENGTH_RATIO) {
     console.warn(`[cleanup] Length changed too much (ratio=${lengthRatio.toFixed(2)}), using original`);
     return {
       cleaned: original,
@@ -301,7 +263,7 @@ async function cleanDescriptionSafely(
  * @returns Array of AIResult in the same order as input messages
  */
 export async function processAIConcurrently(
-  messages: Message<CleanupMessage>[],
+  messages: readonly Message<CleanupMessage>[],
   ai: Ai,
   maxConcurrent: number,
   options: {
@@ -341,7 +303,7 @@ export async function processAIConcurrently(
         );
 
         const latencyMs = Date.now() - startTime;
-        recordCallLatency(latencyMs, index, totalMessages, beerId);
+        recordCallLatency(latencyMs, index, totalMessages, beerId, maxConcurrent);
 
         return {
           index,
@@ -353,7 +315,7 @@ export async function processAIConcurrently(
         };
       } catch (error) {
         const latencyMs = Date.now() - startTime;
-        recordCallLatency(latencyMs, index, totalMessages, beerId);
+        recordCallLatency(latencyMs, index, totalMessages, beerId, maxConcurrent);
 
         return {
           index,
@@ -399,7 +361,7 @@ export async function processAIConcurrently(
  * Uses pre-extracted ABV from cleanDescriptionSafely to avoid redundant regex.
  */
 function buildBatchOperations(
-  messages: Message<CleanupMessage>[],
+  messages: readonly Message<CleanupMessage>[],
   aiResults: AIResult[],
   env: Env
 ): BatchOperations {
@@ -492,7 +454,7 @@ function buildBatchOperations(
             description_cleaned_at = ?,
             cleanup_source = ?,
             abv = ?,
-            confidence = 0.9,
+            confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION},
             enrichment_source = 'description'
           WHERE id = ?
         `).bind(
@@ -576,33 +538,6 @@ function logBatchMetrics(metrics: BatchMetrics): void {
 // ============================================================================
 
 /**
- * Handle fallback when quota exceeded or cleanup failed.
- * Tries ABV extraction on original, queues for Perplexity if not found.
- */
-async function handleFallback(
-  env: Env,
-  beerId: string,
-  beerName: string,
-  brewer: string,
-  originalDescription: string
-): Promise<void> {
-  // Try ABV extraction on original
-  const abv = extractABV(originalDescription);
-
-  if (abv !== null) {
-    await env.DB.prepare(`
-      UPDATE enriched_beers SET abv = ?, confidence = 0.9, enrichment_source = 'description'
-      WHERE id = ?
-    `).bind(abv, beerId).run();
-    console.log(`[cleanup:fallback] ${beerId}: ABV extracted from original (${abv}%)`);
-  } else {
-    // Queue for Perplexity
-    await env.ENRICHMENT_QUEUE.send({ beerId, beerName, brewer });
-    console.log(`[cleanup:fallback] ${beerId}: No ABV found, queued for Perplexity`);
-  }
-}
-
-/**
  * Handle messages that cannot use AI (quota exceeded or circuit breaker open).
  *
  * For each message:
@@ -626,7 +561,7 @@ async function handleFallback(
  */
 export async function handleFallbackBatch(
   env: Env,
-  messages: Message<CleanupMessage>[],
+  messages: readonly Message<CleanupMessage>[],
   source: FallbackSource
 ): Promise<void> {
   const now = Date.now();
@@ -696,19 +631,190 @@ export async function handleFallbackBatch(
 }
 
 // ============================================================================
+// Extracted Phase Functions
+// ============================================================================
+
+/**
+ * Result from quota reservation phase.
+ */
+interface QuotaReservationResult {
+  /** Number of messages reserved for AI processing */
+  reserved: number;
+  /** Remaining quota after reservation */
+  remaining: number;
+  /** Messages that can be processed with AI */
+  toProcess: readonly Message<CleanupMessage>[];
+  /** Messages that exceeded quota (need fallback) */
+  quotaExceeded: readonly Message<CleanupMessage>[];
+}
+
+/**
+ * Phase 1: Reserve quota for batch processing.
+ *
+ * Atomically reserves quota slots to prevent race conditions between
+ * concurrent queue consumers. Messages that exceed quota are returned
+ * separately for fallback processing.
+ *
+ * @param db - D1 database instance
+ * @param messages - Queue messages to process
+ * @param dailyLimit - Maximum daily cleanup limit
+ * @returns Quota reservation result with split message arrays
+ * @throws Error if quota reservation fails (caller should retry all messages)
+ */
+async function reserveQuotaForBatch(
+  db: D1Database,
+  messages: readonly Message<CleanupMessage>[],
+  dailyLimit: number
+): Promise<QuotaReservationResult> {
+  const { reserved, remaining } = await reserveCleanupQuotaBatch(
+    db,
+    messages.length,
+    dailyLimit
+  );
+
+  console.log('[cleanup] Quota reservation', {
+    requested: messages.length,
+    reserved,
+    remaining,
+  });
+
+  return {
+    reserved,
+    remaining,
+    toProcess: messages.slice(0, reserved),
+    quotaExceeded: messages.slice(reserved),
+  };
+}
+
+/**
+ * Phase 1b: Handle messages that exceeded quota with fallback processing.
+ *
+ * Processes quota-exceeded messages using regex-only ABV extraction
+ * (no AI cleanup). Acknowledges messages on success, retries on failure.
+ *
+ * @param env - Worker environment bindings
+ * @param quotaExceeded - Messages that exceeded quota
+ */
+async function handleQuotaExceededMessages(
+  env: Env,
+  quotaExceeded: readonly Message<CleanupMessage>[]
+): Promise<void> {
+  if (quotaExceeded.length === 0) return;
+
+  console.log(`[cleanup] ${quotaExceeded.length} messages exceeded quota, using fallback`);
+  try {
+    await handleFallbackBatch(env, quotaExceeded, 'fallback-quota-exceeded');
+    for (const msg of quotaExceeded) {
+      msg.ack();
+    }
+  } catch (error) {
+    console.error('[cleanup] Fallback batch failed:', error);
+    for (const msg of quotaExceeded) {
+      msg.retry();
+    }
+  }
+}
+
+/**
+ * Phase 5: Execute D1 batch update with retry logic.
+ *
+ * Wraps batchUpdateWithRetry and handles failure by retrying all messages.
+ * Returns true if batch succeeded, false if all messages should be retried.
+ *
+ * @param db - D1 database instance
+ * @param statements - Prepared D1 statements to execute
+ * @param messages - Original messages (for retry on failure)
+ * @returns true if successful, false if messages should be retried
+ */
+async function executeDatabaseBatch(
+  db: D1Database,
+  statements: D1PreparedStatement[],
+  messages: readonly Message<CleanupMessage>[]
+): Promise<boolean> {
+  if (statements.length === 0) return true;
+
+  try {
+    await batchUpdateWithRetry(db, statements);
+    return true;
+  } catch (dbError) {
+    console.error('[cleanup] Batch D1 update failed after retries:', dbError);
+    // Retry ALL messages if DB fails after retries
+    // This is acceptable because D1 failures are rare and quota double-consumption
+    // is bounded to one batch worth (~25 calls)
+    for (const msg of messages) {
+      msg.retry();
+    }
+    return false;
+  }
+}
+
+/**
+ * Phase 6: Queue messages to Perplexity enrichment queue.
+ *
+ * Sends messages for beers without ABV to the Perplexity enrichment queue.
+ * Logs errors but does not fail - cron job will pick up unenriched beers later.
+ *
+ * @param queue - Enrichment queue binding
+ * @param perplexityMessages - Messages to queue for Perplexity
+ */
+async function queueForPerplexityEnrichment(
+  queue: Queue<EnrichmentMessage>,
+  perplexityMessages: EnrichmentMessage[]
+): Promise<void> {
+  if (perplexityMessages.length === 0) return;
+
+  try {
+    await queue.sendBatch(
+      perplexityMessages.map(msg => ({ body: msg }))
+    );
+    console.log(`[cleanup] Queued ${perplexityMessages.length} messages for Perplexity enrichment`);
+  } catch (queueError) {
+    // Log but don't fail - cron job will pick up unenriched beers later
+    console.error('[cleanup] Failed to queue Perplexity messages:', queueError);
+  }
+}
+
+/**
+ * Phase 7: Acknowledge or retry messages based on processing results.
+ *
+ * @param ackMessages - Messages to acknowledge (successfully processed)
+ * @param retryMessages - Messages to retry (failed processing)
+ */
+function acknowledgeMessages(
+  ackMessages: readonly Message<CleanupMessage>[],
+  retryMessages: readonly Message<CleanupMessage>[]
+): void {
+  for (const msg of ackMessages) {
+    msg.ack();
+  }
+  for (const msg of retryMessages) {
+    msg.retry();
+  }
+
+  console.log('[cleanup] Batch complete', {
+    acked: ackMessages.length,
+    retried: retryMessages.length,
+  });
+}
+
+// ============================================================================
 // Main Consumer Handler
 // ============================================================================
 
 /**
  * Handle a batch of cleanup queue messages with parallel AI processing.
  *
- * Flow:
+ * Orchestrates the cleanup pipeline through these phases:
  * 1. Reserve quota atomically (prevents race conditions)
- * 2. Process AI calls in parallel with p-limit (maintains N concurrent calls)
- * 3. Build batch operations from results
- * 4. Execute D1 batch update with retry
- * 5. Queue Perplexity messages atomically
- * 6. Ack/retry individual messages based on results
+ * 2. Handle quota-exceeded messages with fallback
+ * 3. Process AI calls in parallel with p-limit
+ * 4. Build batch operations from AI results
+ * 5. Log metrics for observability
+ * 6. Execute D1 batch update with retry
+ * 7. Queue messages for Perplexity enrichment
+ * 8. Acknowledge/retry messages based on results
+ *
+ * Each phase is extracted into a focused function for testability and clarity.
  *
  * @param batch - Queue message batch from Cloudflare
  * @param env - Worker environment bindings
@@ -734,14 +840,9 @@ export async function handleCleanupBatch(
   // ============================================================
   // Phase 1: Reserve quota atomically
   // ============================================================
-  let reserved: number;
-  let remaining: number;
+  let quotaResult: QuotaReservationResult;
   try {
-    ({ reserved, remaining } = await reserveCleanupQuotaBatch(
-      env.DB,
-      batch.messages.length,
-      dailyLimit
-    ));
+    quotaResult = await reserveQuotaForBatch(env.DB, batch.messages, dailyLimit);
   } catch (error) {
     console.error('[cleanup] Quota reservation failed:', error);
     for (const msg of batch.messages) {
@@ -750,34 +851,13 @@ export async function handleCleanupBatch(
     return;
   }
 
-  console.log('[cleanup] Quota reservation', {
-    requested: batch.messages.length,
-    reserved,
-    remaining,
-  });
-
-  // Split messages: those we can process vs those that exceed quota
-  const toProcess = batch.messages.slice(0, reserved);
-  const quotaExceeded = batch.messages.slice(reserved);
-
-  // Handle quota-exceeded messages with fallback (no AI, just regex extraction)
-  if (quotaExceeded.length > 0) {
-    console.log(`[cleanup] ${quotaExceeded.length} messages exceeded quota, using fallback`);
-    try {
-      await handleFallbackBatch(env, quotaExceeded, 'fallback-quota-exceeded');
-      for (const msg of quotaExceeded) {
-        msg.ack();  // Ack after successful fallback processing
-      }
-    } catch (error) {
-      console.error('[cleanup] Fallback batch failed:', error);
-      for (const msg of quotaExceeded) {
-        msg.retry();
-      }
-    }
-  }
+  // ============================================================
+  // Phase 1b: Handle quota-exceeded messages with fallback
+  // ============================================================
+  await handleQuotaExceededMessages(env, quotaResult.quotaExceeded);
 
   // If no messages to process (all exceeded quota), we're done
-  if (toProcess.length === 0) {
+  if (quotaResult.toProcess.length === 0) {
     console.log('[cleanup] No quota available for batch');
     return;
   }
@@ -785,70 +865,41 @@ export async function handleCleanupBatch(
   // ============================================================
   // Phase 2: Parallel AI calls with p-limit
   // ============================================================
-  const aiResults = await processAIConcurrently(toProcess, env.AI, maxConcurrent);
+  const aiResults = await processAIConcurrently(
+    quotaResult.toProcess,
+    env.AI,
+    maxConcurrent
+  );
 
   // ============================================================
   // Phase 3: Build batch operations from results
   // ============================================================
-  const {
-    dbStatements,
-    perplexityMessages,
-    ackMessages,
-    retryMessages,
-    metrics,
-  } = buildBatchOperations(toProcess, aiResults, env);
+  const operations = buildBatchOperations(quotaResult.toProcess, aiResults, env);
 
   // ============================================================
   // Phase 4: Log metrics
   // ============================================================
-  logBatchMetrics(metrics);
+  logBatchMetrics(operations.metrics);
 
   // ============================================================
   // Phase 5: Execute batch D1 update with retry
   // ============================================================
-  if (dbStatements.length > 0) {
-    try {
-      await batchUpdateWithRetry(env.DB, dbStatements);
-    } catch (dbError) {
-      console.error('[cleanup] Batch D1 update failed after retries:', dbError);
-      // Retry ALL messages if DB fails after retries
-      // This is acceptable because D1 failures are rare and quota double-consumption
-      // is bounded to one batch worth (~25 calls)
-      for (const msg of toProcess) {
-        msg.retry();
-      }
-      return;
-    }
+  const dbSuccess = await executeDatabaseBatch(
+    env.DB,
+    operations.dbStatements,
+    quotaResult.toProcess
+  );
+  if (!dbSuccess) {
+    return; // Messages already retried in executeDatabaseBatch
   }
 
   // ============================================================
-  // Phase 6: Queue Perplexity messages atomically
+  // Phase 6: Queue Perplexity messages
   // ============================================================
-  if (perplexityMessages.length > 0) {
-    try {
-      await env.ENRICHMENT_QUEUE.sendBatch(
-        perplexityMessages.map(msg => ({ body: msg }))
-      );
-      console.log(`[cleanup] Queued ${perplexityMessages.length} messages for Perplexity enrichment`);
-    } catch (queueError) {
-      // Log but don't fail - cron job will pick up unenriched beers later
-      console.error('[cleanup] Failed to queue Perplexity messages:', queueError);
-    }
-  }
+  await queueForPerplexityEnrichment(env.ENRICHMENT_QUEUE, operations.perplexityMessages);
 
   // ============================================================
   // Phase 7: Ack/retry individual messages based on results
   // ============================================================
-  for (const msg of ackMessages) {
-    msg.ack();
-  }
-  for (const msg of retryMessages) {
-    msg.retry();
-  }
-
-  console.log('[cleanup] Batch complete', {
-    acked: ackMessages.length,
-    retried: retryMessages.length,
-    perplexity_queued: perplexityMessages.length,
-  });
+  acknowledgeMessages(operations.ackMessages, operations.retryMessages);
 }

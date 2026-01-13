@@ -21,6 +21,42 @@ import { isValidBeer, hasBeerStock, SYNC_CONSTANTS } from '../types';
 import { insertPlaceholders, getEnrichmentForBeerIds } from '../db';
 import { queueBeersForEnrichment, queueBeersForCleanup } from '../queue';
 import { hashDescription } from '../utils/hash';
+import { isValidStoreId } from '../validation/storeId';
+import { log, logError, logWithContext } from '../utils/log';
+
+// ============================================================================
+// Background Enrichment Processing
+// ============================================================================
+
+/**
+ * Process background enrichment tasks after responding to the client.
+ * This runs in waitUntil to avoid blocking the response.
+ */
+async function processBackgroundEnrichment(
+  env: Env,
+  beers: Array<{ id: string; brew_name: string; brewer: string; brew_description?: string }>,
+  requestId: string
+): Promise<void> {
+  try {
+    const result = await insertPlaceholders(env.DB, beers, requestId);
+
+    if (result.needsCleanup.length > 0) {
+      await queueBeersForCleanup(env, result.needsCleanup, requestId);
+    }
+
+    if (result.needsEnrichment.length > 0) {
+      await queueBeersForEnrichment(env, result.needsEnrichment, requestId);
+    }
+
+    logWithContext(requestId, 'background.enrichment.complete', {
+      cleanup: result.needsCleanup.length,
+      enrichment: result.needsEnrichment.length,
+      failed: result.failed?.length ?? 0,
+    });
+  } catch (error) {
+    logError('background.enrichment.failed', error, { requestId });
+  }
+}
 
 // ============================================================================
 // Beer List Handler (GET /beers)
@@ -43,6 +79,22 @@ export async function handleBeerList(
 ): Promise<GetBeersResult> {
   const upstreamStartTime = Date.now();
 
+  // Validate store ID format
+  if (!isValidStoreId(storeId)) {
+    return {
+      response: new Response(JSON.stringify({
+        error: 'Invalid store ID format',
+        code: 'INVALID_STORE_ID',
+        requestId: reqCtx.requestId
+      }), {
+        status: 400,
+        headers: { ...headers, 'Content-Type': 'application/json' }
+      }),
+      beersReturned: 0,
+      upstreamLatencyMs: 0,
+    };
+  }
+
   try {
     // 1. Fetch from Flying Saucer
     const fsUrl = `${env.FLYING_SAUCER_API_BASE}?sid=${storeId}`;
@@ -53,7 +105,11 @@ export async function handleBeerList(
     const upstreamLatencyMs = Date.now() - upstreamStartTime;
 
     if (!fsResp.ok) {
-      console.error(`Flying Saucer API error: ${fsResp.status}`);
+      logError('upstream.flying_saucer.error', `HTTP ${fsResp.status}`, {
+        requestId: reqCtx.requestId,
+        storeId,
+        status: fsResp.status,
+      });
       return {
         response: new Response(JSON.stringify({ error: 'Upstream Error' }), {
           status: 502,
@@ -101,7 +157,12 @@ export async function handleBeerList(
       };
     });
 
-    console.log(`[beers] Merged ${rawBeers.length} beers: ${cleanedCount} with cleaned descriptions, ${enrichmentMap.size} found in enrichment DB`);
+    logWithContext(reqCtx.requestId, 'beers.merge.complete', {
+      totalBeers: rawBeers.length,
+      cleanedDescriptions: cleanedCount,
+      enrichmentRecords: enrichmentMap.size,
+      storeId,
+    });
 
     // 5. Sync beers to enriched_beers table (background task)
     // This populates the table so cron/trigger can find beers to enrich.
@@ -115,26 +176,7 @@ export async function handleBeerList(
       brew_description: beer.brew_description,
     }));
     ctx.waitUntil(
-      insertPlaceholders(env.DB, beersForPlaceholders, reqCtx.requestId)
-        .then(async result => {
-          // Queue for cleanup (these will NOT be queued for Perplexity yet)
-          // Cleanup consumer handles ABV extraction and Perplexity fallback
-          if (result.needsCleanup.length > 0) {
-            await queueBeersForCleanup(env, result.needsCleanup, reqCtx.requestId);
-          }
-
-          // Queue for Perplexity (only beers that don't need cleanup)
-          if (result.needsEnrichment.length > 0) {
-            await queueBeersForEnrichment(env, result.needsEnrichment, reqCtx.requestId);
-          }
-        })
-        .catch(err => {
-          console.error(JSON.stringify({
-            event: 'background_enrichment_error',
-            requestId: reqCtx.requestId,
-            error: err instanceof Error ? err.message : String(err),
-          }));
-        })
+      processBackgroundEnrichment(env, beersForPlaceholders, reqCtx.requestId)
     );
 
     return {
@@ -148,7 +190,7 @@ export async function handleBeerList(
     };
 
   } catch (error) {
-    console.error('Error in handleBeerList:', error);
+    logError('beers.list.error', error, { requestId: reqCtx.requestId, storeId });
     return {
       response: new Response(JSON.stringify({ error: 'Internal Server Error' }), {
         status: 500,
@@ -246,7 +288,7 @@ export async function handleBatchLookup(
     }, { headers });
 
   } catch (error) {
-    console.error('Error in handleBatchLookup:', error);
+    logError('beers.batch.error', error, { requestId: reqCtx.requestId });
     return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
       status: 500,
       headers: { ...headers, 'Content-Type': 'application/json' }
@@ -492,7 +534,11 @@ export async function handleBeerSync(
     // Combine errors
     const allErrors = [...validationErrors, ...syncResult.errors];
 
-    console.log(`[sync] Synced ${syncResult.succeeded} beers, queued ${needsCleanup.length} for cleanup, requestId=${reqCtx.requestId}`);
+    logWithContext(reqCtx.requestId, 'beers.sync.complete', {
+      synced: syncResult.succeeded,
+      queuedForCleanup: needsCleanup.length,
+      validationErrors: validationErrors.length,
+    });
 
     return Response.json({
       synced: syncResult.succeeded,
@@ -502,7 +548,7 @@ export async function handleBeerSync(
     }, { headers });
 
   } catch (error) {
-    console.error('Error in handleBeerSync:', error);
+    logError('beers.sync.error', error, { requestId: reqCtx.requestId });
     return Response.json(
       { error: 'Internal Server Error', requestId: reqCtx.requestId },
       { status: 500, headers }

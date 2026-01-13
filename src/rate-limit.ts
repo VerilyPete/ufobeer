@@ -83,18 +83,22 @@ export async function checkRateLimit(
   const resetAt = (minuteBucket + 1) * 60000;
 
   try {
-    // Atomic upsert - increment counter
-    await db.prepare(`
+    // Atomic upsert with RETURNING - single query that:
+    // 1. Inserts new record with count=1, OR
+    // 2. Increments existing count on conflict
+    // 3. Returns the count and whether this request is allowed
+    //
+    // Note: Counter may exceed limit when requests arrive concurrently at the
+    // boundary. The excess requests will still be rejected - the counter value
+    // being higher than limit is cosmetic only.
+    const result = await db.prepare(`
       INSERT INTO rate_limits (client_identifier, minute_bucket, request_count)
       VALUES (?, ?, 1)
       ON CONFLICT(client_identifier, minute_bucket)
       DO UPDATE SET request_count = request_count + 1
-    `).bind(clientIdentifier, minuteBucket).run();
-
-    // Check new count
-    const result = await db.prepare(
-      'SELECT request_count FROM rate_limits WHERE client_identifier = ? AND minute_bucket = ?'
-    ).bind(clientIdentifier, minuteBucket).first<{ request_count: number }>();
+      RETURNING request_count
+    `).bind(clientIdentifier, minuteBucket)
+      .first<{ request_count: number }>();
 
     const count = result?.request_count || 1;
 

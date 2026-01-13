@@ -1,0 +1,41 @@
+# sync.artillery.yml - Load test for /beers/sync endpoint
+# Usage: artillery run sync.artillery.yml
+
+config:
+  target: "{{ $processEnvironment.BASE_URL }}"
+  phases:
+    - duration: 30
+      arrivalRate: 5
+      name: "Warm up"
+    - duration: 60
+      arrivalRate: 20
+      name: "Sustained load"
+    - duration: 30
+      arrivalRate: 5
+      name: "Cool down"
+  defaults:
+    headers:
+      Content-Type: "application/json"
+      X-API-Key: "{{ $processEnvironment.API_KEY }}"
+  processor: "./sync.functions.js"
+  plugins:
+    expect: {}
+  ensure:
+    p95: 500
+    maxErrorRate: 5
+
+scenarios:
+  - name: "Sync beers"
+    flow:
+      - function: "generateBeers"
+      - post:
+          url: "/beers/sync"
+          json:
+            beers: "{{ beers }}"
+          capture:
+            - json: "$.synced"
+              as: "syncedCount"
+          expect:
+            - statusCode:
+                - 200
+                - 429

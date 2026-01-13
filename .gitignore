@@ -168,3 +168,6 @@ dist
 .env*
 !.env.example
 .wrangler/
+docs/
+task.md
+remediation/

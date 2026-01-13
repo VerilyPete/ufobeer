@@ -27,6 +27,10 @@ export async function timingSafeCompare(a: string, b: string): Promise<boolean> 
  *
  * Uses SHA-256 hashing and returns first 8 bytes (16 hex chars) as a
  * short identifier for audit logging purposes.
+ *
+ * NOTE: This truncation reduces collision resistance. The 8-byte hash is
+ * intended only for log correlation and debugging, NOT cryptographic
+ * identification. Full hash comparison is done separately via timingSafeCompare.
  */
 export async function hashApiKey(apiKey: string): Promise<string> {
   const encoder = new TextEncoder();

@@ -50,6 +50,27 @@ export async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T
 // ============================================================================
 
 /**
+ * Circuit Breaker Implementation Notes
+ * ====================================
+ *
+ * Circuit breaker state is intentionally stored at module scope.
+ *
+ * IMPORTANT: This state persists across invocations within the same Worker isolate.
+ * - With max_concurrency: 1, state is effectively per-isolate
+ * - Isolates may be recycled, resetting state (acceptable - breaker reopens if needed)
+ * - For true cross-instance coordination, migrate to D1 or Durable Objects
+ *
+ * Current behavior is acceptable because:
+ * 1. Queue has max_concurrency: 1 - single consumer per instance
+ * 2. Breaker resets after BREAKER_RESET_MS anyway
+ * 3. False resets are safe - they just allow retry attempts
+ *
+ * WARNING: With max_concurrency > 1, each isolate maintains independent state.
+ * This means circuit breaker trips are not coordinated across isolates.
+ * For coordinated circuit breaking, migrate to Durable Objects.
+ */
+
+/**
  * Circuit breaker state interface for type safety.
  */
 interface CircuitBreakerState {
@@ -100,12 +121,14 @@ export function isCircuitBreakerOpen(): boolean {
  * @param currentIndex - The index of the current message in the batch
  * @param totalMessages - Total number of messages in the batch
  * @param beerId - The ID of the beer being processed (for debugging)
+ * @param maxConcurrent - Maximum concurrent AI calls (default 10)
  */
 export function recordCallLatency(
   latencyMs: number,
   currentIndex: number,
   totalMessages: number,
-  beerId: string
+  beerId: string,
+  maxConcurrent: number = 10
 ): void {
   if (latencyMs > SLOW_THRESHOLD_MS) {
     breaker.slowCallCount++;
@@ -115,7 +138,7 @@ export function recordCallLatency(
       breaker.lastOpenedAt = Date.now();
       // Approximate in-flight calls: with p-limit, at most maxConcurrent - 1
       // calls are still running when one completes
-      const estimatedInFlight = 9; // maxConcurrent - 1
+      const estimatedInFlight = maxConcurrent - 1;
       console.warn('[cleanup] Circuit breaker opened', {
         slow_call_count: breaker.slowCallCount,
         threshold_ms: SLOW_THRESHOLD_MS,

@@ -1,0 +1,41 @@
+# batch.artillery.yml - Load test for /beers/batch endpoint
+# Usage: artillery run batch.artillery.yml
+
+config:
+  target: "{{ $processEnvironment.BASE_URL }}"
+  phases:
+    - duration: 30
+      arrivalRate: 10
+      name: "Warm up"
+    - duration: 120
+      arrivalRate: 50
+      name: "Sustained load"
+    - duration: 30
+      arrivalRate: 10
+      name: "Cool down"
+  defaults:
+    headers:
+      Content-Type: "application/json"
+      X-API-Key: "{{ $processEnvironment.API_KEY }}"
+  processor: "./batch.functions.js"
+  plugins:
+    expect: {}
+  ensure:
+    p95: 200
+    maxErrorRate: 1
+
+scenarios:
+  - name: "Batch lookup"
+    flow:
+      - function: "generateBeerIds"
+      - post:
+          url: "/beers/batch"
+          json:
+            ids: "{{ beerIds }}"
+          capture:
+            - json: "$.missing"
+              as: "missingIds"
+          expect:
+            - statusCode: 200
+            - hasProperty: "enrichments"
+            - hasProperty: "missing"

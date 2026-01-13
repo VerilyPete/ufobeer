@@ -155,7 +155,7 @@ CREATE INDEX IF NOT EXISTS idx_dlq_status_failed_id ON dlq_messages(status, fail
 -- These columns support the LLM-based description cleanup pipeline.
 -- brew_description_original: Raw description from Flying Saucer API
 -- brew_description_cleaned: Cleaned version after LLM processing
--- description_hash: MD5 hash for change detection
+-- description_hash: SHA-256 hash for change detection
 -- description_cleaned_at: Timestamp when cleanup was performed
 -- cleanup_source: 'workers-ai' | 'groq' | NULL (not yet cleaned)
 
