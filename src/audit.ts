@@ -14,7 +14,7 @@ import { AUDIT_CLEANUP_PROBABILITY, AUDIT_RETENTION_DAYS } from './constants';
  * - Response details (status code, response time)
  * - Optional error message
  *
- * Also performs periodic cleanup of old audit logs (>7 days) on 0.1% of requests.
+ * Also performs periodic cleanup of old audit logs (>30 days) on 0.1% of requests.
  */
 export async function writeAuditLog(
   db: D1Database,
