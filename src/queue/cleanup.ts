@@ -25,12 +25,12 @@ import {
 } from '../constants';
 import {
   withTimeout,
-  isCircuitBreakerOpen,
-  recordCallLatency,
+  defaultCircuitBreaker,
   AI_TIMEOUT_MS,
   batchUpdateWithRetry,
   reserveCleanupQuotaBatch,
 } from './cleanupHelpers';
+import type { CircuitBreaker } from './circuitBreaker';
 
 // ============================================================================
 // Constants
@@ -79,51 +79,68 @@ KEEP EXACTLY as written:
  * whether the original was used, and the extracted ABV to avoid redundant
  * regex execution in the hot path.
  */
-export interface CleanupResult {
-  cleaned: string;
-  usedOriginal: boolean;
-  extractedABV: number | null;
-}
+export type CleanupResult = {
+  readonly cleaned: string;
+  readonly usedOriginal: boolean;
+  readonly extractedABV: number | null;
+};
 
 /**
  * Metrics for a batch of cleanup operations.
  * Used for observability and alerting.
  */
-interface BatchMetrics {
-  totalMessages: number;
-  aiSuccessCount: number;
-  aiFailureCount: number;
-  abvExtractedCount: number;
-  fallbackUsedCount: number;
-  avgLatencyMs: number;
-  circuitBreakerTriggered: boolean;
-}
+type BatchMetrics = {
+  readonly totalMessages: number;
+  readonly aiSuccessCount: number;
+  readonly aiFailureCount: number;
+  readonly abvExtractedCount: number;
+  readonly fallbackUsedCount: number;
+  readonly avgLatencyMs: number;
+  readonly circuitBreakerTriggered: boolean;
+};
 
 /**
  * Operations collected from batch processing.
  * Includes D1 statements, queue messages, and message disposition.
  */
-interface BatchOperations {
-  dbStatements: D1PreparedStatement[];
-  perplexityMessages: EnrichmentMessage[];
-  ackMessages: Message<CleanupMessage>[];
-  retryMessages: Message<CleanupMessage>[];
-  metrics: BatchMetrics;
-}
+type BatchOperations = {
+  readonly dbStatements: readonly D1PreparedStatement[];
+  readonly perplexityMessages: readonly EnrichmentMessage[];
+  readonly ackMessages: readonly Message<CleanupMessage>[];
+  readonly retryMessages: readonly Message<CleanupMessage>[];
+  readonly metrics: BatchMetrics;
+};
 
 /**
  * Result from processAIConcurrently for each message.
+ * Three-way discriminated union: narrow on `success`, then `useFallback`.
  */
-export interface AIResult {
-  index: number;
-  success: boolean;
-  cleaned?: string;
-  usedOriginal?: boolean;
-  extractedABV?: number | null;  // ABV already extracted by cleanDescriptionSafely
-  error?: string;
-  useFallback?: boolean;  // Set when circuit breaker is open
-  latencyMs?: number;
-}
+export type AIResultSuccess = {
+  readonly index: number;
+  readonly success: true;
+  readonly cleaned: string;
+  readonly usedOriginal: boolean;
+  readonly extractedABV: number | null;
+  readonly latencyMs: number;
+};
+
+export type AIResultFallback = {
+  readonly index: number;
+  readonly success: false;
+  readonly useFallback: true;
+  readonly error: string;
+  readonly latencyMs?: number | undefined;
+};
+
+export type AIResultFailure = {
+  readonly index: number;
+  readonly success: false;
+  readonly useFallback?: false | undefined;
+  readonly error: string;
+  readonly latencyMs?: number | undefined;
+};
+
+export type AIResult = AIResultSuccess | AIResultFallback | AIResultFailure;
 
 /**
  * Source of fallback processing.
@@ -269,10 +286,12 @@ export async function processAIConcurrently(
   options: {
     cleanFn?: (description: string, ai: Ai) => Promise<CleanupResult>;
     timeoutMs?: number;
+    breaker?: CircuitBreaker;
   } = {}
 ): Promise<AIResult[]> {
   const cleanFn = options.cleanFn ?? cleanDescriptionSafely;
   const timeoutMs = options.timeoutMs ?? AI_TIMEOUT_MS;
+  const breaker = options.breaker ?? defaultCircuitBreaker;
   // Handle empty message array
   if (messages.length === 0) {
     return [];
@@ -284,7 +303,7 @@ export async function processAIConcurrently(
   const promises = messages.map((msg, index) =>
     limit(async (): Promise<AIResult> => {
       // Check circuit breaker before making AI call (includes half-open logic)
-      if (isCircuitBreakerOpen()) {
+      if (breaker.isOpen()) {
         return {
           index,
           success: false,
@@ -303,7 +322,7 @@ export async function processAIConcurrently(
         );
 
         const latencyMs = Date.now() - startTime;
-        recordCallLatency(latencyMs, index, totalMessages, beerId, maxConcurrent);
+        breaker.recordLatency(latencyMs, index, totalMessages, beerId, maxConcurrent);
 
         return {
           index,
@@ -315,7 +334,7 @@ export async function processAIConcurrently(
         };
       } catch (error) {
         const latencyMs = Date.now() - startTime;
-        recordCallLatency(latencyMs, index, totalMessages, beerId, maxConcurrent);
+        breaker.recordLatency(latencyMs, index, totalMessages, beerId, maxConcurrent);
 
         return {
           index,
@@ -382,6 +401,7 @@ function buildBatchOperations(
 
   for (const result of aiResults) {
     const message = messages[result.index];
+    if (!message) continue;
     const { beerId, beerName, brewer, brewDescription } = message.body;
 
     // Track latency
@@ -390,60 +410,56 @@ function buildBatchOperations(
       latencyCount++;
     }
 
-    // Handle circuit breaker fallback
-    if (result.useFallback) {
-      circuitBreakerTriggered = true;
-      fallbackUsedCount++;
+    // Handle failure cases (fallback and AI errors)
+    if (!result.success) {
+      if (result.useFallback) {
+        // Circuit breaker fallback path
+        circuitBreakerTriggered = true;
+        fallbackUsedCount++;
 
-      // Extract ABV from the original description since AI cleanup is unavailable.
-      // This is a fallback path when the circuit breaker is open or quota is exceeded.
-      // We still attempt ABV extraction via regex on the raw description text.
-      const abv = extractABV(brewDescription);
+        // Extract ABV from the original description since AI cleanup is unavailable.
+        const abv = extractABV(brewDescription);
 
-      if (abv !== null) {
-        abvExtractedCount++;
-        dbStatements.push(
-          env.DB.prepare(`
-            UPDATE enriched_beers SET
-              brew_description_cleaned = ?,
-              description_cleaned_at = ?,
-              cleanup_source = 'fallback-circuit-breaker',
-              abv = ?,
-              confidence = 0.8,
-              enrichment_source = 'description-fallback'
-            WHERE id = ?
-          `).bind(brewDescription, now, abv, beerId)
-        );
-      } else {
-        dbStatements.push(
-          env.DB.prepare(`
-            UPDATE enriched_beers SET
-              brew_description_cleaned = ?,
-              description_cleaned_at = ?,
-              cleanup_source = 'fallback-circuit-breaker'
-            WHERE id = ?
-          `).bind(brewDescription, now, beerId)
-        );
-        perplexityMessages.push({ beerId, beerName, brewer });
+        if (abv !== null) {
+          abvExtractedCount++;
+          dbStatements.push(
+            env.DB.prepare(`
+              UPDATE enriched_beers SET
+                brew_description_cleaned = ?,
+                description_cleaned_at = ?,
+                cleanup_source = 'fallback-circuit-breaker',
+                abv = ?,
+                confidence = 0.8,
+                enrichment_source = 'description-fallback'
+              WHERE id = ?
+            `).bind(brewDescription, now, abv, beerId)
+          );
+        } else {
+          dbStatements.push(
+            env.DB.prepare(`
+              UPDATE enriched_beers SET
+                brew_description_cleaned = ?,
+                description_cleaned_at = ?,
+                cleanup_source = 'fallback-circuit-breaker'
+              WHERE id = ?
+            `).bind(brewDescription, now, beerId)
+          );
+          perplexityMessages.push({ beerId, beerName, brewer });
+        }
+
+        ackMessages.push(message);
+        continue;
       }
 
-      ackMessages.push(message);
-      continue;
-    }
-
-    // Handle AI failure - retry the message
-    if (!result.success) {
+      // AI failure - retry the message
       aiFailureCount++;
       retryMessages.push(message);
       continue;
     }
 
-    // Handle AI success
+    // TS now knows: result is AIResultSuccess
     aiSuccessCount++;
-    const cleaned = result.cleaned!;
-    const usedOriginal = result.usedOriginal!;
-    // Use pre-extracted ABV from cleanDescriptionSafely (avoids redundant regex)
-    const abv = result.extractedABV;
+    const { cleaned, usedOriginal, extractedABV: abv } = result;
 
     if (abv !== null) {
       abvExtractedCount++;
@@ -637,16 +653,16 @@ export async function handleFallbackBatch(
 /**
  * Result from quota reservation phase.
  */
-interface QuotaReservationResult {
+type QuotaReservationResult = {
   /** Number of messages reserved for AI processing */
-  reserved: number;
+  readonly reserved: number;
   /** Remaining quota after reservation */
-  remaining: number;
+  readonly remaining: number;
   /** Messages that can be processed with AI */
-  toProcess: readonly Message<CleanupMessage>[];
+  readonly toProcess: readonly Message<CleanupMessage>[];
   /** Messages that exceeded quota (need fallback) */
-  quotaExceeded: readonly Message<CleanupMessage>[];
-}
+  readonly quotaExceeded: readonly Message<CleanupMessage>[];
+};
 
 /**
  * Phase 1: Reserve quota for batch processing.
@@ -728,13 +744,13 @@ async function handleQuotaExceededMessages(
  */
 async function executeDatabaseBatch(
   db: D1Database,
-  statements: D1PreparedStatement[],
+  statements: readonly D1PreparedStatement[],
   messages: readonly Message<CleanupMessage>[]
 ): Promise<boolean> {
   if (statements.length === 0) return true;
 
   try {
-    await batchUpdateWithRetry(db, statements);
+    await batchUpdateWithRetry(db, [...statements]);
     return true;
   } catch (dbError) {
     console.error('[cleanup] Batch D1 update failed after retries:', dbError);
@@ -759,7 +775,7 @@ async function executeDatabaseBatch(
  */
 async function queueForPerplexityEnrichment(
   queue: Queue<EnrichmentMessage>,
-  perplexityMessages: EnrichmentMessage[]
+  perplexityMessages: readonly EnrichmentMessage[]
 ): Promise<void> {
   if (perplexityMessages.length === 0) return;
 

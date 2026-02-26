@@ -8,6 +8,7 @@
 		"start": "wrangler dev",
 		"test": "vitest",
 		"test:unit": "vitest --config vitest.unit.config.mts",
+		"typecheck:test": "tsc --project test/tsconfig.json --noEmit",
 		"cf-typegen": "wrangler types"
 	},
 	"devDependencies": {

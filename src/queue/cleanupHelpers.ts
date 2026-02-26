@@ -11,14 +11,9 @@
 /** Timeout for individual AI calls in milliseconds */
 export const AI_TIMEOUT_MS = 10_000;
 
-/** Threshold above which an AI call is considered "slow" */
-export const SLOW_THRESHOLD_MS = 5000;
-
-/** Number of slow calls before circuit breaker opens */
-export const SLOW_CALL_LIMIT = 3;
-
-/** Time before circuit breaker resets to half-open state */
-export const BREAKER_RESET_MS = 60_000;
+// Circuit breaker constants are defined in circuitBreaker.ts and re-exported here
+// for backward compatibility with existing consumers.
+export { SLOW_THRESHOLD_MS, SLOW_CALL_LIMIT, BREAKER_RESET_MS } from './circuitBreaker';
 
 // ============================================================================
 // Timeout Helper
@@ -34,14 +29,16 @@ export const BREAKER_RESET_MS = 60_000;
  * @throws Error with message 'AI call timeout' if timeout expires first
  */
 export async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout>;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error('AI call timeout')), ms);
   });
   try {
     return await Promise.race([promise, timeoutPromise]);
   } finally {
-    clearTimeout(timeoutId!);
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
   }
 }
 
@@ -53,126 +50,17 @@ export async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T
  * Circuit Breaker Implementation Notes
  * ====================================
  *
- * Circuit breaker state is intentionally stored at module scope.
+ * The circuit breaker is encapsulated in a factory (see circuitBreaker.ts).
+ * This module-scope singleton persists across invocations within the same
+ * Worker isolate -- intentional for CF Workers with max_concurrency: 1.
  *
- * IMPORTANT: This state persists across invocations within the same Worker isolate.
- * - With max_concurrency: 1, state is effectively per-isolate
- * - Isolates may be recycled, resetting state (acceptable - breaker reopens if needed)
- * - For true cross-instance coordination, migrate to D1 or Durable Objects
- *
- * Current behavior is acceptable because:
- * 1. Queue has max_concurrency: 1 - single consumer per instance
- * 2. Breaker resets after BREAKER_RESET_MS anyway
- * 3. False resets are safe - they just allow retry attempts
- *
- * WARNING: With max_concurrency > 1, each isolate maintains independent state.
- * This means circuit breaker trips are not coordinated across isolates.
- * For coordinated circuit breaking, migrate to Durable Objects.
+ * For true cross-instance coordination, migrate to Durable Objects.
  */
 
-/**
- * Circuit breaker state interface for type safety.
- */
-interface CircuitBreakerState {
-  slowCallCount: number;
-  isOpen: boolean;
-  lastOpenedAt: number;
-  slowBeerIds: string[];  // Track beer IDs that triggered slow calls
-}
+import { createCircuitBreaker } from './circuitBreaker';
+export type { CircuitBreaker } from './circuitBreaker';
 
-/**
- * Module-scope circuit breaker state.
- * Persists across batch invocations in warm Worker isolates.
- * With max_concurrency: 1, the same isolate handles sequential batches.
- */
-const breaker: CircuitBreakerState = {
-  slowCallCount: 0,
-  isOpen: false,
-  lastOpenedAt: 0,
-  slowBeerIds: [],
-};
-
-/**
- * Check if circuit breaker is open, with half-open logic.
- * After BREAKER_RESET_MS, resets to allow one attempt.
- *
- * @returns true if circuit breaker is open and should block AI calls
- */
-export function isCircuitBreakerOpen(): boolean {
-  if (!breaker.isOpen) return false;
-
-  // Half-open: reset after timeout to allow recovery
-  const now = Date.now();
-  if (now - breaker.lastOpenedAt > BREAKER_RESET_MS) {
-    console.log('[cleanup] Circuit breaker half-open, allowing retry');
-    breaker.isOpen = false;
-    breaker.slowCallCount = 0;
-    breaker.slowBeerIds = [];
-    return false;
-  }
-
-  return true;
-}
-
-/**
- * Record call latency and potentially open circuit breaker.
- *
- * @param latencyMs - The latency of the AI call in milliseconds
- * @param currentIndex - The index of the current message in the batch
- * @param totalMessages - Total number of messages in the batch
- * @param beerId - The ID of the beer being processed (for debugging)
- * @param maxConcurrent - Maximum concurrent AI calls (default 10)
- */
-export function recordCallLatency(
-  latencyMs: number,
-  currentIndex: number,
-  totalMessages: number,
-  beerId: string,
-  maxConcurrent: number = 10
-): void {
-  if (latencyMs > SLOW_THRESHOLD_MS) {
-    breaker.slowCallCount++;
-    breaker.slowBeerIds.push(beerId);
-    if (breaker.slowCallCount >= SLOW_CALL_LIMIT && !breaker.isOpen) {
-      breaker.isOpen = true;
-      breaker.lastOpenedAt = Date.now();
-      // Approximate in-flight calls: with p-limit, at most maxConcurrent - 1
-      // calls are still running when one completes
-      const estimatedInFlight = maxConcurrent - 1;
-      console.warn('[cleanup] Circuit breaker opened', {
-        slow_call_count: breaker.slowCallCount,
-        threshold_ms: SLOW_THRESHOLD_MS,
-        triggered_by_beer_ids: breaker.slowBeerIds,
-        opened_at_index: currentIndex,
-        total_messages: totalMessages,
-        remaining_messages: totalMessages - currentIndex - 1,
-        estimated_in_flight: estimatedInFlight,
-        will_reset_after_ms: BREAKER_RESET_MS,
-      });
-    }
-  }
-}
-
-/**
- * Reset circuit breaker state. Exported for testing purposes only.
- * Do not call this in production code.
- */
-export function resetCircuitBreaker(): void {
-  breaker.slowCallCount = 0;
-  breaker.isOpen = false;
-  breaker.lastOpenedAt = 0;
-  breaker.slowBeerIds = [];
-}
-
-/**
- * Get current circuit breaker state. Exported for testing purposes only.
- * Do not call this in production code.
- *
- * @returns A copy of the current circuit breaker state
- */
-export function getCircuitBreakerState(): CircuitBreakerState {
-  return { ...breaker };
-}
+export const defaultCircuitBreaker = createCircuitBreaker();
 
 // ============================================================================
 // Quota Management
@@ -192,7 +80,8 @@ export async function reserveCleanupQuotaBatch(
   requested: number,
   dailyLimit: number
 ): Promise<{ reserved: number; remaining: number }> {
-  const today = new Date().toISOString().split('T')[0];
+  const parts = new Date().toISOString().split('T');
+  const today = parts[0] ?? '';
   const now = Date.now();
 
   // Ensure row exists

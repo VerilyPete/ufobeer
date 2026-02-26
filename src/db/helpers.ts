@@ -14,11 +14,37 @@ import { D1_MAX_PARAMS_PER_STATEMENT, D1_MAX_STATEMENTS_PER_BATCH } from '../con
 /**
  * Enrichment data for a single beer, returned by getEnrichmentForBeerIds.
  */
-export interface BeerEnrichmentData {
-  abv: number | null;
-  confidence: number;
-  source: string | null;
-  brew_description_cleaned: string | null;
+export type BeerEnrichmentData = {
+  readonly abv: number | null;
+  readonly confidence: number;
+  readonly source: string | null;
+  readonly brew_description_cleaned: string | null;
+};
+
+// ============================================================================
+// D1 Row Types
+// ============================================================================
+
+type EnrichmentRow = {
+  readonly id: string;
+  readonly abv: number | null;
+  readonly confidence: number;
+  readonly enrichment_source: string | null;
+  readonly brew_description_cleaned: string | null;
+};
+
+type ExistingBeerRow = {
+  readonly id: string;
+  readonly description_hash: string | null;
+  readonly abv: number | null;
+};
+
+/**
+ * D1 batch results are untyped (D1Result<unknown>); this cast is safe because
+ * the SQL query shape matches the target type.
+ */
+export function asTypedRows<T>(results: unknown): readonly T[] {
+  return (results ?? []) as readonly T[];
 }
 
 // ============================================================================
@@ -72,21 +98,13 @@ export async function getEnrichmentForBeerIds(
     const batchResults = await db.batch(statements);
 
     for (const result of batchResults) {
-      if (result.results) {
-        for (const row of result.results as Array<{
-          id: string;
-          abv: number | null;
-          confidence: number;
-          enrichment_source: string | null;
-          brew_description_cleaned: string | null;
-        }>) {
-          enrichmentMap.set(row.id, {
-            abv: row.abv,
-            confidence: row.confidence,
-            source: row.enrichment_source,
-            brew_description_cleaned: row.brew_description_cleaned,
-          });
-        }
+      for (const row of asTypedRows<EnrichmentRow>(result.results)) {
+        enrichmentMap.set(row.id, {
+          abv: row.abv,
+          confidence: row.confidence,
+          source: row.enrichment_source,
+          brew_description_cleaned: row.brew_description_cleaned,
+        });
       }
     }
 
@@ -117,26 +135,26 @@ export async function getEnrichmentForBeerIds(
  * Result of inserting placeholder records for beers.
  * Used to track which beers need enrichment or cleanup.
  */
-export interface InsertPlaceholdersResult {
-  totalSynced: number;
-  withAbv: number;
-  needsEnrichment: Array<{
-    id: string;
-    brew_name: string;
-    brewer: string;
+export type InsertPlaceholdersResult = {
+  readonly totalSynced: number;
+  readonly withAbv: number;
+  readonly needsEnrichment: ReadonlyArray<{
+    readonly id: string;
+    readonly brew_name: string;
+    readonly brewer: string;
   }>;
-  needsCleanup: Array<{
-    id: string;
-    brew_name: string;
-    brewer: string;
-    brew_description: string;
+  readonly needsCleanup: ReadonlyArray<{
+    readonly id: string;
+    readonly brew_name: string;
+    readonly brewer: string;
+    readonly brew_description: string;
   }>;
   /** Beers that failed to process during placeholder insertion */
-  failed: Array<{
-    id: string;
-    error: string;
+  readonly failed: ReadonlyArray<{
+    readonly id: string;
+    readonly error: string;
   }>;
-}
+};
 
 /**
  * Extract ABV percentage from beer description HTML.
@@ -171,7 +189,7 @@ export function extractABV(description: string | undefined): number | null {
 
   if (abvMatch) {
     // Match could be in group 1 (ABV first) or group 2 (number first)
-    const abvString = abvMatch[1] || abvMatch[2];
+    const abvString = abvMatch[1] ?? abvMatch[2];
     if (abvString) {
       const abv = parseFloat(abvString);
       if (!isNaN(abv) && abv >= 0 && abv <= 20) {
@@ -204,7 +222,7 @@ export function extractABV(description: string | undefined): number | null {
  */
 export async function insertPlaceholders(
   db: D1Database,
-  beers: Array<{ id: string; brew_name: string; brewer: string; brew_description?: string }>,
+  beers: Array<{ id: string; brew_name: string; brewer: string; brew_description?: string | undefined }>,
   requestId: string
 ): Promise<InsertPlaceholdersResult> {
   if (beers.length === 0) {
@@ -249,13 +267,8 @@ export async function insertPlaceholders(
   try {
     const selectResults = await db.batch(selectStatements);
     for (const result of selectResults) {
-      const rows = result.results as
-        | Array<{ id: string; description_hash: string | null; abv: number | null }>
-        | undefined;
-      if (rows) {
-        for (const row of rows) {
-          existingMap.set(row.id, { description_hash: row.description_hash, abv: row.abv });
-        }
+      for (const row of asTypedRows<ExistingBeerRow>(result.results)) {
+        existingMap.set(row.id, { description_hash: row.description_hash, abv: row.abv });
       }
     }
   } catch (error) {

@@ -704,6 +704,7 @@ describe('handleBeerList', () => {
         needsCleanup: [
           { id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery', brew_description: 'New description' },
         ],
+        failed: [],
       });
 
       const env = createMockEnv();
@@ -740,6 +741,7 @@ describe('handleBeerList', () => {
           { id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery' },
         ],
         needsCleanup: [],
+        failed: [],
       });
 
       const env = createMockEnv();
@@ -791,7 +793,7 @@ describe('handleBeerList', () => {
       // Make insertPlaceholders take a long time
       vi.mocked(insertPlaceholders).mockImplementation(async () => {
         await new Promise(resolve => setTimeout(resolve, 100));
-        return { totalSynced: 1, withAbv: 0, needsEnrichment: [], needsCleanup: [] };
+        return { totalSynced: 1, withAbv: 0, needsEnrichment: [], needsCleanup: [], failed: [] };
       });
 
       const env = createMockEnv();
@@ -827,6 +829,7 @@ describe('handleBeerList', () => {
         needsCleanup: [
           { id: '1', brew_name: 'Beer with new desc', brewer: 'Test Brewery', brew_description: 'New' },
         ],
+        failed: [],
       });
 
       const env = createMockEnv();
@@ -855,6 +858,7 @@ describe('handleBeerList', () => {
         withAbv: 1, // Already has ABV
         needsEnrichment: [],
         needsCleanup: [],
+        failed: [],
       });
 
       const env = createMockEnv();

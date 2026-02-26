@@ -12,7 +12,6 @@
 import type {
   Env,
   RequestContext,
-  TriggerCleanupRequest,
   TriggerCleanupData,
   CleanupPreview,
   CleanupTriggerValidationResult,
@@ -22,28 +21,29 @@ import { shouldSkipEnrichment } from '../config';
 import { errorResponse } from '../context';
 import { queueBeersForCleanup } from '../queue';
 import { hashDescription } from '../utils/hash';
+import { TriggerCleanupRequestSchema } from '../schemas/request';
+import { mapZodIssueToErrorCode, extractZodErrorMessage } from '../schemas/errors';
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface BeerRow {
-  id: string;
-  brew_name: string;
-  brewer: string | null;
-  brew_description_original: string;
-}
+type BeerRow = {
+  readonly id: string;
+  readonly brew_name: string;
+  readonly brewer: string | null;
+  readonly brew_description_original: string;
+};
 
 // ============================================================================
 // Request Validation
 // ============================================================================
 
 /**
- * Validate cleanup trigger request.
- * Pattern matches validateForceEnrichmentRequest() from enrichment.ts
+ * Validate cleanup trigger request using TriggerCleanupRequestSchema.
+ * Preserves backwards-compatible error codes via mapZodIssueToErrorCode.
  */
 export function validateCleanupTriggerRequest(body: unknown): CleanupTriggerValidationResult {
-  // Reject null/undefined/non-object
   if (body === null || body === undefined || typeof body !== 'object') {
     return {
       valid: false,
@@ -52,46 +52,20 @@ export function validateCleanupTriggerRequest(body: unknown): CleanupTriggerVali
     };
   }
 
-  const req = body as Record<string, unknown>;
-
-  // mode is required
-  if (!req.mode || !['all', 'missing'].includes(req.mode as string)) {
-    return {
-      valid: false,
-      error: 'mode is required and must be "all" or "missing"',
-      errorCode: 'INVALID_MODE',
-    };
-  }
-
-  // limit must be positive integer if provided
-  if (req.limit !== undefined) {
-    if (typeof req.limit !== 'number' || req.limit < 1 || !Number.isInteger(req.limit)) {
-      return {
-        valid: false,
-        error: 'limit must be a positive integer',
-        errorCode: 'INVALID_LIMIT',
-      };
+  const result = TriggerCleanupRequestSchema.safeParse(body);
+  if (!result.success) {
+    const firstIssue = result.error.issues[0];
+    if (!firstIssue) {
+      return { valid: false, error: 'Invalid request', errorCode: 'INVALID_REQUEST' };
     }
-  }
-
-  // dry_run must be boolean if provided
-  if (req.dry_run !== undefined && typeof req.dry_run !== 'boolean') {
+    const errorCode = mapZodIssueToErrorCode(firstIssue);
+    const errorMessage = extractZodErrorMessage(firstIssue);
     return {
       valid: false,
-      error: 'dry_run must be a boolean',
-      errorCode: 'INVALID_DRY_RUN',
+      error: errorMessage,
+      errorCode,
     };
   }
-
-  // confirm must be boolean if provided
-  if (req.confirm !== undefined && typeof req.confirm !== 'boolean') {
-    return {
-      valid: false,
-      error: 'confirm must be a boolean',
-      errorCode: 'INVALID_CONFIRM',
-    };
-  }
-
   return { valid: true };
 }
 
@@ -174,7 +148,8 @@ async function getPreviewCounts(db: D1Database): Promise<CleanupPreview> {
  * Get current daily quota usage.
  */
 async function getDailyQuotaUsage(db: D1Database): Promise<number> {
-  const today = new Date().toISOString().split('T')[0];
+  const parts = new Date().toISOString().split('T');
+  const today = parts[0] ?? '';
   const result = await db.prepare(
     `SELECT request_count FROM cleanup_limits WHERE date = ?`
   ).bind(today).first<{ request_count: number }>();
@@ -238,11 +213,11 @@ async function queryEligibleBeers(
 /**
  * Beer with computed description hash for database updates.
  */
-interface BeerWithHash {
-  id: string;
-  brew_description_original: string;
-  descriptionHash: string;
-}
+type BeerWithHash = {
+  readonly id: string;
+  readonly brew_description_original: string;
+  readonly descriptionHash: string;
+};
 
 /**
  * Build batch statements for resetting cleanup fields (mode: 'all').
@@ -333,8 +308,8 @@ export async function handleCleanupTrigger(
       );
     }
 
-    // Now safe to cast and use body as TriggerCleanupRequest
-    const request_ = body as TriggerCleanupRequest;
+    // Parse with schema to get typed data (validation already passed above)
+    const request_ = TriggerCleanupRequestSchema.parse(body);
     const limit = Math.min(Math.max(request_.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
     const dryRun = request_.dry_run ?? false;
     const mode = request_.mode;
@@ -383,6 +358,7 @@ export async function handleCleanupTrigger(
         operation_id: operationId,
         beers_queued: 0,
         beers_skipped: 0,
+        ...(mode === 'all' ? { beers_reset: 0 } : {}),
         beers_remaining: 0,
         mode,
         dry_run: dryRun,
@@ -396,9 +372,6 @@ export async function handleCleanupTrigger(
           },
         },
       };
-      if (mode === 'all') {
-        data.beers_reset = 0;
-      }
       return Response.json({ success: true, data, requestId: reqCtx.requestId }, { headers });
     }
 
@@ -412,6 +385,7 @@ export async function handleCleanupTrigger(
         operation_id: operationId,
         beers_queued: 0,
         beers_skipped: skippedCount,
+        ...(mode === 'all' ? { beers_reset: 0 } : {}),
         beers_remaining: remainingCount,
         mode,
         dry_run: dryRun,
@@ -425,9 +399,6 @@ export async function handleCleanupTrigger(
           },
         },
       };
-      if (mode === 'all') {
-        data.beers_reset = 0;
-      }
       return Response.json({ success: true, data, requestId: reqCtx.requestId }, { headers });
     }
 
@@ -456,6 +427,7 @@ export async function handleCleanupTrigger(
         operation_id: operationId,
         beers_queued: eligibleBeers.length,
         beers_skipped: skippedCount,
+        ...(mode === 'all' ? { beers_reset: eligibleBeers.length } : {}),
         beers_remaining: remainingCount,
         mode,
         dry_run: true,
@@ -468,9 +440,6 @@ export async function handleCleanupTrigger(
           },
         },
       };
-      if (mode === 'all') {
-        data.beers_reset = eligibleBeers.length;
-      }
       return Response.json({ success: true, data, requestId: reqCtx.requestId }, { headers });
     }
 
@@ -527,6 +496,7 @@ export async function handleCleanupTrigger(
       operation_id: operationId,
       beers_queued: queueResult.queued,
       beers_skipped: skippedCount + queueResult.skipped,
+      ...(mode === 'all' ? { beers_reset: queueResult.queued } : {}),
       beers_remaining: remainingCount,
       mode,
       dry_run: false,
@@ -539,10 +509,6 @@ export async function handleCleanupTrigger(
         },
       },
     };
-
-    if (mode === 'all') {
-      data.beers_reset = queueResult.queued;  // Use actual queued count
-    }
 
     console.log(JSON.stringify({
       event: 'cleanup_trigger_complete',

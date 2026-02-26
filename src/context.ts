@@ -41,19 +41,19 @@ export function getCorsHeaders(env: Env): Record<string, string> | null {
 /**
  * Options for creating a response with audit logging and analytics.
  */
-export interface RespondOptions {
+export type RespondOptions = {
   /** D1 database for audit logging */
-  db: D1Database;
+  readonly db: D1Database;
   /** Request context */
-  requestContext: RequestContext;
+  readonly requestContext: RequestContext;
   /** Analytics dataset (optional) */
-  analytics?: AnalyticsEngineDataset;
+  readonly analytics?: AnalyticsEngineDataset | undefined;
   /** Execution context for waitUntil (audit log writes) */
-  ctx: ExecutionContext;
+  readonly ctx: ExecutionContext;
   /** HTTP request object (for method, url) */
-  request: Request;
+  readonly request: Request;
   /** Callback to write audit log (injected to avoid circular dependency) */
-  writeAuditLog: (
+  readonly writeAuditLog: (
     db: D1Database,
     ctx: RequestContext,
     method: string,
@@ -62,12 +62,12 @@ export interface RespondOptions {
     error?: string
   ) => Promise<void>;
   /** Store ID for analytics (optional) */
-  storeId?: string;
+  readonly storeId?: string | undefined;
   /** Number of beers returned (optional, for /beers endpoint) */
-  beersReturned?: number;
+  readonly beersReturned?: number | undefined;
   /** Upstream API latency in ms (optional, for /beers endpoint) */
-  upstreamLatencyMs?: number;
-}
+  readonly upstreamLatencyMs?: number | undefined;
+};
 
 /**
  * Create a standardized response with audit logging and analytics tracking.

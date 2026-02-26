@@ -19,6 +19,7 @@ import type { Env } from '../types';
 import { trackCron } from '../analytics';
 import { shouldSkipEnrichment } from '../config';
 import { cleanupOldDlqMessages } from './dlq';
+import { getToday } from '../utils/date';
 
 // ============================================================================
 // Scheduled Enrichment Handler
@@ -38,7 +39,7 @@ import { cleanupOldDlqMessages } from './dlq';
  */
 export async function handleScheduledEnrichment(
   env: Env,
-  ctx: ExecutionContext
+  _ctx: ExecutionContext
 ): Promise<void> {
   const cronStartTime = Date.now();
 
@@ -56,7 +57,7 @@ export async function handleScheduledEnrichment(
     return;
   }
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = getToday();
   const monthStart = today.slice(0, 7) + '-01';
   const monthEnd = today.slice(0, 7) + '-31';
   const dailyLimit = parseInt(env.DAILY_ENRICHMENT_LIMIT || '500');
@@ -181,7 +182,7 @@ export async function handleScheduledEnrichment(
     // Runs every cron execution since cron only runs twice daily
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
-    const cutoffDate = ninetyDaysAgo.toISOString().split('T')[0];
+    const cutoffDate = getToday(ninetyDaysAgo);
 
     const deleteResult = await env.DB.prepare(
       'DELETE FROM enrichment_limits WHERE date < ?'

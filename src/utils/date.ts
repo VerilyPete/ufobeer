@@ -13,7 +13,8 @@
  * @returns Date string in YYYY-MM-DD format
  */
 export function getToday(date: Date = new Date()): string {
-  return date.toISOString().split('T')[0];
+  const parts = date.toISOString().split('T');
+  return parts[0] ?? '';
 }
 
 /**

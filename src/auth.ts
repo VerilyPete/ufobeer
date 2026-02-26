@@ -44,19 +44,19 @@ export async function hashApiKey(apiKey: string): Promise<string> {
  * Validate API key from request headers.
  *
  * Extracts X-API-Key header and performs timing-safe comparison with
- * the configured API_KEY environment variable. Updates the request context
- * with hashed API key for audit logging.
+ * the configured API_KEY environment variable. Returns the hashed API key
+ * for audit logging if valid.
  *
  * @param request - The incoming HTTP request
  * @param env - Environment bindings (contains API_KEY secret)
- * @param reqCtx - Request context to update with API key hash
- * @returns true if API key is valid, false otherwise
+ * @param reqCtx - Request context for logging
+ * @returns Object with valid flag and apiKeyHash (null if invalid)
  */
 export async function validateApiKey(
   request: Request,
   env: Env,
   reqCtx: RequestContext
-): Promise<boolean> {
+): Promise<{ valid: boolean; apiKeyHash: string | null }> {
   const apiKey = request.headers.get('X-API-Key');
 
   if (!apiKey) {
@@ -67,26 +67,25 @@ export async function validateApiKey(
       clientIp: reqCtx.clientIp,
       userAgent: reqCtx.userAgent,
     }));
-    return false;
+    return { valid: false, apiKeyHash: null };
   }
 
   const isValid = await timingSafeCompare(apiKey, env.API_KEY);
 
   if (isValid) {
-    // Store hashed API key in context for audit logging
-    reqCtx.apiKeyHash = await hashApiKey(apiKey);
-  } else {
-    console.warn(JSON.stringify({
-      event: 'auth_failed',
-      reason: 'invalid_api_key',
-      requestId: reqCtx.requestId,
-      clientIp: reqCtx.clientIp,
-      userAgent: reqCtx.userAgent,
-      apiKeyPrefix: apiKey.substring(0, 4) + '...', // First 4 chars for debugging
-    }));
+    return { valid: true, apiKeyHash: await hashApiKey(apiKey) };
   }
 
-  return isValid;
+  console.warn(JSON.stringify({
+    event: 'auth_failed',
+    reason: 'invalid_api_key',
+    requestId: reqCtx.requestId,
+    clientIp: reqCtx.clientIp,
+    userAgent: reqCtx.userAgent,
+    apiKeyPrefix: apiKey.substring(0, 4) + '...', // First 4 chars for debugging
+  }));
+
+  return { valid: false, apiKeyHash: null };
 }
 
 /**
@@ -103,7 +102,7 @@ export async function validateApiKey(
 export async function authorizeAdmin(
   request: Request,
   env: Env,
-  reqCtx: RequestContext
+  _reqCtx: RequestContext
 ): Promise<{ authorized: boolean; error?: string }> {
   // Check if ADMIN_SECRET is configured
   if (!env.ADMIN_SECRET) {
@@ -178,7 +177,7 @@ export function createRequestContext(request: Request): RequestContext {
     requestId: generateRequestId(),
     startTime: Date.now(),
     clientIdentifier: getClientIdentifier(request),
-    apiKeyHash: null, // Set later by validateApiKey
+    apiKeyHash: null,
     clientIp: getClientIp(request),
     userAgent: request.headers.get('User-Agent'),
   };

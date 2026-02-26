@@ -10,6 +10,7 @@
 
 import type { Env } from '../types';
 import { MIN_BEER_ABV, MAX_BEER_ABV } from '../constants';
+import { PerplexityResponseSchema } from '../schemas/external';
 
 /**
  * Fetch ABV from Perplexity API for a given beer.
@@ -78,19 +79,20 @@ export async function fetchAbvFromPerplexity(
       throw new Error(`Perplexity API returned ${response.status}`);
     }
 
-    const data = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-
-    const content = data.choices?.[0]?.message?.content?.trim();
+    const raw = await response.json();
+    const parsed = PerplexityResponseSchema.safeParse(raw);
+    const content = parsed.success
+      ? parsed.data.choices[0]?.message?.content?.trim()
+      : undefined;
     if (!content || content.toLowerCase() === 'unknown') {
       return null;
     }
 
     // Parse the ABV value
     const abvMatch = content.match(/(\d+\.?\d*)/);
-    if (abvMatch) {
-      const abv = parseFloat(abvMatch[1]);
+    const matched = abvMatch?.[1];
+    if (matched) {
+      const abv = parseFloat(matched);
       // Sanity check: ABV should be within plausible range
       if (abv >= MIN_BEER_ABV && abv <= MAX_BEER_ABV) {
         return abv;

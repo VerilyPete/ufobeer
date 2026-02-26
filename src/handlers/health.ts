@@ -9,6 +9,7 @@
  */
 
 import type { Env } from '../types';
+import { getToday } from '../utils/date';
 
 // ============================================================================
 // Health Check Handler
@@ -28,7 +29,7 @@ export async function handleHealthCheck(env: Env): Promise<Response> {
     // Test D1 connection
     await env.DB.prepare('SELECT 1').first();
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = getToday();
     const monthStart = today.slice(0, 7) + '-01';
     const monthEnd = today.slice(0, 7) + '-31';
 

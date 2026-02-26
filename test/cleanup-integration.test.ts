@@ -18,12 +18,11 @@ import {
   processAIConcurrently,
 } from '../src/queue/cleanup';
 import {
-  resetCircuitBreaker,
-  recordCallLatency,
-  isCircuitBreakerOpen,
+  defaultCircuitBreaker,
   SLOW_THRESHOLD_MS,
   SLOW_CALL_LIMIT,
 } from '../src/queue/cleanupHelpers';
+import { createCircuitBreaker } from '../src/queue/circuitBreaker';
 import type { Env, CleanupMessage } from '../src/types';
 
 // ============================================================================
@@ -243,7 +242,7 @@ describe('handleCleanupBatch integration', () => {
   let mockEnv: MockEnv;
 
   beforeEach(() => {
-    resetCircuitBreaker();
+    defaultCircuitBreaker.reset();
     mockEnv = createFullMockEnv();
   });
 
@@ -344,12 +343,12 @@ describe('handleCleanupBatch integration', () => {
 
   describe('circuit breaker behavior', () => {
     it('opens circuit breaker after slow AI calls', async () => {
-      // Manually trigger circuit breaker opening
+      // Manually trigger circuit breaker opening on the default instance
       for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
-        recordCallLatency(SLOW_THRESHOLD_MS + 1000, i, 10, `beer-${i}`);
+        defaultCircuitBreaker.recordLatency(SLOW_THRESHOLD_MS + 1000, i, 10, `beer-${i}`);
       }
 
-      expect(isCircuitBreakerOpen()).toBe(true);
+      expect(defaultCircuitBreaker.isOpen()).toBe(true);
 
       const batch = createBatch(3);
       await handleCleanupBatch(batch as unknown as MessageBatch<CleanupMessage>, mockEnv as unknown as Env);
@@ -362,9 +361,9 @@ describe('handleCleanupBatch integration', () => {
     });
 
     it('uses fallback path when circuit breaker is open', async () => {
-      // Pre-open the circuit breaker
+      // Pre-open the circuit breaker on the default instance
       for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
-        recordCallLatency(SLOW_THRESHOLD_MS + 1000, i, 10, `slow-beer-${i}`);
+        defaultCircuitBreaker.recordLatency(SLOW_THRESHOLD_MS + 1000, i, 10, `slow-beer-${i}`);
       }
 
       const batch = createBatch(2, (i) => `Beer ${i} 5.5% ABV`);
@@ -561,7 +560,6 @@ describe('processAIConcurrently', () => {
   let mockAI: MockAI;
 
   beforeEach(() => {
-    resetCircuitBreaker();
     mockAI = createMockAI(10);
   });
 
@@ -630,12 +628,14 @@ describe('processAIConcurrently', () => {
       messages as Message<CleanupMessage>[],
       mockAI as unknown as Ai,
       10,
-      { cleanFn: mockCleanFn }
+      { cleanFn: mockCleanFn, breaker: createCircuitBreaker() }
     );
 
     expect(results[0].success).toBe(true);
     expect(results[1].success).toBe(false);
-    expect(results[1].error).toBe('AI failure');
+    if (!results[1].success) {
+      expect(results[1].error).toBe('AI failure');
+    }
     expect(results[2].success).toBe(true);
   });
 
@@ -651,9 +651,10 @@ describe('processAIConcurrently', () => {
   });
 
   it('marks results with useFallback when circuit breaker is open', async () => {
-    // Open the circuit breaker
+    // Create a breaker and open it
+    const breaker = createCircuitBreaker();
     for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
-      recordCallLatency(SLOW_THRESHOLD_MS + 1000, i, 10, `beer-${i}`);
+      breaker.recordLatency(SLOW_THRESHOLD_MS + 1000, i, 10, `beer-${i}`);
     }
 
     const messages = [
@@ -664,12 +665,13 @@ describe('processAIConcurrently', () => {
     const results = await processAIConcurrently(
       messages as Message<CleanupMessage>[],
       mockAI as unknown as Ai,
-      10
+      10,
+      { breaker }
     );
 
-    // All results should have useFallback set
-    expect(results.every(r => r.useFallback === true)).toBe(true);
+    // All results should be fallback variants
     expect(results.every(r => r.success === false)).toBe(true);
+    expect(results.every(r => !r.success && r.useFallback === true)).toBe(true);
 
     // AI should not have been called
     expect(mockAI.run).not.toHaveBeenCalled();
@@ -688,10 +690,12 @@ describe('processAIConcurrently', () => {
       messages as Message<CleanupMessage>[],
       mockAI as unknown as Ai,
       10,
-      { timeoutMs: 50 }
+      { timeoutMs: 50, breaker: createCircuitBreaker() }
     );
 
     expect(results[0].success).toBe(false);
-    expect(results[0].error).toBe('AI call timeout');
+    if (!results[0].success) {
+      expect(results[0].error).toBe('AI call timeout');
+    }
   });
 });

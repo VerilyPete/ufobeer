@@ -108,18 +108,21 @@ export default {
     }
 
     // Authenticate
-    if (!(await validateApiKey(request, env, requestContext))) {
+    const authResult = await validateApiKey(request, env, requestContext);
+    if (!authResult.valid) {
       return respond({ error: 'Unauthorized' }, 401, corsHeaders, 'Invalid API key');
     }
+    // Create new context with the authenticated API key hash (RequestContext is readonly)
+    const authedContext = { ...requestContext, apiKeyHash: authResult.apiKeyHash };
 
     // Rate limit
     const rateLimit = parseInt(env.RATE_LIMIT_RPM, 10) || 60;
-    const rateLimitResult = await checkRateLimit(env.DB, requestContext.clientIdentifier, rateLimit);
+    const rateLimitResult = await checkRateLimit(env.DB, authedContext.clientIdentifier, rateLimit);
 
     if (!rateLimitResult.allowed) {
-      trackRateLimit(env.ANALYTICS, requestContext.clientIdentifier, url.pathname);
+      trackRateLimit(env.ANALYTICS, authedContext.clientIdentifier, url.pathname);
       return respond(
-        { error: 'Rate limit exceeded', requestId: requestContext.requestId },
+        { error: 'Rate limit exceeded', requestId: authedContext.requestId },
         429,
         {
           ...corsHeaders,
@@ -137,7 +140,7 @@ export default {
       'X-RateLimit-Limit': String(rateLimit),
       'X-RateLimit-Remaining': String(rateLimitResult.remaining),
       'X-RateLimit-Reset': String(Math.floor(rateLimitResult.resetAt / 1000)),
-      'X-Request-ID': requestContext.requestId,
+      'X-Request-ID': authedContext.requestId,
     };
 
     // Route: GET /beers
@@ -146,7 +149,7 @@ export default {
 
       if (!storeId) {
         return respond(
-          { error: 'Missing required parameter: sid', requestId: requestContext.requestId },
+          { error: 'Missing required parameter: sid', requestId: authedContext.requestId },
           400,
           { ...corsHeaders, ...rateLimitHeaders }
         );
@@ -154,14 +157,14 @@ export default {
 
       if (!VALID_STORE_IDS.has(storeId)) {
         return respond(
-          { error: 'Invalid store ID', requestId: requestContext.requestId },
+          { error: 'Invalid store ID', requestId: authedContext.requestId },
           400,
           { ...corsHeaders, ...rateLimitHeaders }
         );
       }
 
       storeIdForAnalytics = storeId;
-      const result = await handleBeerList(env, ctx, { ...corsHeaders, ...rateLimitHeaders }, requestContext, storeId);
+      const result = await handleBeerList(env, ctx, { ...corsHeaders, ...rateLimitHeaders }, authedContext, storeId);
       beersReturnedCount = result.beersReturned;
       upstreamLatency = result.upstreamLatencyMs;
 
@@ -170,42 +173,42 @@ export default {
         method: request.method,
         storeId: storeIdForAnalytics,
         statusCode: result.response.status,
-        clientId: requestContext.clientIdentifier,
-        responseTimeMs: Date.now() - requestContext.startTime,
+        clientId: authedContext.clientIdentifier,
+        responseTimeMs: Date.now() - authedContext.startTime,
         beersReturned: beersReturnedCount,
         upstreamLatencyMs: upstreamLatency,
       });
-      ctx.waitUntil(writeAuditLog(env.DB, requestContext, request.method, url.pathname, result.response.status));
+      ctx.waitUntil(writeAuditLog(env.DB, authedContext, request.method, url.pathname, result.response.status));
 
       return result.response;
     }
 
     // Route: POST /beers/batch
     if (url.pathname === '/beers/batch' && request.method === 'POST') {
-      const result = await handleBatchLookup(request, env, { ...corsHeaders, ...rateLimitHeaders }, requestContext);
+      const result = await handleBatchLookup(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
       trackRequest(env.ANALYTICS, {
         endpoint: url.pathname,
         method: request.method,
         statusCode: result.status,
-        clientId: requestContext.clientIdentifier,
-        responseTimeMs: Date.now() - requestContext.startTime,
+        clientId: authedContext.clientIdentifier,
+        responseTimeMs: Date.now() - authedContext.startTime,
       });
-      ctx.waitUntil(writeAuditLog(env.DB, requestContext, request.method, url.pathname, result.status));
+      ctx.waitUntil(writeAuditLog(env.DB, authedContext, request.method, url.pathname, result.status));
       return result;
     }
 
     // Route: POST /beers/sync (with stricter per-endpoint rate limiting)
     if (url.pathname === '/beers/sync' && request.method === 'POST') {
       // Sync endpoint has stricter rate limit (10 RPM) independent of other endpoints
-      const syncRateLimitKey = getEndpointRateLimitKey(requestContext.clientIdentifier, 'sync');
+      const syncRateLimitKey = getEndpointRateLimitKey(authedContext.clientIdentifier, 'sync');
       const syncRateLimitResult = await checkRateLimit(env.DB, syncRateLimitKey, SYNC_CONSTANTS.RATE_LIMIT_RPM);
 
       if (!syncRateLimitResult.allowed) {
-        trackRateLimit(env.ANALYTICS, requestContext.clientIdentifier, url.pathname);
+        trackRateLimit(env.ANALYTICS, authedContext.clientIdentifier, url.pathname);
         return respond(
           {
             error: 'Rate limit exceeded for sync endpoint',
-            requestId: requestContext.requestId,
+            requestId: authedContext.requestId,
             retry_after_seconds: Math.ceil((syncRateLimitResult.resetAt - Date.now()) / 1000)
           },
           429,
@@ -227,15 +230,15 @@ export default {
         'X-RateLimit-Limit': String(SYNC_CONSTANTS.RATE_LIMIT_RPM),
         'X-RateLimit-Remaining': String(syncRateLimitResult.remaining),
         'X-RateLimit-Reset': String(Math.floor(syncRateLimitResult.resetAt / 1000)),
-      }, requestContext);
+      }, authedContext);
       trackRequest(env.ANALYTICS, {
         endpoint: url.pathname,
         method: request.method,
         statusCode: result.status,
-        clientId: requestContext.clientIdentifier,
-        responseTimeMs: Date.now() - requestContext.startTime,
+        clientId: authedContext.clientIdentifier,
+        responseTimeMs: Date.now() - authedContext.startTime,
       });
-      ctx.waitUntil(writeAuditLog(env.DB, requestContext, request.method, url.pathname, result.status));
+      ctx.waitUntil(writeAuditLog(env.DB, authedContext, request.method, url.pathname, result.status));
       return result;
     }
 
@@ -243,10 +246,10 @@ export default {
     // Admin Routes - Require additional ADMIN_SECRET authentication
     // ========================================================================
     if (url.pathname.startsWith('/admin/')) {
-      const adminAuth = await authorizeAdmin(request, env, requestContext);
+      const adminAuth = await authorizeAdmin(request, env, authedContext);
       if (!adminAuth.authorized) {
         return respond(
-          { error: adminAuth.error || 'Unauthorized', requestId: requestContext.requestId },
+          { error: adminAuth.error || 'Unauthorized', requestId: authedContext.requestId },
           403,
           { ...corsHeaders, ...rateLimitHeaders },
           'Admin auth failed'
@@ -258,58 +261,58 @@ export default {
       // Route: GET /admin/dlq
       if (url.pathname === '/admin/dlq' && request.method === 'GET') {
         const operationStart = Date.now();
-        const result = await handleDlqList(env, { ...corsHeaders, ...rateLimitHeaders }, requestContext, url.searchParams);
+        const result = await handleDlqList(env, { ...corsHeaders, ...rateLimitHeaders }, authedContext, url.searchParams);
         let messageCount = 0;
         try {
           const responseBody = await result.clone().json() as { data?: { messages?: unknown[] } };
           messageCount = responseBody.data?.messages?.length || 0;
         } catch { /* ignore */ }
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_list', success: result.status === 200, messageCount, durationMs: Date.now() - operationStart });
-        ctx.waitUntil(writeAdminAuditLog(env.DB, requestContext, 'dlq_list', { message_count: messageCount }, adminSecretHash));
+        ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_list', { message_count: messageCount }, adminSecretHash));
         return result;
       }
 
       // Route: GET /admin/dlq/stats
       if (url.pathname === '/admin/dlq/stats' && request.method === 'GET') {
         const operationStart = Date.now();
-        const result = await handleDlqStats(env, { ...corsHeaders, ...rateLimitHeaders }, requestContext);
+        const result = await handleDlqStats(env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_stats', success: result.status === 200, messageCount: 0, durationMs: Date.now() - operationStart });
-        ctx.waitUntil(writeAdminAuditLog(env.DB, requestContext, 'dlq_stats', {}, adminSecretHash));
+        ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_stats', {}, adminSecretHash));
         return result;
       }
 
       // Route: POST /admin/dlq/replay
       if (url.pathname === '/admin/dlq/replay' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleDlqReplay(request, env, { ...corsHeaders, ...rateLimitHeaders }, requestContext);
+        const result = await handleDlqReplay(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
         let replayedCount = 0;
         try {
           const responseBody = await result.clone().json() as { data?: { replayed_count?: number } };
           replayedCount = responseBody.data?.replayed_count || 0;
         } catch { /* ignore */ }
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_replay', success: result.status === 200, messageCount: replayedCount, durationMs: Date.now() - operationStart });
-        ctx.waitUntil(writeAdminAuditLog(env.DB, requestContext, 'dlq_replay', { replayed_count: replayedCount }, adminSecretHash));
+        ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_replay', { replayed_count: replayedCount }, adminSecretHash));
         return result;
       }
 
       // Route: POST /admin/dlq/acknowledge
       if (url.pathname === '/admin/dlq/acknowledge' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleDlqAcknowledge(request, env, { ...corsHeaders, ...rateLimitHeaders }, requestContext);
+        const result = await handleDlqAcknowledge(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
         let acknowledgedCount = 0;
         try {
           const responseBody = await result.clone().json() as { data?: { acknowledged_count?: number } };
           acknowledgedCount = responseBody.data?.acknowledged_count || 0;
         } catch { /* ignore */ }
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_acknowledge', success: result.status === 200, messageCount: acknowledgedCount, durationMs: Date.now() - operationStart });
-        ctx.waitUntil(writeAdminAuditLog(env.DB, requestContext, 'dlq_acknowledge', { acknowledged_count: acknowledgedCount }, adminSecretHash));
+        ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_acknowledge', { acknowledged_count: acknowledgedCount }, adminSecretHash));
         return result;
       }
 
       // Route: POST /admin/enrich/trigger
       if (url.pathname === '/admin/enrich/trigger' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleEnrichmentTrigger(request, env, { ...corsHeaders, ...rateLimitHeaders }, requestContext);
+        const result = await handleEnrichmentTrigger(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
         let beersQueued = 0;
         let skipReason: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers' | undefined;
         let dailyRemaining = 0;
@@ -324,15 +327,15 @@ export default {
           monthlyRemaining = responseBody.data?.quota?.monthly?.remaining || 0;
         } catch { /* ignore */ }
         trackAdminTrigger(env.ANALYTICS, { beersQueued, dailyRemaining, monthlyRemaining, durationMs: Date.now() - operationStart, success: result.status === 200, skipReason });
-        ctx.waitUntil(writeAdminAuditLog(env.DB, requestContext, 'enrich_trigger', { beers_queued: beersQueued, skip_reason: skipReason, duration_ms: Date.now() - operationStart }, adminSecretHash));
-        console.log(`[admin] enrich_trigger completed: beersQueued=${beersQueued}, skipReason=${skipReason || 'none'}, durationMs=${Date.now() - operationStart}, requestId=${requestContext.requestId}`);
+        ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'enrich_trigger', { beers_queued: beersQueued, skip_reason: skipReason, duration_ms: Date.now() - operationStart }, adminSecretHash));
+        console.log(`[admin] enrich_trigger completed: beersQueued=${beersQueued}, skipReason=${skipReason || 'none'}, durationMs=${Date.now() - operationStart}, requestId=${authedContext.requestId}`);
         return result;
       }
 
       // Route: POST /admin/cleanup/trigger
       if (url.pathname === '/admin/cleanup/trigger' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleCleanupTrigger(request, env, { ...corsHeaders, ...rateLimitHeaders }, requestContext);
+        const result = await handleCleanupTrigger(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
 
         // Extract response data for logging and analytics
         let beersQueued = 0;
@@ -368,28 +371,28 @@ export default {
 
         // Audit log
         ctx.waitUntil(
-          writeAdminAuditLog(env.DB, requestContext, 'cleanup_trigger', {
+          writeAdminAuditLog(env.DB, authedContext, 'cleanup_trigger', {
             beers_queued: beersQueued,
             mode,
             duration_ms: Date.now() - operationStart,
           }, adminSecretHash)
         );
 
-        console.log(`[admin] cleanup_trigger completed: beersQueued=${beersQueued}, mode=${mode}, durationMs=${Date.now() - operationStart}, requestId=${requestContext.requestId}`);
+        console.log(`[admin] cleanup_trigger completed: beersQueued=${beersQueued}, mode=${mode}, durationMs=${Date.now() - operationStart}, requestId=${authedContext.requestId}`);
 
         return result;
       }
 
       // Admin route not found
       return respond(
-        { error: 'Admin endpoint not found', requestId: requestContext.requestId },
+        { error: 'Admin endpoint not found', requestId: authedContext.requestId },
         404,
         { ...corsHeaders, ...rateLimitHeaders }
       );
     }
 
     return respond(
-      { error: 'Not Found', requestId: requestContext.requestId },
+      { error: 'Not Found', requestId: authedContext.requestId },
       404,
       { ...corsHeaders, ...rateLimitHeaders }
     );
@@ -405,7 +408,7 @@ export default {
   async queue(
     batch: MessageBatch<EnrichmentMessage | CleanupMessage>,
     env: Env,
-    ctx: ExecutionContext
+    _ctx: ExecutionContext
   ): Promise<void> {
     const requestId = crypto.randomUUID();
     console.log(`Queue batch received: messageCount=${batch.messages.length}, queue=${batch.queue}, requestId=${requestId}`);

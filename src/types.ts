@@ -6,41 +6,41 @@
  * Environment bindings and configuration for the Cloudflare Worker.
  * Includes D1 database, Queue, Analytics, secrets, and environment variables.
  */
-export interface Env {
+export type Env = {
   // Database
-  DB: D1Database;
+  readonly DB: D1Database;
 
   // Queue (from Phase 1) - used for enrichment and DLQ replay
-  ENRICHMENT_QUEUE: Queue<EnrichmentMessage>;
+  readonly ENRICHMENT_QUEUE: Queue<EnrichmentMessage>;
 
   // Queue for description cleanup (LLM-based)
-  CLEANUP_QUEUE: Queue<CleanupMessage>;
+  readonly CLEANUP_QUEUE: Queue<CleanupMessage>;
 
   // Workers AI binding for description cleanup
-  AI: Ai;
+  readonly AI: Ai;
 
   // Analytics Engine (optional - graceful degradation if not configured)
-  ANALYTICS?: AnalyticsEngineDataset;
+  readonly ANALYTICS?: AnalyticsEngineDataset | undefined;
 
   // Secrets (set via wrangler secret put)
-  API_KEY: string;
-  FLYING_SAUCER_API_BASE: string;
-  PERPLEXITY_API_KEY?: string;
-  ADMIN_SECRET?: string; // Required for /admin/* routes
+  readonly API_KEY: string;
+  readonly FLYING_SAUCER_API_BASE: string;
+  readonly PERPLEXITY_API_KEY?: string | undefined;
+  readonly ADMIN_SECRET?: string | undefined; // Required for /admin/* routes
 
   // Environment variables (set in wrangler.jsonc vars)
-  ALLOWED_ORIGIN: string;
-  RATE_LIMIT_RPM: string;
+  readonly ALLOWED_ORIGIN: string;
+  readonly RATE_LIMIT_RPM: string;
 
   // Circuit breaker (from Phase 1)
-  DAILY_ENRICHMENT_LIMIT?: string;
-  MONTHLY_ENRICHMENT_LIMIT?: string;
-  ENRICHMENT_ENABLED?: string;
+  readonly DAILY_ENRICHMENT_LIMIT?: string | undefined;
+  readonly MONTHLY_ENRICHMENT_LIMIT?: string | undefined;
+  readonly ENRICHMENT_ENABLED?: string | undefined;
 
   // Cleanup limits (optional)
-  DAILY_CLEANUP_LIMIT?: string;
-  MAX_CLEANUP_CONCURRENCY?: string;
-}
+  readonly DAILY_CLEANUP_LIMIT?: string | undefined;
+  readonly MAX_CLEANUP_CONCURRENCY?: string | undefined;
+};
 
 // ============================================================================
 // Queue Message Types
@@ -50,23 +50,23 @@ export interface Env {
  * Message format for enrichment queue.
  * Sent from API → Queue → Consumer → Perplexity → Database update.
  */
-export interface EnrichmentMessage {
-  beerId: string;
-  beerName: string;
-  brewer: string;
-}
+export type EnrichmentMessage = {
+  readonly beerId: string;
+  readonly beerName: string;
+  readonly brewer: string;
+};
 
 /**
  * Message format for description cleanup queue.
  * Sent from API → Queue → Consumer → Workers AI → Database update.
  * If ABV cannot be extracted after cleanup, forwards to enrichment queue.
  */
-export interface CleanupMessage {
-  beerId: string;
-  beerName: string;
-  brewer: string;
-  brewDescription: string;
-}
+export type CleanupMessage = {
+  readonly beerId: string;
+  readonly beerName: string;
+  readonly brewer: string;
+  readonly brewDescription: string;
+};
 
 // ============================================================================
 // Flying Saucer API Types
@@ -76,14 +76,14 @@ export interface CleanupMessage {
  * Beer data structure from Flying Saucer API.
  * API returns nested format: [{...}, {brewInStock: [...]}]
  */
-export interface FlyingSaucerBeer {
-  id: string;
-  brew_name: string;
-  brewer: string;
-  brew_description?: string;
-  container_type?: string;
-  [key: string]: unknown;
-}
+export type FlyingSaucerBeer = {
+  readonly id: string;
+  readonly brew_name: string;
+  readonly brewer: string;
+  readonly brew_description?: string | undefined;
+  readonly container_type?: string | undefined;
+  readonly [key: string]: unknown;
+};
 
 // ============================================================================
 // Request Context & Audit
@@ -93,14 +93,14 @@ export interface FlyingSaucerBeer {
  * Request metadata for audit logging and analytics.
  * Created at start of each request, passed through handler chain.
  */
-export interface RequestContext {
-  requestId: string;
-  startTime: number;
-  clientIdentifier: string;
-  apiKeyHash: string | null;
-  clientIp: string | null;
-  userAgent: string | null;
-}
+export type RequestContext = {
+  readonly requestId: string;
+  readonly startTime: number;
+  readonly clientIdentifier: string;
+  readonly apiKeyHash: string | null;
+  readonly clientIp: string | null;
+  readonly userAgent: string | null;
+};
 
 // ============================================================================
 // DLQ (Dead Letter Queue) Types
@@ -110,48 +110,48 @@ export interface RequestContext {
  * DLQ message stored in D1 database for admin inspection.
  * Created when enrichment queue consumer fails after max retries.
  */
-export interface DlqMessageRow {
-  id: number;
-  message_id: string;
-  beer_id: string;
-  beer_name: string | null;
-  brewer: string | null;
-  failed_at: number;
-  failure_count: number;
-  failure_reason: string | null;
-  source_queue: string;
-  status: string;
-  replay_count: number;
-  replayed_at: number | null;
-  acknowledged_at: number | null;
-  raw_message: string | null;
-}
+export type DlqMessageRow = {
+  readonly id: number;
+  readonly message_id: string;
+  readonly beer_id: string;
+  readonly beer_name: string | null;
+  readonly brewer: string | null;
+  readonly failed_at: number;
+  readonly failure_count: number;
+  readonly failure_reason: string | null;
+  readonly source_queue: string;
+  readonly status: string;
+  readonly replay_count: number;
+  readonly replayed_at: number | null;
+  readonly acknowledged_at: number | null;
+  readonly raw_message: string | null;
+};
 
 /**
  * Pagination cursor for DLQ list endpoint.
  * Uses failed_at + id for stable pagination.
  */
-export interface PaginationCursor {
-  failed_at: number;
-  id: number;
-}
+export type PaginationCursor = {
+  readonly failed_at: number;
+  readonly id: number;
+};
 
 /**
  * Request body for POST /admin/dlq/replay.
  * Replays failed messages back to enrichment queue.
  */
-export interface DlqReplayRequest {
-  ids: number[];           // D1 row IDs to replay
-  delay_seconds?: number;  // Delay before processing (default 0)
-}
+export type DlqReplayRequest = {
+  readonly ids: readonly number[];           // D1 row IDs to replay
+  readonly delay_seconds?: number | undefined;  // Delay before processing (default 0)
+};
 
 /**
  * Request body for POST /admin/dlq/acknowledge.
  * Marks DLQ messages as acknowledged (resolved).
  */
-export interface DlqAcknowledgeRequest {
-  ids: number[];  // D1 row IDs to acknowledge
-}
+export type DlqAcknowledgeRequest = {
+  readonly ids: readonly number[];  // D1 row IDs to acknowledge
+};
 
 // ============================================================================
 // Manual Enrichment Trigger Types
@@ -161,39 +161,39 @@ export interface DlqAcknowledgeRequest {
  * Request body for POST /admin/enrich/trigger.
  * Manually triggers enrichment for unenriched beers.
  */
-export interface TriggerEnrichmentRequest {
+export type TriggerEnrichmentRequest = {
   /** Maximum number of beers to queue (default: 50, max: 100) */
-  limit?: number;
+  readonly limit?: number | undefined;
   /** Only queue beers that have never been attempted (exclude DLQ failures) */
-  exclude_failures?: boolean;
+  readonly exclude_failures?: boolean | undefined;
   /** Dry run mode - return what would be queued without actually queueing */
-  dry_run?: boolean;
-}
+  readonly dry_run?: boolean | undefined;
+};
 
 /**
  * Quota status for enrichment limits.
  */
-export interface QuotaStatus {
-  used: number;
-  limit: number;
-  remaining: number;
-}
+export type QuotaStatus = {
+  readonly used: number;
+  readonly limit: number;
+  readonly remaining: number;
+};
 
 /**
  * Response data for POST /admin/enrich/trigger.
  */
-export interface TriggerEnrichmentData {
-  beers_queued: number;
-  skip_reason?: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers';
-  quota: {
-    daily: QuotaStatus;
-    monthly: QuotaStatus;
+export type TriggerEnrichmentData = {
+  readonly beers_queued: number;
+  readonly skip_reason?: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers' | undefined;
+  readonly quota: {
+    readonly daily: QuotaStatus;
+    readonly monthly: QuotaStatus;
   };
-  enabled: boolean;
-  filters: {
-    exclude_failures: boolean;
+  readonly enabled: boolean;
+  readonly filters: {
+    readonly exclude_failures: boolean;
   };
-}
+};
 
 // ============================================================================
 // Force Re-Enrichment Types
@@ -203,71 +203,71 @@ export interface TriggerEnrichmentData {
  * Request body for POST /admin/enrich/force.
  * Forces re-enrichment of beers matching criteria (even if already enriched).
  */
-export interface ForceEnrichmentRequest {
-  admin_id?: string;
-  beer_ids?: string[];
-  criteria?: {
-    confidence_below?: number;           // 0.0-1.0
-    enrichment_older_than_days?: number; // positive integer
-    enrichment_source?: 'perplexity' | 'manual';
-  };
-  limit?: number;      // 1-100, default 50
-  dry_run?: boolean;   // default false
-}
+export type ForceEnrichmentRequest = {
+  readonly admin_id?: string | undefined;
+  readonly beer_ids?: readonly string[] | undefined;
+  readonly criteria?: {
+    readonly confidence_below?: number | undefined;           // 0.0-1.0
+    readonly enrichment_older_than_days?: number | undefined; // positive integer
+    readonly enrichment_source?: 'perplexity' | 'manual' | undefined;
+  } | undefined;
+  readonly limit?: number | undefined;      // 1-100, default 50
+  readonly dry_run?: boolean | undefined;   // default false
+};
 
 /**
  * Response for POST /admin/enrich/force.
  */
-export interface ForceEnrichmentResponse {
-  success: boolean;
-  requestId: string;
-  data?: {
-    matched_count: number;
-    queued_count: number;
-    skipped_count: number;
-    skipped_ids?: string[];    // IDs skipped due to race condition (included if <= 50)
-    queued_ids?: string[];     // IDs that were queued (included if <= 50)
-    dry_run: boolean;
-    applied_criteria?: object;
-    quota: {
-      daily: { used: number; limit: number; remaining: number };
-      monthly: { used: number; limit: number; remaining: number };
+export type ForceEnrichmentResponse = {
+  readonly success: boolean;
+  readonly requestId: string;
+  readonly data?: {
+    readonly matched_count: number;
+    readonly queued_count: number;
+    readonly skipped_count: number;
+    readonly skipped_ids?: readonly string[] | undefined;    // IDs skipped due to race condition (included if <= 50)
+    readonly queued_ids?: readonly string[] | undefined;     // IDs that were queued (included if <= 50)
+    readonly dry_run: boolean;
+    readonly applied_criteria?: object | undefined;
+    readonly quota: {
+      readonly daily: { readonly used: number; readonly limit: number; readonly remaining: number };
+      readonly monthly: { readonly used: number; readonly limit: number; readonly remaining: number };
     };
-  };
-  error?: { message: string; code: string };
-}
+  } | undefined;
+  readonly error?: { readonly message: string; readonly code: string } | undefined;
+};
 
 /**
  * Beer data returned from database when querying for re-enrichment.
  */
-export interface BeerToReEnrich {
-  id: string;
-  brew_name: string;
-  brewer: string | null;
-  abv: number | null;
-  confidence: number | null;
-  enrichment_source: string | null;
-  updated_at: number;
-}
+export type BeerToReEnrich = {
+  readonly id: string;
+  readonly brew_name: string;
+  readonly brewer: string | null;
+  readonly abv: number | null;
+  readonly confidence: number | null;
+  readonly enrichment_source: string | null;
+  readonly updated_at: number;
+};
 
 /**
  * Validation result for force enrichment request.
  */
-export interface ForceEnrichmentValidationResult {
-  valid: boolean;
-  error?: string;
-  errorCode?: string;
-}
+export type ForceEnrichmentValidationResult = {
+  readonly valid: boolean;
+  readonly error?: string | undefined;
+  readonly errorCode?: string | undefined;
+};
 
 /**
  * Result of clearing enrichment data (used in force re-enrichment).
  */
-export interface ClearResult {
-  clearedCount: number;
-  skippedCount: number;
-  skippedIds: string[];
-  clearedIds: string[];
-}
+export type ClearResult = {
+  readonly clearedCount: number;
+  readonly skippedCount: number;
+  readonly skippedIds: readonly string[];
+  readonly clearedIds: readonly string[];
+};
 
 // ============================================================================
 // Enrichment Quota Types
@@ -277,12 +277,12 @@ export interface ClearResult {
  * Enrichment quota status with circuit breaker checks.
  * Reusable for both /admin/enrich/trigger and /admin/enrich/force endpoints.
  */
-export interface EnrichmentQuotaStatus {
-  canProcess: boolean;
-  skipReason?: 'kill_switch' | 'daily_limit' | 'monthly_limit';
-  daily: { used: number; limit: number; remaining: number };
-  monthly: { used: number; limit: number; remaining: number };
-}
+export type EnrichmentQuotaStatus = {
+  readonly canProcess: boolean;
+  readonly skipReason?: 'kill_switch' | 'daily_limit' | 'monthly_limit' | undefined;
+  readonly daily: { readonly used: number; readonly limit: number; readonly remaining: number };
+  readonly monthly: { readonly used: number; readonly limit: number; readonly remaining: number };
+};
 
 // ============================================================================
 // Response Helper Types
@@ -291,53 +291,47 @@ export interface EnrichmentQuotaStatus {
 /**
  * Options for creating standardized error responses.
  */
-export interface ErrorResponseOptions {
-  requestId: string;
-  headers: Record<string, string>;
-  status?: number;
+export type ErrorResponseOptions = {
+  readonly requestId: string;
+  readonly headers: Record<string, string>;
+  readonly status?: number | undefined;
   /** Additional fields to include in the error response */
-  extra?: Record<string, unknown>;
-}
+  readonly extra?: Record<string, unknown> | undefined;
+};
 
 /**
  * Result from GET /beers endpoint handler.
  */
-export interface GetBeersResult {
-  response: Response;
-  beersReturned: number;
-  upstreamLatencyMs: number;
-}
+export type GetBeersResult = {
+  readonly response: Response;
+  readonly beersReturned: number;
+  readonly upstreamLatencyMs: number;
+};
 
 // ============================================================================
 // Type Guards
 // ============================================================================
 
+import { z } from 'zod';
+import { FlyingSaucerBeerSchema } from './schemas/external';
+
 /**
  * Type guard: Validates that an object is a valid FlyingSaucerBeer.
  */
 export function isValidBeer(beer: unknown): beer is FlyingSaucerBeer {
-  return (
-    typeof beer === 'object' &&
-    beer !== null &&
-    'id' in beer &&
-    typeof (beer as FlyingSaucerBeer).id === 'string' &&
-    (beer as FlyingSaucerBeer).id.length > 0 &&
-    'brew_name' in beer &&
-    typeof (beer as FlyingSaucerBeer).brew_name === 'string'
-  );
+  return FlyingSaucerBeerSchema.safeParse(beer).success;
 }
+
+const BeerStockSchema = z.object({
+  brewInStock: z.array(z.unknown()),
+}).passthrough();
 
 /**
  * Type guard: Checks if an object contains a brewInStock array.
  * Flying Saucer API returns: [{...}, {brewInStock: [...]}]
  */
 export function hasBeerStock(item: unknown): item is { brewInStock: unknown[] } {
-  return (
-    item !== null &&
-    typeof item === 'object' &&
-    'brewInStock' in item &&
-    Array.isArray((item as { brewInStock?: unknown }).brewInStock)
-  );
+  return BeerStockSchema.safeParse(item).success;
 }
 
 // ============================================================================
@@ -348,45 +342,45 @@ export function hasBeerStock(item: unknown): item is { brewInStock: unknown[] } 
  * Request body for POST /beers/sync.
  * Accepts beer data from mobile client for syncing to enriched_beers table.
  */
-export interface SyncBeersRequest {
-  beers: Array<{
-    id: string;
-    brew_name: string;
-    brewer?: string;
-    brew_description?: string;
+export type SyncBeersRequest = {
+  readonly beers: ReadonlyArray<{
+    readonly id: string;
+    readonly brew_name: string;
+    readonly brewer?: string | undefined;
+    readonly brew_description?: string | undefined;
   }>;
-}
+};
 
 /**
  * Response for POST /beers/sync.
  * Returns counts of synced and queued beers.
  */
-export interface SyncBeersResponse {
-  synced: number;
-  queued_for_cleanup: number;
-  requestId: string;
-  errors?: string[];
-}
+export type SyncBeersResponse = {
+  readonly synced: number;
+  readonly queued_for_cleanup: number;
+  readonly requestId: string;
+  readonly errors?: readonly string[] | undefined;
+};
 
 /**
  * Updated response type for POST /beers/batch.
  * Now includes missing IDs and merged descriptions (consistent with GET /beers).
  * Field names aligned with mobile app expectations.
  */
-export interface BatchLookupResponse {
-  enrichments: Record<string, {
-    enriched_abv: number | null;
-    enrichment_confidence: number;
-    enrichment_source: string | null;
-    is_verified: boolean;
+export type BatchLookupResponse = {
+  readonly enrichments: Readonly<Record<string, {
+    readonly enriched_abv: number | null;
+    readonly enrichment_confidence: number;
+    readonly enrichment_source: string | null;
+    readonly is_verified: boolean;
     /** Merged description: prefers cleaned version, falls back to original (like GET /beers) */
-    brew_description: string | null;
+    readonly brew_description: string | null;
     /** True if the brew_description came from the cleaned version */
-    has_cleaned_description: boolean;
-  }>;
-  missing: string[];
-  requestId: string;
-}
+    readonly has_cleaned_description: boolean;
+  }>>;
+  readonly missing: readonly string[];
+  readonly requestId: string;
+};
 
 /**
  * Constants for sync endpoint validation.
@@ -407,59 +401,59 @@ export const SYNC_CONSTANTS = {
 /**
  * Request body for POST /admin/cleanup/trigger
  */
-export interface TriggerCleanupRequest {
+export type TriggerCleanupRequest = {
   /** Operation mode: 'all' resets and re-queues, 'missing' only queues unprocessed */
-  mode: 'all' | 'missing';
+  readonly mode: 'all' | 'missing';
   /** Max beers to process (1-500, default 500) */
-  limit?: number;
+  readonly limit?: number | undefined;
   /** Preview without making changes */
-  dry_run?: boolean;
+  readonly dry_run?: boolean | undefined;
   /** Required for mode: 'all' to prevent accidents */
-  confirm?: boolean;
-}
+  readonly confirm?: boolean | undefined;
+};
 
 /**
  * Preview data returned when confirm is missing for mode: 'all'
  */
-export interface CleanupPreview {
+export type CleanupPreview = {
   /** Number of beers that would have cleanup fields reset */
-  beers_would_reset: number;
+  readonly beers_would_reset: number;
   /** Number of beers that would be skipped (blocklisted) */
-  beers_would_skip: number;
+  readonly beers_would_skip: number;
   /** Total beers matching criteria */
-  beers_total: number;
-}
+  readonly beers_total: number;
+};
 
 /**
  * Response data for POST /admin/cleanup/trigger
  */
-export interface TriggerCleanupData {
+export type TriggerCleanupData = {
   /** Unique operation ID for tracking */
-  operation_id: string;
+  readonly operation_id: string;
   /** Beers sent to queue */
-  beers_queued: number;
+  readonly beers_queued: number;
   /** Beers skipped (blocklisted) */
-  beers_skipped: number;
+  readonly beers_skipped: number;
   /** Beers reset (only present for mode: 'all') */
-  beers_reset?: number;
+  readonly beers_reset?: number | undefined;
   /** Beers matching but not processed (due to limit) */
-  beers_remaining: number;
+  readonly beers_remaining: number;
   /** Operation mode used */
-  mode: 'all' | 'missing';
+  readonly mode: 'all' | 'missing';
   /** Was this a dry run */
-  dry_run: boolean;
+  readonly dry_run: boolean;
   /** Present if no beers queued */
-  skip_reason?: 'no_eligible_beers';
+  readonly skip_reason?: 'no_eligible_beers' | undefined;
   /** Quota information */
-  quota: {
-    daily: {
-      used: number;
-      limit: number;
-      remaining: number;
-      projected_after: number;
+  readonly quota: {
+    readonly daily: {
+      readonly used: number;
+      readonly limit: number;
+      readonly remaining: number;
+      readonly projected_after: number;
     };
   };
-}
+};
 
 /**
  * Constants for cleanup trigger endpoint.
@@ -480,8 +474,8 @@ export const CLEANUP_TRIGGER_CONSTANTS = {
 /**
  * Validation result for cleanup trigger request.
  */
-export interface CleanupTriggerValidationResult {
-  valid: boolean;
-  error?: string;
-  errorCode?: string;
-}
+export type CleanupTriggerValidationResult = {
+  readonly valid: boolean;
+  readonly error?: string | undefined;
+  readonly errorCode?: string | undefined;
+};

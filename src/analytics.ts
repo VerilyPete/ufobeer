@@ -42,28 +42,28 @@ export interface AnalyticsEngineDataset {
 /**
  * Metrics for tracking HTTP requests to the worker.
  */
-export interface RequestMetrics {
-  endpoint: string;
-  method: string;
-  storeId?: string;
-  statusCode: number;
-  errorType?: string;
-  clientId: string;
-  responseTimeMs: number;
-  beersReturned?: number;
-  cacheHit?: boolean;
-  upstreamLatencyMs?: number;
-}
+export type RequestMetrics = {
+  readonly endpoint: string;
+  readonly method: string;
+  readonly storeId?: string | undefined;
+  readonly statusCode: number;
+  readonly errorType?: string | undefined;
+  readonly clientId: string;
+  readonly responseTimeMs: number;
+  readonly beersReturned?: number | undefined;
+  readonly cacheHit?: boolean | undefined;
+  readonly upstreamLatencyMs?: number | undefined;
+};
 
 /**
  * Metrics for tracking enrichment operations.
  */
-export interface EnrichmentMetrics {
-  beerId: string;
-  source: 'perplexity' | 'cache';
-  success: boolean;
-  durationMs: number;
-}
+export type EnrichmentMetrics = {
+  readonly beerId: string;
+  readonly source: 'perplexity' | 'cache';
+  readonly success: boolean;
+  readonly durationMs: number;
+};
 
 /**
  * Metrics for tracking cron job executions.
@@ -71,17 +71,17 @@ export interface EnrichmentMetrics {
  * Note: Use `skipReason` for non-error early exits (kill_switch, daily_limit, etc.)
  * and `errorType` only for actual errors (exception, etc.)
  */
-export interface CronMetrics {
-  beersQueued: number;
-  dailyRemaining: number;
-  monthlyRemaining: number;
-  durationMs: number;
-  success: boolean;
+export type CronMetrics = {
+  readonly beersQueued: number;
+  readonly dailyRemaining: number;
+  readonly monthlyRemaining: number;
+  readonly durationMs: number;
+  readonly success: boolean;
   /** Reason for skipping enrichment (non-error early exit) */
-  skipReason?: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_beers';
+  readonly skipReason?: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_beers' | undefined;
   /** Error type for actual failures */
-  errorType?: string;
-}
+  readonly errorType?: string | undefined;
+};
 
 /**
  * Get HTTP status category (2xx, 3xx, 4xx, 5xx)
@@ -220,7 +220,8 @@ export function trackCron(
   metrics: CronMetrics
 ): void {
   // Use date in index for better sampling distribution
-  const today = new Date().toISOString().split('T')[0];
+  const parts = new Date().toISOString().split('T');
+  const today = parts[0] ?? '';
 
   // Determine blob5 value: skipReason for non-error exits, errorType for actual errors
   let blob5Value: string;
@@ -300,25 +301,25 @@ export function trackRateLimit(
 /**
  * Metrics for tracking admin DLQ operations.
  */
-export interface AdminDlqMetrics {
-  operation: 'dlq_list' | 'dlq_replay' | 'dlq_acknowledge' | 'dlq_stats';
-  success: boolean;
-  messageCount: number;
-  durationMs: number;
-  errorType?: string;
-}
+export type AdminDlqMetrics = {
+  readonly operation: 'dlq_list' | 'dlq_replay' | 'dlq_acknowledge' | 'dlq_stats';
+  readonly success: boolean;
+  readonly messageCount: number;
+  readonly durationMs: number;
+  readonly errorType?: string | undefined;
+};
 
 /**
  * Metrics for tracking DLQ consumer operations (storing messages to D1).
  */
-export interface DlqConsumerMetrics {
-  beerId: string;
-  attempts: number;
-  sourceQueue: string;
-  success: boolean;
-  durationMs: number;
-  errorType?: string;
-}
+export type DlqConsumerMetrics = {
+  readonly beerId: string;
+  readonly attempts: number;
+  readonly sourceQueue: string;
+  readonly success: boolean;
+  readonly durationMs: number;
+  readonly errorType?: string | undefined;
+};
 
 /**
  * Track admin DLQ operations for audit and monitoring.
@@ -391,30 +392,30 @@ export function trackDlqConsumer(
 /**
  * Metrics for tracking admin enrichment trigger operations.
  */
-export interface AdminTriggerMetrics {
-  beersQueued: number;
-  dailyRemaining: number;
-  monthlyRemaining: number;
-  durationMs: number;
-  success: boolean;
+export type AdminTriggerMetrics = {
+  readonly beersQueued: number;
+  readonly dailyRemaining: number;
+  readonly monthlyRemaining: number;
+  readonly durationMs: number;
+  readonly success: boolean;
   /** Reason for skipping enrichment (non-error early exit) */
-  skipReason?: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers';
+  readonly skipReason?: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers' | undefined;
   /** Error type for actual failures */
-  errorType?: string;
-}
+  readonly errorType?: string | undefined;
+};
 
 /**
  * Metrics for tracking admin cleanup trigger operations.
  */
-export interface CleanupTriggerMetrics {
-  action: string;
-  mode: string;
-  beersQueued: number;
-  beersSkipped: number;
-  beersReset: number;
-  durationMs: number;
-  dryRun: boolean;
-}
+export type CleanupTriggerMetrics = {
+  readonly action: string;
+  readonly mode: string;
+  readonly beersQueued: number;
+  readonly beersSkipped: number;
+  readonly beersReset: number;
+  readonly durationMs: number;
+  readonly dryRun: boolean;
+};
 
 /**
  * Track admin cleanup trigger operations.

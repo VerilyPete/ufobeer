@@ -13,16 +13,19 @@
 import type {
   Env,
   RequestContext,
-  FlyingSaucerBeer,
   GetBeersResult,
-  SyncBeersRequest,
 } from '../types';
 import { isValidBeer, hasBeerStock, SYNC_CONSTANTS } from '../types';
 import { insertPlaceholders, getEnrichmentForBeerIds } from '../db';
 import { queueBeersForEnrichment, queueBeersForCleanup } from '../queue';
 import { hashDescription } from '../utils/hash';
 import { isValidStoreId } from '../validation/storeId';
-import { log, logError, logWithContext } from '../utils/log';
+import { logError, logWithContext } from '../utils/log';
+import {
+  BatchLookupRequestSchema,
+  SyncBeersRequestOuterSchema,
+  SyncBeerItemSchema,
+} from '../schemas/request';
 
 // ============================================================================
 // Background Enrichment Processing
@@ -34,7 +37,7 @@ import { log, logError, logWithContext } from '../utils/log';
  */
 async function processBackgroundEnrichment(
   env: Env,
-  beers: Array<{ id: string; brew_name: string; brewer: string; brew_description?: string }>,
+  beers: Array<{ id: string; brew_name: string; brewer: string; brew_description?: string | undefined }>,
   requestId: string
 ): Promise<void> {
   try {
@@ -222,16 +225,14 @@ export async function handleBatchLookup(
   reqCtx: RequestContext
 ): Promise<Response> {
   try {
-    const body = await request.json() as { ids?: string[] };
-    const ids = body.ids;
-
-    // Validate input
-    if (!Array.isArray(ids) || ids.length === 0) {
+    const parseResult = BatchLookupRequestSchema.safeParse(await request.json());
+    if (!parseResult.success) {
       return Response.json(
         { error: 'ids array required', requestId: reqCtx.requestId },
         { status: 400, headers }
       );
     }
+    const { ids } = parseResult.data;
 
     // Limit batch size to 100
     const limitedIds = ids.slice(0, 100);
@@ -301,55 +302,13 @@ export async function handleBatchLookup(
 // ============================================================================
 
 /**
- * Validation result for beer input in sync request.
- */
-export interface BeerValidationResult {
-  valid: boolean;
-  error?: string;
-}
-
-/**
- * Validate a single beer object from sync request.
- * Checks required fields and length constraints.
- */
-export function validateBeerInput(beer: unknown): BeerValidationResult {
-  if (!beer || typeof beer !== 'object') {
-    return { valid: false, error: 'Beer must be an object' };
-  }
-
-  const b = beer as Record<string, unknown>;
-
-  // id validation
-  if (typeof b.id !== 'string' || b.id.length === 0 || b.id.length > SYNC_CONSTANTS.MAX_ID_LENGTH) {
-    return { valid: false, error: `id must be a non-empty string with max ${SYNC_CONSTANTS.MAX_ID_LENGTH} characters` };
-  }
-
-  // brew_name validation
-  if (typeof b.brew_name !== 'string' || b.brew_name.length === 0) {
-    return { valid: false, error: 'brew_name is required and must be a non-empty string' };
-  }
-  if (b.brew_name.length > SYNC_CONSTANTS.MAX_BREW_NAME_LENGTH) {
-    return { valid: false, error: `brew_name exceeds max length of ${SYNC_CONSTANTS.MAX_BREW_NAME_LENGTH} characters` };
-  }
-
-  // brew_description validation
-  if (b.brew_description !== undefined && typeof b.brew_description === 'string') {
-    if (b.brew_description.length > SYNC_CONSTANTS.MAX_DESC_LENGTH) {
-      return { valid: false, error: `brew_description exceeds max length of ${SYNC_CONSTANTS.MAX_DESC_LENGTH} characters` };
-    }
-  }
-
-  return { valid: true };
-}
-
-/**
  * Result of batch sync operation with failure handling.
  */
-export interface SyncBatchResult {
-  succeeded: number;
-  failed: number;
-  errors: string[];
-}
+export type SyncBatchResult = {
+  readonly succeeded: number;
+  readonly failed: number;
+  readonly errors: readonly string[];
+};
 
 /**
  * Execute batch of D1 statements with individual failure tracking.
@@ -369,6 +328,7 @@ export async function syncBeersWithBatchHandling(
     // Check each result for success/failure
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
+      if (!result) continue;
       if (result.success) {
         succeeded++;
       } else {
@@ -403,17 +363,15 @@ export async function handleBeerSync(
   reqCtx: RequestContext
 ): Promise<Response> {
   try {
-    const body = await request.json() as SyncBeersRequest;
-
-    // Validate request structure
-    if (!body.beers || !Array.isArray(body.beers)) {
+    const outerParse = SyncBeersRequestOuterSchema.safeParse(await request.json());
+    if (!outerParse.success) {
       return Response.json(
         { error: 'beers array required', requestId: reqCtx.requestId },
         { status: 400, headers }
       );
     }
 
-    if (body.beers.length === 0) {
+    if (outerParse.data.beers.length === 0) {
       return Response.json(
         { synced: 0, queued_for_cleanup: 0, requestId: reqCtx.requestId },
         { headers }
@@ -421,7 +379,7 @@ export async function handleBeerSync(
     }
 
     // Limit batch size
-    const beers = body.beers.slice(0, SYNC_CONSTANTS.MAX_BATCH_SIZE);
+    const beers = outerParse.data.beers.slice(0, SYNC_CONSTANTS.MAX_BATCH_SIZE);
     const validationErrors: string[] = [];
     const validBeers: Array<{
       id: string;
@@ -430,18 +388,18 @@ export async function handleBeerSync(
       brew_description: string | null;
     }> = [];
 
-    // Validate each beer
+    // Validate each beer individually (preserves per-beer partial success)
     for (let i = 0; i < beers.length; i++) {
       const beer = beers[i];
-      const validation = validateBeerInput(beer);
-      if (!validation.valid) {
-        validationErrors.push(`Beer ${i}: ${validation.error}`);
+      const beerParse = SyncBeerItemSchema.safeParse(beer);
+      if (!beerParse.success) {
+        validationErrors.push(`Beer ${i}: ${beerParse.error.issues[0]?.message ?? 'invalid'}`);
       } else {
         validBeers.push({
-          id: beer.id,
-          brew_name: beer.brew_name,
-          brewer: beer.brewer || null,
-          brew_description: beer.brew_description || null,
+          id: beerParse.data.id,
+          brew_name: beerParse.data.brew_name,
+          brewer: beerParse.data.brewer ?? null,
+          brew_description: beerParse.data.brew_description ?? null,
         });
       }
     }

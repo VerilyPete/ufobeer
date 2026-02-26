@@ -4,13 +4,9 @@
  * @module test/cleanupHelpers.test
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   withTimeout,
-  isCircuitBreakerOpen,
-  recordCallLatency,
-  resetCircuitBreaker,
-  getCircuitBreakerState,
   reserveCleanupQuotaBatch,
   batchUpdateWithRetry,
   AI_TIMEOUT_MS,
@@ -18,6 +14,7 @@ import {
   SLOW_CALL_LIMIT,
   BREAKER_RESET_MS,
 } from '../src/queue/cleanupHelpers';
+import { createCircuitBreaker } from '../src/queue/circuitBreaker';
 
 // ============================================================================
 // withTimeout Tests
@@ -35,14 +32,14 @@ describe('withTimeout', () => {
   });
 
   it('clears timeout on success (no memory leak)', async () => {
-    const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
     await withTimeout(Promise.resolve('success'), 1000);
     expect(clearTimeoutSpy).toHaveBeenCalled();
     clearTimeoutSpy.mockRestore();
   });
 
   it('clears timeout on rejection (no memory leak)', async () => {
-    const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
     await expect(withTimeout(Promise.reject(new Error('original error')), 1000))
       .rejects.toThrow('original error');
     expect(clearTimeoutSpy).toHaveBeenCalled();
@@ -59,12 +56,7 @@ describe('withTimeout', () => {
 // Circuit Breaker Tests
 // ============================================================================
 
-describe('circuit breaker', () => {
-  beforeEach(() => {
-    // Reset circuit breaker state between tests using exported function
-    resetCircuitBreaker();
-  });
-
+describe('circuit breaker (via createCircuitBreaker)', () => {
   it('exports expected constants', () => {
     expect(AI_TIMEOUT_MS).toBe(10_000);
     expect(SLOW_THRESHOLD_MS).toBe(5000);
@@ -73,69 +65,68 @@ describe('circuit breaker', () => {
   });
 
   it('starts in closed state', () => {
-    expect(isCircuitBreakerOpen()).toBe(false);
-    const state = getCircuitBreakerState();
+    const breaker = createCircuitBreaker();
+    expect(breaker.isOpen()).toBe(false);
+    const state = breaker.getState();
     expect(state.isOpen).toBe(false);
     expect(state.slowCallCount).toBe(0);
   });
 
   it('does not open for fast calls', () => {
-    // Record fast calls (under threshold)
+    const breaker = createCircuitBreaker();
     for (let i = 0; i < 10; i++) {
-      recordCallLatency(SLOW_THRESHOLD_MS - 1, i, 10, `beer-${i}`);
+      breaker.recordLatency(SLOW_THRESHOLD_MS - 1, i, 10, `beer-${i}`);
     }
-    expect(isCircuitBreakerOpen()).toBe(false);
+    expect(breaker.isOpen()).toBe(false);
   });
 
   it('does not open for fewer than SLOW_CALL_LIMIT slow calls', () => {
-    // Record one less than limit
+    const breaker = createCircuitBreaker();
     for (let i = 0; i < SLOW_CALL_LIMIT - 1; i++) {
-      recordCallLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
+      breaker.recordLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
     }
-    expect(isCircuitBreakerOpen()).toBe(false);
+    expect(breaker.isOpen()).toBe(false);
   });
 
   it('opens after exactly SLOW_CALL_LIMIT slow calls', () => {
+    const breaker = createCircuitBreaker();
     for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
-      recordCallLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
+      breaker.recordLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
     }
-    expect(isCircuitBreakerOpen()).toBe(true);
+    expect(breaker.isOpen()).toBe(true);
   });
 
   it('tracks beer IDs that triggered slow calls', () => {
+    const breaker = createCircuitBreaker();
     for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
-      recordCallLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
+      breaker.recordLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
     }
-    const state = getCircuitBreakerState();
+    const state = breaker.getState();
     expect(state.slowBeerIds).toEqual(['beer-0', 'beer-1', 'beer-2']);
   });
 
   it('remains open immediately after opening', () => {
-    // Open the breaker
+    const breaker = createCircuitBreaker();
     for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
-      recordCallLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
+      breaker.recordLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
     }
-    expect(isCircuitBreakerOpen()).toBe(true);
-
-    // Check again immediately
-    expect(isCircuitBreakerOpen()).toBe(true);
+    expect(breaker.isOpen()).toBe(true);
+    expect(breaker.isOpen()).toBe(true);
   });
 
   it('resets to half-open after BREAKER_RESET_MS', () => {
-    // Open the breaker
+    const breaker = createCircuitBreaker();
     for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
-      recordCallLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
+      breaker.recordLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
     }
-    expect(isCircuitBreakerOpen()).toBe(true);
+    expect(breaker.isOpen()).toBe(true);
 
-    // Simulate time passing by manipulating Date.now()
     const originalNow = Date.now();
     vi.spyOn(Date, 'now').mockReturnValue(originalNow + BREAKER_RESET_MS + 1);
 
-    expect(isCircuitBreakerOpen()).toBe(false);
+    expect(breaker.isOpen()).toBe(false);
 
-    // Verify state was reset
-    const state = getCircuitBreakerState();
+    const state = breaker.getState();
     expect(state.isOpen).toBe(false);
     expect(state.slowCallCount).toBe(0);
     expect(state.slowBeerIds).toEqual([]);
@@ -143,19 +134,17 @@ describe('circuit breaker', () => {
     vi.restoreAllMocks();
   });
 
-  it('resetCircuitBreaker clears all state', () => {
-    // Open the breaker
+  it('reset() clears all state', () => {
+    const breaker = createCircuitBreaker();
     for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
-      recordCallLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
+      breaker.recordLatency(SLOW_THRESHOLD_MS + 1, i, 10, `beer-${i}`);
     }
-    expect(isCircuitBreakerOpen()).toBe(true);
+    expect(breaker.isOpen()).toBe(true);
 
-    // Reset
-    resetCircuitBreaker();
+    breaker.reset();
 
-    // Verify reset
-    expect(isCircuitBreakerOpen()).toBe(false);
-    const state = getCircuitBreakerState();
+    expect(breaker.isOpen()).toBe(false);
+    const state = breaker.getState();
     expect(state.isOpen).toBe(false);
     expect(state.slowCallCount).toBe(0);
     expect(state.lastOpenedAt).toBe(0);
@@ -303,7 +292,7 @@ describe('batchUpdateWithRetry', () => {
 
   it('uses exponential backoff between retries', async () => {
     vi.useFakeTimers();
-    const setTimeoutSpy = vi.spyOn(global, 'setTimeout');
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
 
     const mockBatch = vi.fn()
       .mockRejectedValueOnce(new Error('error 1'))

@@ -83,6 +83,7 @@ export async function handleEnrichmentBatch(
   // Process messages one at a time with atomic reservation
   for (let i = 0; i < batch.messages.length; i++) {
     const message = batch.messages[i];
+    if (!message) continue;
     const { beerId, beerName, brewer } = message.body;
 
     // Check if beer already has ABV (from description parsing or previous enrichment)

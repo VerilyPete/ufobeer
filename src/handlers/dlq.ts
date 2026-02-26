@@ -12,16 +12,19 @@
  * Extracted from index.ts as part of Phase 7 refactoring.
  */
 
+import { z } from 'zod';
 import type {
   Env,
   RequestContext,
   DlqMessageRow,
   PaginationCursor,
-  DlqReplayRequest,
-  DlqAcknowledgeRequest,
-  EnrichmentMessage,
 } from '../types';
 import { errorResponse } from '../context';
+import {
+  DlqReplayRequestSchema,
+  DlqAcknowledgeRequestSchema,
+  EnrichmentMessageSchema,
+} from '../schemas/request';
 
 // ============================================================================
 // DLQ List Handler
@@ -43,10 +46,22 @@ export async function handleDlqList(
   const includeRaw = params.get('include_raw') === 'true';
 
   // Decode cursor if provided
+  const CursorSchema = z.object({
+    id: z.number(),
+    failed_at: z.number(),
+  });
   let cursor: PaginationCursor | null = null;
   if (cursorParam) {
     try {
-      cursor = JSON.parse(atob(cursorParam));
+      const cursorParse = CursorSchema.safeParse(JSON.parse(atob(cursorParam)));
+      if (!cursorParse.success) {
+        return errorResponse(
+          'Invalid cursor format',
+          'INVALID_CURSOR',
+          { requestId: reqCtx.requestId, headers, status: 400 }
+        );
+      }
+      cursor = cursorParse.data;
     } catch {
       return errorResponse(
         'Invalid cursor format',
@@ -93,11 +108,13 @@ export async function handleDlqList(
     let nextCursor: string | null = null;
     if (hasMore && pageResults.length > 0) {
       const lastItem = pageResults[pageResults.length - 1];
-      const cursorData: PaginationCursor = {
-        failed_at: lastItem.failed_at,
-        id: lastItem.id,
-      };
-      nextCursor = btoa(JSON.stringify(cursorData));
+      if (lastItem) {
+        const cursorData: PaginationCursor = {
+          failed_at: lastItem.failed_at,
+          id: lastItem.id,
+        };
+        nextCursor = btoa(JSON.stringify(cursorData));
+      }
     }
 
     // Get total count for the filtered status (for display purposes)
@@ -283,16 +300,15 @@ export async function handleDlqReplay(
   reqCtx: RequestContext
 ): Promise<Response> {
   try {
-    const body = await request.json() as DlqReplayRequest;
-    const { ids, delay_seconds = 0 } = body;
-
-    if (!Array.isArray(ids) || ids.length === 0) {
+    const parseResult = DlqReplayRequestSchema.safeParse(await request.json());
+    if (!parseResult.success) {
       return errorResponse(
         'ids array required',
         'INVALID_REQUEST',
         { requestId: reqCtx.requestId, headers, status: 400 }
       );
     }
+    const { ids, delay_seconds } = parseResult.data;
 
     // Limit batch size
     const limitedIds = ids.slice(0, 50);
@@ -333,11 +349,18 @@ export async function handleDlqReplay(
     // STEP 3: Send messages to queue
     for (const row of results) {
       try {
-        const messageBody = JSON.parse(row.raw_message) as EnrichmentMessage;
+        const parsed = EnrichmentMessageSchema.safeParse(JSON.parse(row.raw_message));
+        if (!parsed.success) {
+          console.warn(`Skipping corrupt DLQ row: dlqId=${row.id}`);
+          failedIds.push(row.id);
+          continue;
+        }
+        const messageBody = parsed.data;
 
-        await env.ENRICHMENT_QUEUE.send(messageBody, {
-          delaySeconds: delay_seconds > 0 ? delay_seconds : undefined,
-        });
+        await env.ENRICHMENT_QUEUE.send(
+          messageBody,
+          delay_seconds > 0 ? { delaySeconds: delay_seconds } : {}
+        );
 
         replayedIds.push(row.id);
         replayedCount++;
@@ -407,16 +430,15 @@ export async function handleDlqAcknowledge(
   reqCtx: RequestContext
 ): Promise<Response> {
   try {
-    const body = await request.json() as DlqAcknowledgeRequest;
-    const { ids } = body;
-
-    if (!Array.isArray(ids) || ids.length === 0) {
+    const parseResult = DlqAcknowledgeRequestSchema.safeParse(await request.json());
+    if (!parseResult.success) {
       return errorResponse(
         'ids array required',
         'INVALID_REQUEST',
         { requestId: reqCtx.requestId, headers, status: 400 }
       );
     }
+    const { ids } = parseResult.data;
 
     // Limit batch size
     const limitedIds = ids.slice(0, 100);

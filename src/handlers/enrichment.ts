@@ -12,27 +12,27 @@
 import type {
   Env,
   RequestContext,
-  TriggerEnrichmentRequest,
   TriggerEnrichmentData,
-  ForceEnrichmentRequest,
   ForceEnrichmentValidationResult,
-  QuotaStatus,
 } from '../types';
 import { shouldSkipEnrichment } from '../config';
 import { errorResponse } from '../context';
+import { getToday, getMonthEnd } from '../utils/date';
+import {
+  TriggerEnrichmentRequestSchema,
+  ForceEnrichmentRequestSchema,
+} from '../schemas/request';
+import { mapZodIssueToErrorCode, extractZodErrorMessage } from '../schemas/errors';
 
 // ============================================================================
 // Request Validation
 // ============================================================================
 
 /**
- * Validate force re-enrichment request.
- * IMPORTANT: Either beer_ids OR criteria is required. Empty body is rejected.
- *
- * Moved from types.ts - this contains validation logic beyond type checking.
+ * Validate force re-enrichment request using ForceEnrichmentRequestSchema.
+ * Preserves backwards-compatible error codes via mapZodIssueToErrorCode.
  */
 export function validateForceEnrichmentRequest(body: unknown): ForceEnrichmentValidationResult {
-  // Reject null/undefined/non-object
   if (body === null || body === undefined || typeof body !== 'object') {
     return {
       valid: false,
@@ -41,96 +41,20 @@ export function validateForceEnrichmentRequest(body: unknown): ForceEnrichmentVa
     };
   }
 
-  const req = body as ForceEnrichmentRequest;
-
-  // Must specify either beer_ids OR criteria (not both, not neither)
-  const hasBeerIds = req.beer_ids !== undefined;
-  const hasCriteria = req.criteria !== undefined;
-
-  if (hasBeerIds && hasCriteria) {
+  const result = ForceEnrichmentRequestSchema.safeParse(body);
+  if (!result.success) {
+    const firstIssue = result.error.issues[0];
+    if (!firstIssue) {
+      return { valid: false, error: 'Invalid request', errorCode: 'INVALID_REQUEST' };
+    }
+    const errorCode = mapZodIssueToErrorCode(firstIssue);
+    const errorMessage = extractZodErrorMessage(firstIssue);
     return {
       valid: false,
-      error: 'Cannot specify both beer_ids and criteria',
-      errorCode: 'INVALID_REQUEST_BOTH_SPECIFIED',
+      error: errorMessage,
+      errorCode,
     };
   }
-
-  if (!hasBeerIds && !hasCriteria) {
-    return {
-      valid: false,
-      error: 'Must specify either beer_ids or criteria',
-      errorCode: 'INVALID_REQUEST_NEITHER_SPECIFIED',
-    };
-  }
-
-  // Validate beer_ids
-  if (hasBeerIds) {
-    if (!Array.isArray(req.beer_ids)) {
-      return { valid: false, error: 'beer_ids must be an array', errorCode: 'INVALID_BEER_IDS' };
-    }
-    if (req.beer_ids.length === 0) {
-      return { valid: false, error: 'beer_ids cannot be empty', errorCode: 'INVALID_BEER_IDS_EMPTY' };
-    }
-    if (req.beer_ids.length > 100) {
-      return { valid: false, error: 'beer_ids max 100 items', errorCode: 'INVALID_BEER_IDS_TOO_MANY' };
-    }
-    if (!req.beer_ids.every(id => typeof id === 'string' && id.length > 0)) {
-      return { valid: false, error: 'All beer_ids must be non-empty strings', errorCode: 'INVALID_BEER_IDS_FORMAT' };
-    }
-  }
-
-  // Validate criteria
-  if (hasCriteria) {
-    if (typeof req.criteria !== 'object' || req.criteria === null) {
-      return { valid: false, error: 'criteria must be an object', errorCode: 'INVALID_CRITERIA' };
-    }
-    if (Object.keys(req.criteria).length === 0) {
-      return { valid: false, error: 'criteria cannot be empty', errorCode: 'INVALID_CRITERIA_EMPTY' };
-    }
-
-    // confidence_below: 0.0-1.0
-    if (req.criteria.confidence_below !== undefined) {
-      const c = req.criteria.confidence_below;
-      if (typeof c !== 'number' || c < 0 || c > 1) {
-        return { valid: false, error: 'confidence_below must be 0.0-1.0', errorCode: 'INVALID_CONFIDENCE' };
-      }
-    }
-
-    // enrichment_older_than_days: positive integer
-    if (req.criteria.enrichment_older_than_days !== undefined) {
-      const d = req.criteria.enrichment_older_than_days;
-      if (typeof d !== 'number' || d < 1 || !Number.isInteger(d)) {
-        return { valid: false, error: 'enrichment_older_than_days must be positive integer', errorCode: 'INVALID_DAYS' };
-      }
-    }
-
-    // enrichment_source: 'perplexity' | 'manual'
-    if (req.criteria.enrichment_source !== undefined) {
-      if (!['perplexity', 'manual'].includes(req.criteria.enrichment_source)) {
-        return { valid: false, error: "enrichment_source must be 'perplexity' or 'manual'", errorCode: 'INVALID_SOURCE' };
-      }
-    }
-  }
-
-  // Validate limit: 1-100
-  if (req.limit !== undefined) {
-    if (typeof req.limit !== 'number' || req.limit < 1 || req.limit > 100) {
-      return { valid: false, error: 'limit must be 1-100', errorCode: 'INVALID_LIMIT' };
-    }
-  }
-
-  // Validate dry_run: boolean
-  if (req.dry_run !== undefined && typeof req.dry_run !== 'boolean') {
-    return { valid: false, error: 'dry_run must be boolean', errorCode: 'INVALID_DRY_RUN' };
-  }
-
-  // Validate admin_id: non-empty string if provided
-  if (req.admin_id !== undefined) {
-    if (typeof req.admin_id !== 'string' || req.admin_id.trim().length === 0) {
-      return { valid: false, error: 'admin_id must be non-empty string', errorCode: 'INVALID_ADMIN_ID' };
-    }
-  }
-
   return { valid: true };
 }
 
@@ -155,17 +79,26 @@ export async function handleEnrichmentTrigger(
   const dailyLimit = parseInt(env.DAILY_ENRICHMENT_LIMIT || '500');
   const monthlyLimit = parseInt(env.MONTHLY_ENRICHMENT_LIMIT || '2000');
   const now = new Date();
-  const today = now.toISOString().split('T')[0];
+  const today = getToday(now);
   const monthStart = today.slice(0, 7) + '-01';
-  // Calculate last day of current month correctly
-  const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const monthEnd = today.slice(0, 7) + '-' + String(lastDayOfMonth).padStart(2, '0');
+  const monthEnd = getMonthEnd(now);
 
   try {
-    // Parse request body
-    const body = await request.json().catch(() => ({})) as TriggerEnrichmentRequest;
-    const requestedLimit = Math.min(Math.max(1, body.limit || 50), 100); // Clamp to 1-100
-    const excludeFailures = body.exclude_failures ?? false;
+    // Parse request body - empty body is valid (all fields optional with defaults)
+    const raw = await request.json().catch(() => ({}));
+    const isEmpty = typeof raw === 'object' && raw !== null && Object.keys(raw as Record<string, unknown>).length === 0;
+    if (!isEmpty) {
+      const validation = TriggerEnrichmentRequestSchema.safeParse(raw);
+      if (!validation.success) {
+        return Response.json(
+          { error: 'Invalid request body', requestId: reqCtx.requestId },
+          { status: 400, headers }
+        );
+      }
+    }
+    const body = TriggerEnrichmentRequestSchema.parse(raw);
+    const requestedLimit = Math.min(Math.max(1, body.limit ?? 50), 100); // Clamp to 1-100
+    const excludeFailures = body.exclude_failures;
 
     // Helper to build response
     const buildResponse = (
@@ -176,7 +109,7 @@ export async function handleEnrichmentTrigger(
     ): Response => {
       const data: TriggerEnrichmentData = {
         beers_queued: beersQueued,
-        skip_reason: skipReason,
+        ...(skipReason && { skip_reason: skipReason }),
         quota: {
           daily: {
             used: dailyUsed,
@@ -194,11 +127,6 @@ export async function handleEnrichmentTrigger(
           exclude_failures: excludeFailures,
         },
       };
-
-      // Remove skip_reason if not set
-      if (!data.skip_reason) {
-        delete data.skip_reason;
-      }
 
       return Response.json({
         success: true,

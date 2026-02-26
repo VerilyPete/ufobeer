@@ -33,14 +33,14 @@ export function getEndpointRateLimitKey(clientIdentifier: string, endpoint: stri
 /**
  * Result of a rate limit check.
  */
-export interface RateLimitResult {
+export type RateLimitResult = {
   /** Whether the request is allowed (within rate limit) */
-  allowed: boolean;
+  readonly allowed: boolean;
   /** Number of remaining requests in the current window */
-  remaining: number;
+  readonly remaining: number;
   /** Timestamp (ms) when the rate limit window resets */
-  resetAt: number;
-}
+  readonly resetAt: number;
+};
 
 /**
  * Check and update rate limit for a client.

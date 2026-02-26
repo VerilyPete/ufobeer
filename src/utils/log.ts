@@ -4,9 +4,9 @@
  * All logs are JSON-formatted for easy parsing in Cloudflare's dashboard.
  */
 
-export interface LogData {
-  [key: string]: unknown;
-}
+export type LogData = {
+  readonly [key: string]: unknown;
+};
 
 /**
  * Log an informational event.

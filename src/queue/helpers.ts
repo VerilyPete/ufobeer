@@ -29,7 +29,7 @@ const BATCH_SIZE = 100; // Cloudflare Queues sendBatch limit
  */
 export async function queueBeersForEnrichment(
   env: Env,
-  beers: Array<{ id: string; brew_name: string; brewer: string }>,
+  beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string }>,
   requestId: string
 ): Promise<{ queued: number; skipped: number }> {
   const eligible = beers.filter(b => !shouldSkipEnrichment(b.brew_name));
@@ -53,7 +53,7 @@ export async function queueBeersForEnrichment(
         beerId: beer.id,
         beerName: beer.brew_name,
         brewer: beer.brewer,
-      } as EnrichmentMessage,
+      } satisfies EnrichmentMessage,
     }));
 
     try {
@@ -95,7 +95,7 @@ export async function queueBeersForEnrichment(
  */
 export async function queueBeersForCleanup(
   env: Env,
-  beers: Array<{ id: string; brew_name: string; brewer: string; brew_description: string }>,
+  beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string; readonly brew_description: string }>,
   requestId: string
 ): Promise<{ queued: number; skipped: number }> {
   const eligible = beers.filter(b => !shouldSkipEnrichment(b.brew_name));
@@ -120,7 +120,7 @@ export async function queueBeersForCleanup(
         beerName: beer.brew_name,
         brewer: beer.brewer,
         brewDescription: beer.brew_description,
-      } as CleanupMessage,
+      } satisfies CleanupMessage,
     }));
 
     try {
