@@ -33,7 +33,25 @@
 - 18 new tests adequate
 - No regressions
 
-## Phase 5a: Circuit Breaker — REVIEW IN PROGRESS
+## Phase 3b: Schema Integration — APPROVED
+- All `as` casts at trust boundaries replaced with `safeParse()`
+- `handleBeerSync` preserves per-beer partial success (`SyncBeerItemSchema` per item)
+- `handleEnrichmentTrigger` correctly handles empty body vs invalid body
+- Backwards-compatible error codes preserved via `mapZodIssueToErrorCode`
+- `isValidBeer` and `hasBeerStock` rewritten with schemas
+- `satisfies` replacements in `queue/helpers.ts` correct
+- 16 `as` casts eliminated
+- No regressions
+
+## Phase 4b: Cast Cleanup — APPROVED
+- Queue routing comments in `index.ts` accurate
+- `parseResponseAnalytics` helper centralizes 5 admin response casts
+- E3 trust boundary comment on `fsResp.json()` accurate
+- `object` → `EnrichmentCriteria` replacement correct
+- `brew_description` inline narrowing eliminates `!` assertion
+- No regressions
+
+## Phase 5a: Circuit Breaker — APPROVED
 - Factory pattern implemented
 - Module-scope singleton preserved for CF Workers
 - slowBeerIds capped at 10
@@ -41,19 +59,33 @@
 - Dependency injection in processAIConcurrently
 - 66 circuit breaker tests passing
 
+## Phase 5b: Functional Refactors — APPROVED
+- `categorizeAIResult()` pure function extracted from `buildBatchOperations` — all 5 variants correct
+- `categorizeBeer()` pure function extracted from `insertPlaceholders` — 8 variants (2 more than plan: blocklisted split out)
+- `readonly` annotations added to all planned function parameters
+- `BeerCategory` condition ordering preserved exactly from original
+- `CategorizedResult` fields match what each switch branch needs
+- 21 new tests across 2 files, all passing
+- 14 WON'T-fix patterns correctly left alone
+- No regressions
+
 ## Cousin Tony's Feedback Incorporated
 - Item 1 (exactOptionalPropertyTypes in tests): Follow-up note added to Phase 1 plan
 - Item 2 (AbortSignal.timeout): Follow-up note added to Phase 4a plan (AiOptions lacks signal property, so withTimeout kept)
 - Item 3 (circuit breaker singleton): Plan already handled correctly (no change)
 - Item 4 (readonly pain): Plan's mitigation sufficient (no change)
 
-## Overall Stats (Phases 1-5a)
-- 38 files changed, +2202 / -990 lines
+## Overall Stats (All Phases Complete)
+- 3 commits: 4b35434, 4c957e5, 6353ec6
+- ~45 files changed, +5800 / -1460 lines
 - 6 compiler flags enabled
-- 50 interfaces -> types with readonly
+- 50 interfaces → types with readonly
 - 9 Zod schemas created
 - 5 `!` assertions eliminated
 - ~25 `as` casts eliminated or documented
 - ~180 lines manual validation removed
-- ~105 new tests added
+- 2 pure categorization functions extracted
+- readonly annotations on key function parameters
+- ~120 new tests added
 - Zero runtime behavior changes
+- Pre-existing: 4 date test failures (timezone bug in getMonthEnd, not introduced by migration)
