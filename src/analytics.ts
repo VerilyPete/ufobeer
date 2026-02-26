@@ -1,3 +1,5 @@
+import { getToday } from './utils/date';
+
 /**
  * Analytics Engine helper functions for tracking worker metrics.
  *
@@ -220,8 +222,7 @@ export function trackCron(
   metrics: CronMetrics
 ): void {
   // Use date in index for better sampling distribution
-  const parts = new Date().toISOString().split('T');
-  const today = parts[0] ?? '';
+  const today = getToday();
 
   // Determine blob5 value: skipReason for non-error exits, errorType for actual errors
   let blob5Value: string;

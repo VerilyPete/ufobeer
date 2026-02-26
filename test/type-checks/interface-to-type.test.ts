@@ -35,7 +35,7 @@ import type { RespondOptions } from '../../src/context';
 import type { RateLimitResult } from '../../src/rate-limit';
 import type { BeerEnrichmentData, InsertPlaceholdersResult } from '../../src/db/helpers';
 import type { SyncBatchResult } from '../../src/handlers/beers';
-import type { CleanupResult, AIResult } from '../../src/queue/cleanup';
+import type { CleanupResult, AIResult, AIResultSuccess } from '../../src/queue/cleanup';
 import type { LogData } from '../../src/utils/log';
 
 describe('interface-to-type conversion compile checks', () => {
@@ -114,12 +114,12 @@ describe('interface-to-type conversion compile checks', () => {
   it('readonly prevents mutation of CleanupResult', () => {
     const result = {} as CleanupResult;
     // @ts-expect-error — readonly property cannot be assigned
-    result.success = false;
+    result.cleaned = 'changed';
   });
 
   it('readonly prevents mutation of AIResult', () => {
-    const result = {} as AIResult;
+    const result = {} as AIResultSuccess;
     // @ts-expect-error — readonly property cannot be assigned
-    result.text = 'changed';
+    result.index = 99;
   });
 });

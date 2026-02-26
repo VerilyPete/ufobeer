@@ -32,6 +32,11 @@ describe('BatchLookupRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects ids containing empty strings', () => {
+    const result = BatchLookupRequestSchema.safeParse({ ids: ['abc', ''] });
+    expect(result.success).toBe(false);
+  });
+
   it('accepts valid ids array', () => {
     const result = BatchLookupRequestSchema.safeParse({ ids: ['abc', 'def'] });
     expect(result.success).toBe(true);
@@ -72,6 +77,16 @@ describe('SyncBeersRequestSchema', () => {
 
   it('rejects beer missing brew_name', () => {
     const result = SyncBeerItemSchema.safeParse({ id: 'beer-1' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects beer with empty id', () => {
+    const result = SyncBeerItemSchema.safeParse({ id: '', brew_name: 'Test IPA' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects beer with empty brew_name', () => {
+    const result = SyncBeerItemSchema.safeParse({ id: 'beer-1', brew_name: '' });
     expect(result.success).toBe(false);
   });
 
@@ -302,6 +317,21 @@ describe('ForceEnrichmentRequestSchema', () => {
     const result = ForceEnrichmentRequestSchema.safeParse({
       beer_ids: ['abc'],
       limit: 0,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects non-integer limit', () => {
+    const result = ForceEnrichmentRequestSchema.safeParse({
+      beer_ids: ['abc'],
+      limit: 3.5,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects beer_ids containing empty strings', () => {
+    const result = ForceEnrichmentRequestSchema.safeParse({
+      beer_ids: ['abc', ''],
     });
     expect(result.success).toBe(false);
   });
