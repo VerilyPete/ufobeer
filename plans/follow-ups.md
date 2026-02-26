@@ -1,6 +1,6 @@
 # Type Safety Hardening: Follow-Up Items
 
-Three items deferred from the strictness migration. None are blocking.
+Two items deferred from the strictness migration. Neither is blocking.
 
 ## 1. Re-enable `exactOptionalPropertyTypes` in test tsconfig
 
@@ -120,50 +120,3 @@ type that includes `signal?: AbortSignal`.
 4. Delete `test/queue/cleanupHelpers-timeout.test.ts` (no longer needed)
 5. Verify all cleanup tests still pass
 
----
-
-## 3. Pre-existing `getMonthEnd` timezone bug
-
-**Status**: Pre-existing bug, not introduced by migration
-**File**: `src/utils/date.ts:41-47`
-**Tests**: `test/utils/date.test.ts` — 4 failures
-
-### Failing tests
-
-```
-FAIL  should handle year transition dates
-  expected '2024-12-31' to be '2025-01-31'
-  (getMonthEnd(new Date('2025-01-01')) returns '2024-12-31')
-
-FAIL  should work when called on first day of month
-  expected '2025-05-31' to be '2025-06-30'
-  (getMonthEnd(new Date('2025-06-01')) returns '2025-05-31')
-
-(2 more similar failures)
-```
-
-### Root cause
-
-`new Date('2025-01-01')` is parsed as UTC midnight. In timezones behind
-UTC (like US timezones), `date.getFullYear()` and `date.getMonth()` return
-local time values, which roll back to December 31, 2024. The function
-uses local-time getters (`getFullYear`, `getMonth`) on a UTC-parsed date.
-
-### Fix options
-
-1. **Use UTC getters**: `getUTCFullYear()`, `getUTCMonth()` — consistent
-   with how ISO date strings are parsed
-2. **Parse dates with explicit timezone** — construct dates via
-   `new Date(year, month, day)` in callers instead of ISO strings
-3. **Use the same approach as `getToday()`** — which works because it
-   splits an ISO string rather than using date arithmetic
-
-The function works correctly in production because it's always called with
-`new Date()` (current local time), not with ISO date strings. The bug only
-manifests in tests that pass ISO strings crossing midnight boundaries.
-
-### Impact
-
-Zero production impact. The 4 test failures have been present across all
-branches. Fix is optional but straightforward — switching to UTC getters
-in `getMonthEnd` (and `getMonthStart` for consistency) would fix all 4.
