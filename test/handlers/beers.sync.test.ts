@@ -6,157 +6,132 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { validateBeerInput, syncBeersWithBatchHandling } from '../../src/handlers/beers';
+import { syncBeersWithBatchHandling } from '../../src/handlers/beers';
 import { SYNC_CONSTANTS } from '../../src/types';
+import { SyncBeerItemSchema } from '../../src/schemas/request';
 
 describe('handleBeerSync', () => {
-  describe('validateBeerInput', () => {
+  describe('SyncBeerItemSchema validation', () => {
     it('should reject empty id', () => {
-      const result = validateBeerInput({ id: '', brew_name: 'Test' });
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('id');
+      const result = SyncBeerItemSchema.safeParse({ id: '', brew_name: 'Test' });
+      expect(result.success).toBe(false);
     });
 
     it('should reject missing id', () => {
-      const result = validateBeerInput({ brew_name: 'Test' });
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('id');
+      const result = SyncBeerItemSchema.safeParse({ brew_name: 'Test' });
+      expect(result.success).toBe(false);
     });
 
     it('should reject non-string id', () => {
-      const result = validateBeerInput({ id: 123, brew_name: 'Test' });
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('id');
+      const result = SyncBeerItemSchema.safeParse({ id: 123, brew_name: 'Test' });
+      expect(result.success).toBe(false);
     });
 
     it('should reject id exceeding max length', () => {
-      const result = validateBeerInput({
+      const result = SyncBeerItemSchema.safeParse({
         id: 'x'.repeat(SYNC_CONSTANTS.MAX_ID_LENGTH + 1),
         brew_name: 'Test'
       });
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('id');
-      expect(result.error).toContain('max');
+      expect(result.success).toBe(false);
     });
 
     it('should accept id at max length', () => {
-      const result = validateBeerInput({
+      const result = SyncBeerItemSchema.safeParse({
         id: 'x'.repeat(SYNC_CONSTANTS.MAX_ID_LENGTH),
         brew_name: 'Test Beer'
       });
-      expect(result.valid).toBe(true);
+      expect(result.success).toBe(true);
     });
 
     it('should reject missing brew_name', () => {
-      const result = validateBeerInput({ id: '123' });
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('brew_name');
+      const result = SyncBeerItemSchema.safeParse({ id: '123' });
+      expect(result.success).toBe(false);
     });
 
     it('should reject empty brew_name', () => {
-      const result = validateBeerInput({ id: '123', brew_name: '' });
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('brew_name');
+      const result = SyncBeerItemSchema.safeParse({ id: '123', brew_name: '' });
+      expect(result.success).toBe(false);
     });
 
     it('should reject non-string brew_name', () => {
-      const result = validateBeerInput({ id: '123', brew_name: 456 });
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('brew_name');
+      const result = SyncBeerItemSchema.safeParse({ id: '123', brew_name: 456 });
+      expect(result.success).toBe(false);
     });
 
     it('should reject brew_name exceeding max length', () => {
-      const result = validateBeerInput({
+      const result = SyncBeerItemSchema.safeParse({
         id: '123',
         brew_name: 'x'.repeat(SYNC_CONSTANTS.MAX_BREW_NAME_LENGTH + 1)
       });
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('brew_name');
-      expect(result.error).toContain('max length');
+      expect(result.success).toBe(false);
     });
 
     it('should accept brew_name at max length', () => {
-      const result = validateBeerInput({
+      const result = SyncBeerItemSchema.safeParse({
         id: '123',
         brew_name: 'x'.repeat(SYNC_CONSTANTS.MAX_BREW_NAME_LENGTH)
       });
-      expect(result.valid).toBe(true);
+      expect(result.success).toBe(true);
     });
 
     it('should reject brew_description exceeding max length', () => {
-      const result = validateBeerInput({
+      const result = SyncBeerItemSchema.safeParse({
         id: '123',
         brew_name: 'Test',
         brew_description: 'x'.repeat(SYNC_CONSTANTS.MAX_DESC_LENGTH + 1)
       });
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('brew_description');
-      expect(result.error).toContain('max length');
+      expect(result.success).toBe(false);
     });
 
     it('should accept brew_description at max length', () => {
-      const result = validateBeerInput({
+      const result = SyncBeerItemSchema.safeParse({
         id: '123',
         brew_name: 'Test',
         brew_description: 'x'.repeat(SYNC_CONSTANTS.MAX_DESC_LENGTH)
       });
-      expect(result.valid).toBe(true);
+      expect(result.success).toBe(true);
     });
 
     it('should accept valid input with all fields', () => {
-      const result = validateBeerInput({
+      const result = SyncBeerItemSchema.safeParse({
         id: '123',
         brew_name: 'Test Beer',
         brewer: 'Test Brewery',
         brew_description: 'A great beer'
       });
-      expect(result.valid).toBe(true);
-      expect(result.error).toBeUndefined();
+      expect(result.success).toBe(true);
     });
 
     it('should accept valid input with minimal fields', () => {
-      const result = validateBeerInput({
+      const result = SyncBeerItemSchema.safeParse({
         id: '123',
         brew_name: 'Test Beer'
       });
-      expect(result.valid).toBe(true);
-      expect(result.error).toBeUndefined();
+      expect(result.success).toBe(true);
     });
 
     it('should accept valid input without brew_description', () => {
-      const result = validateBeerInput({
+      const result = SyncBeerItemSchema.safeParse({
         id: '123',
         brew_name: 'Test Beer',
         brewer: 'Test Brewery'
       });
-      expect(result.valid).toBe(true);
-    });
-
-    it('should accept valid input with undefined brew_description', () => {
-      const result = validateBeerInput({
-        id: '123',
-        brew_name: 'Test Beer',
-        brew_description: undefined
-      });
-      expect(result.valid).toBe(true);
+      expect(result.success).toBe(true);
     });
 
     it('should reject null input', () => {
-      const result = validateBeerInput(null);
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('object');
+      const result = SyncBeerItemSchema.safeParse(null);
+      expect(result.success).toBe(false);
     });
 
     it('should reject undefined input', () => {
-      const result = validateBeerInput(undefined);
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('object');
+      const result = SyncBeerItemSchema.safeParse(undefined);
+      expect(result.success).toBe(false);
     });
 
     it('should reject non-object input', () => {
-      const result = validateBeerInput('not an object');
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain('object');
+      const result = SyncBeerItemSchema.safeParse('not an object');
+      expect(result.success).toBe(false);
     });
   });
 

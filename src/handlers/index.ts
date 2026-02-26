@@ -22,12 +22,11 @@ export {
   handleBeerList,
   handleBatchLookup,
   handleBeerSync,
-  validateBeerInput,
   syncBeersWithBatchHandling,
 } from './beers';
 
 // Beer handler types (for testing)
-export type { BeerValidationResult, SyncBatchResult } from './beers';
+export type { SyncBatchResult } from './beers';
 
 // Health handler
 export { handleHealthCheck } from './health';

@@ -34,7 +34,7 @@ import type { RequestMetrics, EnrichmentMetrics, CronMetrics, AdminDlqMetrics, D
 import type { RespondOptions } from '../../src/context';
 import type { RateLimitResult } from '../../src/rate-limit';
 import type { BeerEnrichmentData, InsertPlaceholdersResult } from '../../src/db/helpers';
-import type { BeerValidationResult, SyncBatchResult } from '../../src/handlers/beers';
+import type { SyncBatchResult } from '../../src/handlers/beers';
 import type { CleanupResult, AIResult } from '../../src/queue/cleanup';
 import type { LogData } from '../../src/utils/log';
 
