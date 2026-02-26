@@ -23,8 +23,8 @@ export function getToday(date: Date = new Date()): string {
  * @returns Date string for first of month (YYYY-MM-01)
  */
 export function getMonthStart(date: Date = new Date()): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
   return `${year}-${month}-01`;
 }
 
@@ -39,9 +39,9 @@ export function getMonthStart(date: Date = new Date()): string {
  * @returns Date string for last day of month (YYYY-MM-DD)
  */
 export function getMonthEnd(date: Date = new Date()): string {
-  const year = date.getFullYear();
-  const month = date.getMonth();
-  const lastDay = new Date(year, month + 1, 0).getDate();
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
   const monthStr = String(month + 1).padStart(2, '0');
   return `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}`;
 }
