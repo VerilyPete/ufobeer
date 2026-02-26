@@ -37,7 +37,7 @@ import {
  */
 async function processBackgroundEnrichment(
   env: Env,
-  beers: Array<{ id: string; brew_name: string; brewer: string; brew_description?: string | undefined }>,
+  beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string; readonly brew_description?: string | undefined }>,
   requestId: string
 ): Promise<void> {
   try {
@@ -123,6 +123,7 @@ export async function handleBeerList(
       };
     }
 
+    // Safe: narrowing to unknown[] before Array.isArray validation below
     const fsData = await fsResp.json() as unknown[];
 
     // 2. Parse response with type guards
@@ -455,20 +456,17 @@ export async function handleBeerSync(
         `).bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description, descriptionHash, now, now)
       );
 
-      // Determine if we should queue for cleanup
-      // Skip if already cleaned or recently queued (within cooldown period)
+      // Queue for cleanup if description exists, not already cleaned, and not recently queued
       const existing = existingMap.get(beer.id);
-      const shouldQueue = beer.brew_description &&
-        !existing?.description_cleaned_at &&
-        (!existing?.queued_for_cleanup_at ||
-         now - existing.queued_for_cleanup_at > SYNC_CONSTANTS.REQUEUE_COOLDOWN_MS);
-
-      if (shouldQueue) {
+      if (beer.brew_description &&
+          !existing?.description_cleaned_at &&
+          (!existing?.queued_for_cleanup_at ||
+           now - existing.queued_for_cleanup_at > SYNC_CONSTANTS.REQUEUE_COOLDOWN_MS)) {
         needsCleanup.push({
           id: beer.id,
           brew_name: beer.brew_name,
           brewer: beer.brewer || '',
-          brew_description: beer.brew_description!,
+          brew_description: beer.brew_description, // TS narrows to string here
         });
       }
     }

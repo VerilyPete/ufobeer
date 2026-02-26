@@ -143,6 +143,53 @@ export type AIResultFailure = {
 export type AIResult = AIResultSuccess | AIResultFallback | AIResultFailure;
 
 /**
+ * Categorized result from AI processing.
+ * Pure function output used by buildBatchOperations.
+ */
+export type CategorizedResult =
+  | {
+      readonly type: 'success_with_abv';
+      readonly cleaned: string;
+      readonly usedOriginal: boolean;
+      readonly abv: number;
+      readonly beerId: string;
+      readonly message: Message<CleanupMessage>;
+      readonly latencyMs: number;
+    }
+  | {
+      readonly type: 'success_no_abv';
+      readonly cleaned: string;
+      readonly usedOriginal: boolean;
+      readonly beerId: string;
+      readonly beerName: string;
+      readonly brewer: string;
+      readonly message: Message<CleanupMessage>;
+      readonly latencyMs: number;
+    }
+  | {
+      readonly type: 'fallback_with_abv';
+      readonly abv: number;
+      readonly brewDescription: string;
+      readonly beerId: string;
+      readonly message: Message<CleanupMessage>;
+      readonly latencyMs?: number | undefined;
+    }
+  | {
+      readonly type: 'fallback_no_abv';
+      readonly brewDescription: string;
+      readonly beerId: string;
+      readonly beerName: string;
+      readonly brewer: string;
+      readonly message: Message<CleanupMessage>;
+      readonly latencyMs?: number | undefined;
+    }
+  | {
+      readonly type: 'failure';
+      readonly message: Message<CleanupMessage>;
+      readonly latencyMs?: number | undefined;
+    };
+
+/**
  * Source of fallback processing.
  * Used for tracking/debugging why AI cleanup was skipped.
  */
@@ -365,6 +412,76 @@ export async function processAIConcurrently(
 }
 
 // ============================================================================
+// Categorization (Pure Function)
+// ============================================================================
+
+/**
+ * Categorize a single AI result into a discriminated union.
+ *
+ * Pure function: no side effects, no database access.
+ * Extracts the decision logic from buildBatchOperations into a testable unit.
+ */
+export function categorizeAIResult(
+  result: AIResult,
+  message: Message<CleanupMessage>,
+): CategorizedResult {
+  const { beerId, beerName, brewer, brewDescription } = message.body;
+
+  if (!result.success) {
+    if (result.useFallback) {
+      const abv = extractABV(brewDescription);
+      if (abv !== null) {
+        return {
+          type: 'fallback_with_abv',
+          abv,
+          brewDescription,
+          beerId,
+          message,
+          latencyMs: result.latencyMs,
+        };
+      }
+      return {
+        type: 'fallback_no_abv',
+        brewDescription,
+        beerId,
+        beerName,
+        brewer,
+        message,
+        latencyMs: result.latencyMs,
+      };
+    }
+    return {
+      type: 'failure',
+      message,
+      latencyMs: result.latencyMs,
+    };
+  }
+
+  const { cleaned, usedOriginal, extractedABV: abv, latencyMs } = result;
+  if (abv !== null) {
+    return {
+      type: 'success_with_abv',
+      cleaned,
+      usedOriginal,
+      abv,
+      beerId,
+      message,
+      latencyMs,
+    };
+  }
+  return {
+    type: 'success_no_abv',
+    cleaned,
+    usedOriginal,
+    beerId,
+    beerName,
+    brewer,
+    message,
+    latencyMs,
+  };
+}
+
+// ============================================================================
 // Batch Operations Builder
 // ============================================================================
 
@@ -377,20 +494,29 @@ export async function processAIConcurrently(
  * - Lists of messages to ack or retry
  * - Metrics for observability
  *
- * Uses pre-extracted ABV from cleanDescriptionSafely to avoid redundant regex.
+ * Uses categorizeAIResult for testable categorization logic,
+ * then maps categories to D1 statements and queue messages.
  */
 function buildBatchOperations(
   messages: readonly Message<CleanupMessage>[],
   aiResults: AIResult[],
   env: Env
 ): BatchOperations {
+  const now = Date.now();
+
+  const categorized = aiResults
+    .map((result) => {
+      const message = messages[result.index];
+      if (!message) return null;
+      return categorizeAIResult(result, message);
+    })
+    .filter((c): c is CategorizedResult => c !== null);
+
   const dbStatements: D1PreparedStatement[] = [];
   const perplexityMessages: EnrichmentMessage[] = [];
   const ackMessages: Message<CleanupMessage>[] = [];
   const retryMessages: Message<CleanupMessage>[] = [];
-  const now = Date.now();
 
-  // Metrics tracking
   let aiSuccessCount = 0;
   let aiFailureCount = 0;
   let abvExtractedCount = 0;
@@ -399,108 +525,97 @@ function buildBatchOperations(
   let latencyCount = 0;
   let circuitBreakerTriggered = false;
 
-  for (const result of aiResults) {
-    const message = messages[result.index];
-    if (!message) continue;
-    const { beerId, beerName, brewer, brewDescription } = message.body;
-
-    // Track latency
-    if (result.latencyMs !== undefined) {
-      totalLatencyMs += result.latencyMs;
+  for (const c of categorized) {
+    if (c.latencyMs !== undefined) {
+      totalLatencyMs += c.latencyMs;
       latencyCount++;
     }
 
-    // Handle failure cases (fallback and AI errors)
-    if (!result.success) {
-      if (result.useFallback) {
-        // Circuit breaker fallback path
+    switch (c.type) {
+      case 'success_with_abv':
+        aiSuccessCount++;
+        abvExtractedCount++;
+        dbStatements.push(
+          env.DB.prepare(`
+            UPDATE enriched_beers SET
+              brew_description_cleaned = ?,
+              description_cleaned_at = ?,
+              cleanup_source = ?,
+              abv = ?,
+              confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION},
+              enrichment_source = 'description'
+            WHERE id = ?
+          `).bind(
+            c.cleaned,
+            now,
+            c.usedOriginal ? null : 'workers-ai',
+            c.abv,
+            c.beerId
+          )
+        );
+        ackMessages.push(c.message);
+        break;
+
+      case 'success_no_abv':
+        aiSuccessCount++;
+        dbStatements.push(
+          env.DB.prepare(`
+            UPDATE enriched_beers SET
+              brew_description_cleaned = ?,
+              description_cleaned_at = ?,
+              cleanup_source = ?
+            WHERE id = ?
+          `).bind(
+            c.cleaned,
+            now,
+            c.usedOriginal ? null : 'workers-ai',
+            c.beerId
+          )
+        );
+        perplexityMessages.push({ beerId: c.beerId, beerName: c.beerName, brewer: c.brewer });
+        ackMessages.push(c.message);
+        break;
+
+      case 'fallback_with_abv':
         circuitBreakerTriggered = true;
         fallbackUsedCount++;
+        abvExtractedCount++;
+        dbStatements.push(
+          env.DB.prepare(`
+            UPDATE enriched_beers SET
+              brew_description_cleaned = ?,
+              description_cleaned_at = ?,
+              cleanup_source = 'fallback-circuit-breaker',
+              abv = ?,
+              confidence = 0.8,
+              enrichment_source = 'description-fallback'
+            WHERE id = ?
+          `).bind(c.brewDescription, now, c.abv, c.beerId)
+        );
+        ackMessages.push(c.message);
+        break;
 
-        // Extract ABV from the original description since AI cleanup is unavailable.
-        const abv = extractABV(brewDescription);
+      case 'fallback_no_abv':
+        circuitBreakerTriggered = true;
+        fallbackUsedCount++;
+        dbStatements.push(
+          env.DB.prepare(`
+            UPDATE enriched_beers SET
+              brew_description_cleaned = ?,
+              description_cleaned_at = ?,
+              cleanup_source = 'fallback-circuit-breaker'
+            WHERE id = ?
+          `).bind(c.brewDescription, now, c.beerId)
+        );
+        perplexityMessages.push({ beerId: c.beerId, beerName: c.beerName, brewer: c.brewer });
+        ackMessages.push(c.message);
+        break;
 
-        if (abv !== null) {
-          abvExtractedCount++;
-          dbStatements.push(
-            env.DB.prepare(`
-              UPDATE enriched_beers SET
-                brew_description_cleaned = ?,
-                description_cleaned_at = ?,
-                cleanup_source = 'fallback-circuit-breaker',
-                abv = ?,
-                confidence = 0.8,
-                enrichment_source = 'description-fallback'
-              WHERE id = ?
-            `).bind(brewDescription, now, abv, beerId)
-          );
-        } else {
-          dbStatements.push(
-            env.DB.prepare(`
-              UPDATE enriched_beers SET
-                brew_description_cleaned = ?,
-                description_cleaned_at = ?,
-                cleanup_source = 'fallback-circuit-breaker'
-              WHERE id = ?
-            `).bind(brewDescription, now, beerId)
-          );
-          perplexityMessages.push({ beerId, beerName, brewer });
-        }
-
-        ackMessages.push(message);
-        continue;
-      }
-
-      // AI failure - retry the message
-      aiFailureCount++;
-      retryMessages.push(message);
-      continue;
+      case 'failure':
+        aiFailureCount++;
+        retryMessages.push(c.message);
+        break;
     }
-
-    // TS now knows: result is AIResultSuccess
-    aiSuccessCount++;
-    const { cleaned, usedOriginal, extractedABV: abv } = result;
-
-    if (abv !== null) {
-      abvExtractedCount++;
-      dbStatements.push(
-        env.DB.prepare(`
-          UPDATE enriched_beers SET
-            brew_description_cleaned = ?,
-            description_cleaned_at = ?,
-            cleanup_source = ?,
-            abv = ?,
-            confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION},
-            enrichment_source = 'description'
-          WHERE id = ?
-        `).bind(
-          cleaned,
-          now,
-          usedOriginal ? null : 'workers-ai',
-          abv,
-          beerId
-        )
-      );
-    } else {
-      dbStatements.push(
-        env.DB.prepare(`
-          UPDATE enriched_beers SET
-            brew_description_cleaned = ?,
-            description_cleaned_at = ?,
-            cleanup_source = ?
-          WHERE id = ?
-        `).bind(
-          cleaned,
-          now,
-          usedOriginal ? null : 'workers-ai',
-          beerId
-        )
-      );
-      // No ABV found - queue for Perplexity enrichment
-      perplexityMessages.push({ beerId, beerName, brewer });
-    }
-
-    ackMessages.push(message);
   }
 
   const metrics: BatchMetrics = {

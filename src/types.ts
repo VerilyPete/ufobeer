@@ -228,7 +228,7 @@ export type ForceEnrichmentResponse = {
     readonly skipped_ids?: readonly string[] | undefined;    // IDs skipped due to race condition (included if <= 50)
     readonly queued_ids?: readonly string[] | undefined;     // IDs that were queued (included if <= 50)
     readonly dry_run: boolean;
-    readonly applied_criteria?: object | undefined;
+    readonly applied_criteria?: EnrichmentCriteria | undefined;
     readonly quota: {
       readonly daily: { readonly used: number; readonly limit: number; readonly remaining: number };
       readonly monthly: { readonly used: number; readonly limit: number; readonly remaining: number };
@@ -314,6 +314,7 @@ export type GetBeersResult = {
 
 import { z } from 'zod';
 import { FlyingSaucerBeerSchema } from './schemas/external';
+import type { EnrichmentCriteria } from './schemas/request';
 
 /**
  * Type guard: Validates that an object is a valid FlyingSaucerBeer.

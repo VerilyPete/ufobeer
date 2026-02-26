@@ -52,6 +52,29 @@ import { SYNC_CONSTANTS } from './types';
 import { handleEnrichmentBatch, handleCleanupBatch, handleDlqBatch, handleCleanupDlqBatch } from './queue';
 
 // ============================================================================
+// Admin Response Analytics Helper
+// ============================================================================
+
+/**
+ * Parse a cloned response body for analytics extraction.
+ * Centralizes the repeated clone-parse pattern used in admin routes.
+ * Safe: we produced these responses; the cast narrows from unknown to Record.
+ */
+async function parseResponseAnalytics(
+  response: Response
+): Promise<Record<string, unknown>> {
+  try {
+    const body: unknown = await response.clone().json();
+    if (typeof body === 'object' && body !== null) {
+      return body as Record<string, unknown>;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+// ============================================================================
 // Main Export
 // ============================================================================
 
@@ -264,8 +287,10 @@ export default {
         const result = await handleDlqList(env, { ...corsHeaders, ...rateLimitHeaders }, authedContext, url.searchParams);
         let messageCount = 0;
         try {
-          const responseBody = await result.clone().json() as { data?: { messages?: unknown[] } };
-          messageCount = responseBody.data?.messages?.length || 0;
+          const analytics = await parseResponseAnalytics(result);
+          const data = analytics['data'] as Record<string, unknown> | undefined;
+          const messages = data?.['messages'] as unknown[] | undefined;
+          messageCount = messages?.length || 0;
         } catch { /* ignore */ }
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_list', success: result.status === 200, messageCount, durationMs: Date.now() - operationStart });
         ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_list', { message_count: messageCount }, adminSecretHash));
@@ -287,8 +312,9 @@ export default {
         const result = await handleDlqReplay(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
         let replayedCount = 0;
         try {
-          const responseBody = await result.clone().json() as { data?: { replayed_count?: number } };
-          replayedCount = responseBody.data?.replayed_count || 0;
+          const analytics = await parseResponseAnalytics(result);
+          const data = analytics['data'] as Record<string, unknown> | undefined;
+          replayedCount = (data?.['replayed_count'] as number | undefined) || 0;
         } catch { /* ignore */ }
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_replay', success: result.status === 200, messageCount: replayedCount, durationMs: Date.now() - operationStart });
         ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_replay', { replayed_count: replayedCount }, adminSecretHash));
@@ -301,8 +327,9 @@ export default {
         const result = await handleDlqAcknowledge(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
         let acknowledgedCount = 0;
         try {
-          const responseBody = await result.clone().json() as { data?: { acknowledged_count?: number } };
-          acknowledgedCount = responseBody.data?.acknowledged_count || 0;
+          const analytics = await parseResponseAnalytics(result);
+          const data = analytics['data'] as Record<string, unknown> | undefined;
+          acknowledgedCount = (data?.['acknowledged_count'] as number | undefined) || 0;
         } catch { /* ignore */ }
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_acknowledge', success: result.status === 200, messageCount: acknowledgedCount, durationMs: Date.now() - operationStart });
         ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_acknowledge', { acknowledged_count: acknowledgedCount }, adminSecretHash));
@@ -318,13 +345,15 @@ export default {
         let dailyRemaining = 0;
         let monthlyRemaining = 0;
         try {
-          const responseBody = await result.clone().json() as {
-            data?: { beers_queued?: number; skip_reason?: typeof skipReason; quota?: { daily?: { remaining?: number }; monthly?: { remaining?: number } } }
-          };
-          beersQueued = responseBody.data?.beers_queued || 0;
-          skipReason = responseBody.data?.skip_reason;
-          dailyRemaining = responseBody.data?.quota?.daily?.remaining || 0;
-          monthlyRemaining = responseBody.data?.quota?.monthly?.remaining || 0;
+          const analytics = await parseResponseAnalytics(result);
+          const data = analytics['data'] as Record<string, unknown> | undefined;
+          beersQueued = (data?.['beers_queued'] as number | undefined) || 0;
+          skipReason = data?.['skip_reason'] as typeof skipReason;
+          const quota = data?.['quota'] as Record<string, unknown> | undefined;
+          const daily = quota?.['daily'] as Record<string, unknown> | undefined;
+          const monthly = quota?.['monthly'] as Record<string, unknown> | undefined;
+          dailyRemaining = (daily?.['remaining'] as number | undefined) || 0;
+          monthlyRemaining = (monthly?.['remaining'] as number | undefined) || 0;
         } catch { /* ignore */ }
         trackAdminTrigger(env.ANALYTICS, { beersQueued, dailyRemaining, monthlyRemaining, durationMs: Date.now() - operationStart, success: result.status === 200, skipReason });
         ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'enrich_trigger', { beers_queued: beersQueued, skip_reason: skipReason, duration_ms: Date.now() - operationStart }, adminSecretHash));
@@ -344,14 +373,13 @@ export default {
         let mode = 'unknown';
         let dryRun = false;
         try {
-          const responseBody = await result.clone().json() as {
-            data?: { beers_queued?: number; beers_skipped?: number; beers_reset?: number; mode?: string; operation_id?: string; dry_run?: boolean }
-          };
-          beersQueued = responseBody.data?.beers_queued ?? 0;
-          beersSkipped = responseBody.data?.beers_skipped ?? 0;
-          beersReset = responseBody.data?.beers_reset ?? 0;
-          mode = responseBody.data?.mode ?? 'unknown';
-          dryRun = responseBody.data?.dry_run ?? false;
+          const analytics = await parseResponseAnalytics(result);
+          const data = analytics['data'] as Record<string, unknown> | undefined;
+          beersQueued = (data?.['beers_queued'] as number | undefined) ?? 0;
+          beersSkipped = (data?.['beers_skipped'] as number | undefined) ?? 0;
+          beersReset = (data?.['beers_reset'] as number | undefined) ?? 0;
+          mode = (data?.['mode'] as string | undefined) ?? 'unknown';
+          dryRun = (data?.['dry_run'] as boolean | undefined) ?? false;
         } catch { /* ignore parse errors */ }
 
         // Analytics tracking
@@ -405,6 +433,10 @@ export default {
   },
 
   // Queue consumer: Route to appropriate handler based on queue name
+  //
+  // Cast safety: wrangler.jsonc binds each queue name to a specific message type.
+  // The Cloudflare Workers runtime guarantees that batch.queue matches the producer's
+  // type, so these casts from the union type to the specific message type are safe.
   async queue(
     batch: MessageBatch<EnrichmentMessage | CleanupMessage>,
     env: Env,
@@ -414,12 +446,16 @@ export default {
     console.log(`Queue batch received: messageCount=${batch.messages.length}, queue=${batch.queue}, requestId=${requestId}`);
 
     if (batch.queue === 'beer-enrichment-dlq') {
+      // Safe: wrangler.jsonc binds this queue to EnrichmentMessage producers
       await handleDlqBatch(batch as MessageBatch<EnrichmentMessage>, env, requestId);
     } else if (batch.queue === 'beer-enrichment') {
+      // Safe: wrangler.jsonc binds this queue to EnrichmentMessage producers
       await handleEnrichmentBatch(batch as MessageBatch<EnrichmentMessage>, env);
     } else if (batch.queue === 'description-cleanup') {
+      // Safe: wrangler.jsonc binds this queue to CleanupMessage producers
       await handleCleanupBatch(batch as MessageBatch<CleanupMessage>, env);
     } else if (batch.queue === 'description-cleanup-dlq') {
+      // Safe: wrangler.jsonc binds this queue to CleanupMessage producers
       await handleCleanupDlqBatch(batch as MessageBatch<CleanupMessage>, env, requestId);
     } else {
       console.warn(`Unknown queue: ${batch.queue}, acknowledging messages to prevent infinite loops`);
