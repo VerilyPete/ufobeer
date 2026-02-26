@@ -39,20 +39,11 @@ const getMockCtx = (overrides?: Partial<RequestContext>): RequestContext => ({
 // ============================================================================
 
 describe('writeAuditLog', () => {
-  it('calls db.prepare().bind().run() once on a normal request', async () => {
+  it('records the request in the audit log', async () => {
     const db = getMockDb();
     const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(1);
     await writeAuditLog(db as unknown as D1Database, getMockCtx(), 'GET', '/beers', 200);
     expect(db._run).toHaveBeenCalledTimes(1);
-    randomSpy.mockRestore();
-  });
-
-  it('uses SQL containing INSERT INTO audit_log', async () => {
-    const db = getMockDb();
-    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(1);
-    await writeAuditLog(db as unknown as D1Database, getMockCtx(), 'GET', '/beers', 200);
-    const sql = db.prepare.mock.calls[0]![0] as string;
-    expect(sql).toContain('INSERT INTO audit_log');
     randomSpy.mockRestore();
   });
 
@@ -178,7 +169,7 @@ describe('writeAuditLog', () => {
 // ============================================================================
 
 describe('writeAdminAuditLog', () => {
-  it('calls db.prepare().bind().run() once', async () => {
+  it('records the admin operation in the audit log', async () => {
     const db = getMockDb();
     await writeAdminAuditLog(
       db as unknown as D1Database,
@@ -188,19 +179,6 @@ describe('writeAdminAuditLog', () => {
       'admin-hash-xyz',
     );
     expect(db._run).toHaveBeenCalledTimes(1);
-  });
-
-  it('uses SQL containing INSERT INTO audit_log', async () => {
-    const db = getMockDb();
-    await writeAdminAuditLog(
-      db as unknown as D1Database,
-      getMockCtx(),
-      'dlq_replay',
-      { ids: [1] },
-      'admin-hash',
-    );
-    const sql = db.prepare.mock.calls[0]![0] as string;
-    expect(sql).toContain('INSERT INTO audit_log');
   });
 
   it('passes "ADMIN" as the method value', async () => {

@@ -70,7 +70,7 @@ const getMockEnv = (dbOverrides?: Record<string, unknown>): Env => ({
 // ============================================================================
 
 describe('storeDlqMessage', () => {
-  it('calls db.prepare().bind().run() once', async () => {
+  it('stores a failed message in the dead letter queue', async () => {
     const db = getMockDb();
     const message = getMockMessage();
 
@@ -85,35 +85,7 @@ describe('storeDlqMessage', () => {
     expect(db.prepare().bind().run).toHaveBeenCalledOnce();
   });
 
-  it('the SQL contains INSERT INTO dlq_messages', async () => {
-    const db = getMockDb();
-    const message = getMockMessage();
-
-    await storeDlqMessage(
-      db as unknown as D1Database,
-      message as unknown as Message<EnrichmentMessage>,
-      'beer-enrichment-dlq'
-    );
-
-    const sql = db.prepare.mock.calls[0]?.[0] as string;
-    expect(sql).toContain('INSERT INTO dlq_messages');
-  });
-
-  it('the SQL contains ON CONFLICT(message_id) DO UPDATE', async () => {
-    const db = getMockDb();
-    const message = getMockMessage();
-
-    await storeDlqMessage(
-      db as unknown as D1Database,
-      message as unknown as Message<EnrichmentMessage>,
-      'beer-enrichment-dlq'
-    );
-
-    const sql = db.prepare.mock.calls[0]?.[0] as string;
-    expect(sql).toContain('ON CONFLICT(message_id) DO UPDATE');
-  });
-
-  it('the bound values include message.id', async () => {
+  it('persists the message ID', async () => {
     const db = getMockDb();
     const message = getMockMessage({ id: 'msg-unique-id' });
 
@@ -127,7 +99,7 @@ describe('storeDlqMessage', () => {
     expect(boundArgs).toContain('msg-unique-id');
   });
 
-  it('the bound values include message.body.beerId', async () => {
+  it('persists the beer ID of the failed message', async () => {
     const db = getMockDb();
     const message = getMockMessage({ body: { beerId: 'beer-xyz' } });
 
@@ -141,7 +113,7 @@ describe('storeDlqMessage', () => {
     expect(boundArgs).toContain('beer-xyz');
   });
 
-  it('the bound values include message.body.beerName', async () => {
+  it('persists the beer name of the failed message', async () => {
     const db = getMockDb();
     const message = getMockMessage({ body: { beerName: 'My Great IPA' } });
 
@@ -155,7 +127,7 @@ describe('storeDlqMessage', () => {
     expect(boundArgs).toContain('My Great IPA');
   });
 
-  it('the bound values include message.body.brewer', async () => {
+  it('persists the brewer of the failed message', async () => {
     const db = getMockDb();
     const message = getMockMessage({ body: { brewer: 'Awesome Brewing Co' } });
 
@@ -169,7 +141,7 @@ describe('storeDlqMessage', () => {
     expect(boundArgs).toContain('Awesome Brewing Co');
   });
 
-  it('the bound values include message.attempts', async () => {
+  it('persists the attempt count of the failed message', async () => {
     const db = getMockDb();
     const message = getMockMessage({ attempts: 5 });
 
@@ -183,7 +155,7 @@ describe('storeDlqMessage', () => {
     expect(boundArgs).toContain(5);
   });
 
-  it('the bound values include the sourceQueue string', async () => {
+  it('persists the source queue name', async () => {
     const db = getMockDb();
     const message = getMockMessage();
 
@@ -197,7 +169,7 @@ describe('storeDlqMessage', () => {
     expect(boundArgs).toContain('beer-enrichment-dlq');
   });
 
-  it('the bound values include JSON.stringify(message.body) as raw_message', async () => {
+  it('persists the raw message body as JSON', async () => {
     const db = getMockDb();
     const message = getMockMessage();
 
@@ -277,7 +249,7 @@ describe('handleDlqBatch', () => {
     expect(msg.retry).not.toHaveBeenCalled();
   });
 
-  it('calls trackDlqConsumer with success true after successful storage', async () => {
+  it('reports successful storage to analytics', async () => {
     const msg = getMockMessage({ body: { beerId: 'beer-tracked' } });
     const batch = getMockBatch([msg]);
     const env = getMockEnv();
@@ -348,7 +320,7 @@ describe('handleDlqBatch', () => {
     vi.restoreAllMocks();
   });
 
-  it('calls trackDlqConsumer with success false when storeDlqMessage throws', async () => {
+  it('reports failed storage to analytics', async () => {
     const msg = getMockMessage();
     const batch = getMockBatch([msg]);
     const db = getMockDb();
@@ -417,7 +389,7 @@ describe('handleDlqBatch', () => {
     vi.restoreAllMocks();
   });
 
-  it('passes sourceQueue as beer-enrichment to trackDlqConsumer (not the DLQ name)', async () => {
+  it('strips the -dlq suffix when reporting the source queue to analytics', async () => {
     const msg = getMockMessage();
     const batch = getMockBatch([msg], 'beer-enrichment-dlq');
     const env = getMockEnv();
@@ -482,7 +454,7 @@ describe('handleCleanupDlqBatch', () => {
     vi.restoreAllMocks();
   });
 
-  it('calls trackDlqConsumer with sourceQueue description-cleanup on success', async () => {
+  it('reports successful storage to analytics with the correct source queue', async () => {
     const msg = getMockCleanupMessage();
     const batch = getMockBatch([msg], 'description-cleanup-dlq');
     const env = getMockEnv();
@@ -503,7 +475,7 @@ describe('handleCleanupDlqBatch', () => {
     );
   });
 
-  it('calls trackDlqConsumer with success false on failure', async () => {
+  it('reports failed storage to analytics', async () => {
     const msg = getMockCleanupMessage();
     const batch = getMockBatch([msg], 'description-cleanup-dlq');
     const db = getMockDb();

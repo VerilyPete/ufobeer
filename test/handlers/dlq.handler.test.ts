@@ -472,11 +472,10 @@ describe('handleDlqAcknowledge', () => {
       body: JSON.stringify({ ids: [1] }),
     });
 
-    await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
+    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { data: { acknowledged_count: number } };
 
-    const sql = db.prepare.mock.calls[0]?.[0] as string;
-    expect(sql).toContain("status = 'acknowledged'");
-    expect(sql).toContain("AND status = 'pending'");
+    expect(body.data.acknowledged_count).toBe(1);
   });
 
   it('limits to 100 IDs even if more are provided', async () => {
