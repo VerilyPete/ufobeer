@@ -104,19 +104,50 @@ Every phase follows RED-GREEN-REFACTOR:
 
 Each section within a phase is designed to be independently verifiable. An implementing agent can complete one section, run `npx tsc --noEmit` + `npm run test`, and confirm green before moving to the next.
 
-## Scope Summary
+## Implementation Status: COMPLETE
 
-| Metric | Count |
+All phases implemented and reviewed. 8 commits total.
+
+### Commits
+
+| Commit | Scope |
 |--------|-------|
-| Phases | 5 (8 plan files: 01, 02, 03a, 03b, 04a, 04b, 05a, 05b) |
-| Files modified | ~30 (some touched by multiple phases) |
-| New files | ~8 (schemas, tests, circuit breaker) |
-| `as` casts eliminated | ~25 |
-| `!` assertions eliminated | 5 |
-| Manual validation lines removed | ~180 |
-| Interfaces converted to types | 50 |
-| Compiler flags enabled | 6 |
-| Behavior changes | 0 |
+| `4b35434` | Phases 1-5a (main implementation) |
+| `4c957e5` | Phase 3b (schema integration) |
+| `6353ec6` | Phases 4b+5b (cast cleanup, functional refactors) |
+| `e63fab2` | Review nits: analytics.ts consistency, false-positive `@ts-expect-error`, missing edge case tests |
+| `366a362` | Pre-existing timezone bug fix (getMonthStart/getMonthEnd used local time, not UTC) |
+| `3ff4712` | Remove resolved getMonthEnd follow-up item |
+| `f4011ab` | Enable `exactOptionalPropertyTypes` in test tsconfig (1 violation, not ~90) |
+| `9e793c7` | Mark follow-up as done |
+
+### Final Metrics
+
+| Metric | Planned | Actual |
+|--------|---------|--------|
+| Phases | 5 (8 plan files) | 5 (8 plan files) |
+| Files modified | ~30 | ~45 |
+| New files | ~8 | ~8 |
+| `as` casts eliminated | ~25 | ~25 |
+| `!` assertions eliminated | 5 | 5 |
+| Manual validation lines removed | ~180 | ~180 |
+| Interfaces converted to types | 50 | 50 |
+| Compiler flags enabled | 6 | 6 |
+| New tests added | — | ~120 |
+| Behavior changes | 0 | 0 |
+
+### Plan-vs-Implementation Drift
+
+1. **Commit granularity**: Plan implied one commit per phase. Implementation bundled phases into 3 major commits + 5 follow-ups. All green-to-green transitions maintained, just at coarser granularity.
+2. **`exactOptionalPropertyTypes` test scope**: Follow-ups estimated ~90 test violations. Actual: 1 error in 1 file. The ~90 was `noUncheckedIndexedAccess` errors, conflated during planning.
+3. **`categorizeBeer()` variants**: Plan said 6, implementation produced 8 (blocklisted split into its own variant).
+4. **Unplanned fixes**: `global` → `globalThis` in tests, `analytics.ts:trackCron` date inconsistency, 2 false-positive `@ts-expect-error` directives, 5 missing schema edge case tests — all caught during review.
+5. **Pre-existing timezone bug**: `getMonthStart`/`getMonthEnd` used local time getters on UTC dates. Discovered during migration, fixed in dedicated commit.
+
+### Remaining Follow-Ups
+
+See `follow-ups.md`. One item remains:
+- `withTimeout` → `AbortSignal.timeout`: Blocked on Cloudflare `AiOptions` type lacking `signal`. Research (Feb 2026) confirms `env.AI.run()` still doesn't support it. AI Gateway `cf-aig-request-timeout` header is a viable workaround. Current `Promise.race` approach is acceptable — Worker I/O wait doesn't burn CPU.
 
 ## Verification Checklist (per phase)
 

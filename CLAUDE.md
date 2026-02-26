@@ -202,6 +202,42 @@ Artillery configs in `test/load/` for batch, sync, and mixed workloads.
 curl -H "X-API-Key: $API_KEY" https://api.ufobeer.app/health
 ```
 
+## Cloudflare Workers AI Gotchas
+
+### `env.AI.run()` Does Not Accept `AbortSignal` (as of Feb 2026)
+
+The `AiOptions` type only supports `stream`. Passing `signal: AbortSignal.timeout(ms)` is a compile error under strict mode and does not work at runtime.
+
+**Key facts:**
+- Worker CPU is NOT consumed during I/O wait. Cloudflare bills CPU time, not wall-clock time. A hanging `ai.run()` call does not burn your CPU budget while it waits.
+- `Promise.race` timeout is therefore acceptable: it returns control to the caller promptly, and the only "cost" is the GPU inference running to completion server-side — which no client-side approach can prevent anyway.
+
+```typescript
+// ✅ ACCEPTABLE - Promise.race timeout (CPU not burned during I/O wait)
+export async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('AI call timeout')), ms);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
+// ❌ DOES NOT COMPILE - AiOptions has no signal property
+const result = await env.AI.run(model, inputs, {
+  signal: AbortSignal.timeout(AI_TIMEOUT_MS), // type error
+});
+```
+
+**Infrastructure-level alternative**: AI Gateway supports `cf-aig-request-timeout` header (added Feb 2025), which enforces a timeout server-side without code changes. Best option if infrastructure-level control is needed.
+
+**How to check for native support**: Run `wrangler types` and look for `signal?: AbortSignal` in the `AiOptions` type in `worker-configuration.d.ts`.
+
+---
+
 ## Code Style
 
 - TypeScript strict mode

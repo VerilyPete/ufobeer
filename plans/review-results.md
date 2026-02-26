@@ -75,8 +75,29 @@
 - Item 3 (circuit breaker singleton): Plan already handled correctly (no change)
 - Item 4 (readonly pain): Plan's mitigation sufficient (no change)
 
-## Overall Stats (All Phases Complete)
-- 3 commits: 4b35434, 4c957e5, 6353ec6
+## Follow-Up Commits
+
+### e63fab2 - Review Nits
+- `analytics.ts:trackCron` inline date → `getToday()` (consistency fix from review)
+- 2 false-positive `@ts-expect-error` directives fixed in compile-check tests
+- 5 missing edge case tests added for schema constraints (empty strings, non-integer limits)
+- Created `plans/follow-ups.md` with 3 deferred items
+
+### 366a362 - Timezone Bug Fix (pre-existing, found during migration)
+- `getMonthStart`/`getMonthEnd` used `getFullYear()`/`getMonth()` (local time) on ISO-parsed dates
+- Fixed to `getUTCFullYear()`/`getUTCMonth()`/`Date.UTC()` — prevents day/month rollback in UTC-behind timezones
+- 4 pre-existing test failures resolved
+
+### 3ff4712 - Remove Resolved getMonthEnd Follow-Up
+
+### f4011ab - Enable `exactOptionalPropertyTypes` in Test tsconfig
+- Only 1 violation (not ~90 as estimated — that count was `noUncheckedIndexedAccess`)
+- Omitted `queued_for_cleanup_at` instead of assigning `undefined` in test mock
+
+### 9e793c7 - Mark Follow-Up as Done
+
+## Overall Stats (All Phases + Follow-Ups Complete)
+- 8 commits: 4b35434, 4c957e5, 6353ec6, e63fab2, 366a362, 3ff4712, f4011ab, 9e793c7
 - ~45 files changed, +5800 / -1460 lines
 - 6 compiler flags enabled
 - 50 interfaces → types with readonly
@@ -88,4 +109,4 @@
 - readonly annotations on key function parameters
 - ~120 new tests added
 - Zero runtime behavior changes
-- Pre-existing: 4 date test failures (timezone bug in getMonthEnd, not introduced by migration)
+- 1 pre-existing bug fixed (timezone in date utils)

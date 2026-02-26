@@ -62,14 +62,45 @@ This would cancel the inference server-side, freeing resources immediately.
 
 The CF Workers `AiOptions` type (in `worker-configuration.d.ts`) does not
 include a `signal` property. Adding it would cause a compile error under
-strict mode. The runtime may or may not support it — the type definition
-is the constraint.
+strict mode. The runtime does not support it either — confirmed by research
+(Feb 2026).
 
-### How to check
+### Research findings (Feb 2026)
 
-Periodically check the Cloudflare Workers AI changelog or the generated
-`worker-configuration.d.ts` after `wrangler types` for an `AiOptions`
-type that includes `signal?: AbortSignal`.
+- `env.AI.run()` still does NOT accept `AbortSignal`. The binding API only
+  supports `stream` as an option. This accurately reflects runtime behavior.
+- The `workers-ai-provider@3.0.5` (Feb 2025) fixed AbortSignal passthrough,
+  but only for the Vercel AI SDK provider (REST API path), not the native
+  `env.AI` binding.
+- Even if you abort the HTTP connection, the GPU inference likely runs to
+  completion. HTTP has no mechanism to tell the server to stop processing.
+- **Worker CPU time is NOT consumed while awaiting I/O.** CF bills CPU time,
+  not wall-clock time. The current `Promise.race` approach does not actually
+  burn CPU budget while waiting on the hanging `ai.run()` promise.
+
+### Workarounds available now
+
+1. **AI Gateway + `cf-aig-request-timeout` header** (best option):
+   Infrastructure-level timeout, no code changes needed. Added Feb 2025.
+2. **REST API via `fetch()` + `AbortController`**: Properly closes connection
+   but requires managing an API token instead of using implicit binding auth.
+3. **Vercel AI SDK provider** (v3.0.5+): Passes signal to fetch. Only useful
+   if adopting the Vercel AI SDK.
+
+### Current assessment
+
+The current `withTimeout` + `Promise.race` approach is acceptable:
+- It returns a timeout response to the caller promptly
+- Worker CPU is not consumed during the I/O wait
+- The only cost is the GPU inference running to completion server-side,
+  which no client-side approach can prevent
+
+Consider AI Gateway if infrastructure-level timeout enforcement is needed.
+
+### How to check for native support
+
+Periodically run `wrangler types` and check `worker-configuration.d.ts`
+for an `AiOptions` type that includes `signal?: AbortSignal`.
 
 ### When unblocked
 
