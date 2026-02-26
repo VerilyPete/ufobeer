@@ -11,7 +11,7 @@
  * before implementing the N+1 query fix (Issue 7.1).
  */
 
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { handleBeerList } from '../../src/handlers/beers';
 import type { Env, RequestContext, FlyingSaucerBeer } from '../../src/types';
 
@@ -134,27 +134,10 @@ function createMockReqCtx(): RequestContext {
 const mockHeaders = { 'Content-Type': 'application/json' };
 
 // ============================================================================
-// Global Fetch Mock
-// ============================================================================
-
-// Store original fetch
-const originalFetch = globalThis.fetch;
-
-// ============================================================================
 // Tests
 // ============================================================================
 
 describe('handleBeerList', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    // Reset fetch to original before each test
-    globalThis.fetch = originalFetch;
-  });
-
-  afterEach(() => {
-    // Restore original fetch after each test
-    globalThis.fetch = originalFetch;
-  });
 
   // --------------------------------------------------------------------------
   // Upstream API Handling Tests
@@ -454,6 +437,7 @@ describe('handleBeerList', () => {
 
   describe('enrichment merging', () => {
     it('merges ABV data from enriched_beers table', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Test IPA' }),
       ];
@@ -494,6 +478,7 @@ describe('handleBeerList', () => {
     });
 
     it('uses cleaned description when available', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Test IPA', brew_description: 'Original marketing text' }),
       ];
@@ -529,6 +514,7 @@ describe('handleBeerList', () => {
     });
 
     it('falls back to original description when no cleaned version available', async () => {
+      vi.clearAllMocks();
       const originalDescription = 'Original Flying Saucer description';
       const beers = [
         createBeer({ id: '1', brew_name: 'Test IPA', brew_description: originalDescription }),
@@ -565,6 +551,7 @@ describe('handleBeerList', () => {
     });
 
     it('handles beers with no enrichment data', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Test IPA', brew_description: 'Original desc' }),
       ];
@@ -600,6 +587,7 @@ describe('handleBeerList', () => {
     });
 
     it('merges enrichment for multiple beers correctly', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Beer 1', brew_description: 'Desc 1' }),
         createBeer({ id: '2', brew_name: 'Beer 2', brew_description: 'Desc 2' }),
@@ -657,6 +645,7 @@ describe('handleBeerList', () => {
     });
 
     it('passes correct beer IDs to getEnrichmentForBeerIds', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '100', brew_name: 'Beer 100' }),
         createBeer({ id: '200', brew_name: 'Beer 200' }),
@@ -687,6 +676,7 @@ describe('handleBeerList', () => {
 
   describe('background task queueing', () => {
     it('queues beers for cleanup when description changed', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Test IPA', brew_description: 'New description' }),
       ];
@@ -724,6 +714,7 @@ describe('handleBeerList', () => {
     });
 
     it('queues beers for enrichment when ABV missing', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Test IPA' }),
       ];
@@ -761,6 +752,7 @@ describe('handleBeerList', () => {
     });
 
     it('verifies waitUntil is called for non-blocking background tasks', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Test Beer' }),
       ];
@@ -781,6 +773,7 @@ describe('handleBeerList', () => {
     });
 
     it('does not block response while background tasks run', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Test Beer' }),
       ];
@@ -810,6 +803,7 @@ describe('handleBeerList', () => {
     });
 
     it('queues both cleanup and enrichment when both needed', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Beer with new desc', brew_description: 'New' }),
         createBeer({ id: '2', brew_name: 'Beer needing enrichment' }),
@@ -844,6 +838,7 @@ describe('handleBeerList', () => {
     });
 
     it('does not queue when no beers need processing', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Already Enriched Beer' }),
       ];
@@ -873,6 +868,7 @@ describe('handleBeerList', () => {
     });
 
     it('handles background task errors gracefully without affecting response', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Test Beer' }),
       ];
@@ -899,6 +895,7 @@ describe('handleBeerList', () => {
     });
 
     it('passes correct data to insertPlaceholders', async () => {
+      vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Test IPA', brewer: 'Brewery A', brew_description: 'Hoppy' }),
         createBeer({ id: '2', brew_name: 'Test Stout', brewer: 'Brewery B', brew_description: undefined }),

@@ -5,12 +5,22 @@
  * response parsing, validation, and error handling.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { fetchAbvFromPerplexity } from '../../src/services/perplexity';
 import type { Env } from '../../src/types';
 
-// Store original fetch to restore after tests
-const originalFetch = globalThis.fetch;
+/**
+ * Sets up a mock fetch on globalThis and returns the mock + cleanup function.
+ */
+function setupMockFetch() {
+  const originalFetch = globalThis.fetch;
+  const mockFetch = vi.fn();
+  globalThis.fetch = mockFetch;
+  const restore = () => {
+    globalThis.fetch = originalFetch;
+  };
+  return { mockFetch, restore };
+}
 
 /**
  * Creates a mock Env object with optional Perplexity API key.
@@ -55,25 +65,10 @@ function createMockErrorResponse(status: number, body: string = 'Error'): Respon
 }
 
 describe('fetchAbvFromPerplexity', () => {
-  let mockFetch: ReturnType<typeof vi.fn>;
-  let mockConsoleWarn: ReturnType<typeof vi.spyOn>;
-  let mockConsoleError: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockFetch = vi.fn();
-    globalThis.fetch = mockFetch;
-    mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-    vi.restoreAllMocks();
-  });
 
   describe('successful responses', () => {
     it('should parse numeric ABV from response', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('6.5'));
 
       const result = await fetchAbvFromPerplexity(
@@ -83,9 +78,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(6.5);
+      restore();
     });
 
     it('should parse integer ABV from response', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5'));
 
       const result = await fetchAbvFromPerplexity(
@@ -95,9 +92,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(5);
+      restore();
     });
 
     it('should parse decimal ABV with % sign', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.5%'));
 
       const result = await fetchAbvFromPerplexity(
@@ -107,9 +106,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(5.5);
+      restore();
     });
 
     it('should return null for "unknown" response (lowercase)', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('unknown'));
 
       const result = await fetchAbvFromPerplexity(
@@ -119,9 +120,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBeNull();
+      restore();
     });
 
     it('should return null for "Unknown" response (capitalized)', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('Unknown'));
 
       const result = await fetchAbvFromPerplexity(
@@ -131,9 +134,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBeNull();
+      restore();
     });
 
     it('should return null for "UNKNOWN" response (uppercase)', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('UNKNOWN'));
 
       const result = await fetchAbvFromPerplexity(
@@ -143,9 +148,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBeNull();
+      restore();
     });
 
     it('should handle ABV with surrounding text', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(
         createMockResponse('The ABV is approximately 7.2%')
       );
@@ -157,9 +164,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(7.2);
+      restore();
     });
 
     it('should extract first number from response with multiple numbers', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(
         createMockResponse('The beer has 5.5% ABV. Some versions are 6.0%.')
       );
@@ -172,9 +181,11 @@ describe('fetchAbvFromPerplexity', () => {
 
       // Should extract the first number (5.5)
       expect(result).toBe(5.5);
+      restore();
     });
 
     it('should handle response with whitespace padding', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('  6.5  '));
 
       const result = await fetchAbvFromPerplexity(
@@ -184,9 +195,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(6.5);
+      restore();
     });
 
     it('should return null for empty response', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse(''));
 
       const result = await fetchAbvFromPerplexity(
@@ -196,9 +209,12 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBeNull();
+      restore();
     });
 
     it('should return null for response with no numbers', async () => {
+      const { mockFetch, restore } = setupMockFetch();
+      const mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       mockFetch.mockResolvedValueOnce(
         createMockResponse('This beer has a moderate alcohol content.')
       );
@@ -211,11 +227,14 @@ describe('fetchAbvFromPerplexity', () => {
 
       expect(result).toBeNull();
       expect(mockConsoleWarn).toHaveBeenCalled();
+      mockConsoleWarn.mockRestore();
+      restore();
     });
   });
 
   describe('ABV validation', () => {
     it('should accept ABV of 0', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('0'));
 
       const result = await fetchAbvFromPerplexity(
@@ -225,9 +244,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(0);
+      restore();
     });
 
     it('should accept ABV at boundary (70)', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('70'));
 
       const result = await fetchAbvFromPerplexity(
@@ -237,9 +258,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(70);
+      restore();
     });
 
     it('should reject ABV > 70 as invalid', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('75'));
 
       const result = await fetchAbvFromPerplexity(
@@ -249,9 +272,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBeNull();
+      restore();
     });
 
     it('should reject ABV of 100 as invalid', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('100'));
 
       const result = await fetchAbvFromPerplexity(
@@ -261,9 +286,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBeNull();
+      restore();
     });
 
     it('should extract positive number from negative input', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       // The regex /(\d+\.?\d*)/ won't match the minus sign, so -5 extracts "5"
       mockFetch.mockResolvedValueOnce(createMockResponse('-5'));
 
@@ -275,9 +302,11 @@ describe('fetchAbvFromPerplexity', () => {
 
       // The regex extracts "5" from "-5", which is valid
       expect(result).toBe(5);
+      restore();
     });
 
     it('should handle typical craft beer ABV range', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('6.8'));
 
       const result = await fetchAbvFromPerplexity(
@@ -287,9 +316,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(6.8);
+      restore();
     });
 
     it('should handle high ABV imperial stouts', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('12.5'));
 
       const result = await fetchAbvFromPerplexity(
@@ -299,9 +330,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(12.5);
+      restore();
     });
 
     it('should handle barleywine ABV', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('14.2'));
 
       const result = await fetchAbvFromPerplexity(
@@ -311,11 +344,14 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(14.2);
+      restore();
     });
   });
 
   describe('error handling', () => {
     it('should throw on 429 rate limit error', async () => {
+      const { mockFetch, restore } = setupMockFetch();
+      const mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
       mockFetch.mockResolvedValueOnce(
         createMockErrorResponse(429, 'Rate limit exceeded')
       );
@@ -323,9 +359,13 @@ describe('fetchAbvFromPerplexity', () => {
       await expect(
         fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery')
       ).rejects.toThrow('Perplexity API returned 429');
+      mockConsoleError.mockRestore();
+      restore();
     });
 
     it('should throw on 500 server error', async () => {
+      const { mockFetch, restore } = setupMockFetch();
+      const mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
       mockFetch.mockResolvedValueOnce(
         createMockErrorResponse(500, 'Internal Server Error')
       );
@@ -333,9 +373,13 @@ describe('fetchAbvFromPerplexity', () => {
       await expect(
         fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery')
       ).rejects.toThrow('Perplexity API returned 500');
+      mockConsoleError.mockRestore();
+      restore();
     });
 
     it('should throw on 401 unauthorized error', async () => {
+      const { mockFetch, restore } = setupMockFetch();
+      const mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
       mockFetch.mockResolvedValueOnce(
         createMockErrorResponse(401, 'Unauthorized')
       );
@@ -343,9 +387,13 @@ describe('fetchAbvFromPerplexity', () => {
       await expect(
         fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery')
       ).rejects.toThrow('Perplexity API returned 401');
+      mockConsoleError.mockRestore();
+      restore();
     });
 
     it('should throw on 403 forbidden error', async () => {
+      const { mockFetch, restore } = setupMockFetch();
+      const mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
       mockFetch.mockResolvedValueOnce(
         createMockErrorResponse(403, 'Forbidden')
       );
@@ -353,33 +401,43 @@ describe('fetchAbvFromPerplexity', () => {
       await expect(
         fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery')
       ).rejects.toThrow('Perplexity API returned 403');
+      mockConsoleError.mockRestore();
+      restore();
     });
 
     it('should throw on network timeout', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockRejectedValueOnce(new Error('Timeout'));
 
       await expect(
         fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery')
       ).rejects.toThrow('Timeout');
+      restore();
     });
 
     it('should throw on network error', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockRejectedValueOnce(new Error('Network error'));
 
       await expect(
         fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery')
       ).rejects.toThrow('Network error');
+      restore();
     });
 
     it('should throw on fetch rejection', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockRejectedValueOnce(new Error('DNS resolution failed'));
 
       await expect(
         fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery')
       ).rejects.toThrow('DNS resolution failed');
+      restore();
     });
 
     it('should return null when API key not configured (undefined)', async () => {
+      const { mockFetch, restore } = setupMockFetch();
+      const mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       // Create env without the PERPLEXITY_API_KEY property
       const envWithoutKey = {
         DB: {} as D1Database,
@@ -403,9 +461,12 @@ describe('fetchAbvFromPerplexity', () => {
       expect(mockConsoleWarn).toHaveBeenCalledWith(
         'PERPLEXITY_API_KEY not configured'
       );
+      mockConsoleWarn.mockRestore();
+      restore();
     });
 
     it('should return null when API key is empty string', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       // The implementation checks !env.PERPLEXITY_API_KEY which treats
       // empty string as falsy, so it should return null
       const result = await fetchAbvFromPerplexity(
@@ -416,9 +477,12 @@ describe('fetchAbvFromPerplexity', () => {
 
       expect(result).toBeNull();
       expect(mockFetch).not.toHaveBeenCalled();
+      restore();
     });
 
     it('should log error on API failure', async () => {
+      const { mockFetch, restore } = setupMockFetch();
+      const mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
       mockFetch.mockResolvedValueOnce(
         createMockErrorResponse(500, 'Server error')
       );
@@ -428,11 +492,14 @@ describe('fetchAbvFromPerplexity', () => {
       ).rejects.toThrow();
 
       expect(mockConsoleError).toHaveBeenCalled();
+      mockConsoleError.mockRestore();
+      restore();
     });
   });
 
   describe('response structure handling', () => {
     it('should handle missing choices array', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: vi.fn().mockResolvedValue({}),
@@ -445,9 +512,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBeNull();
+      restore();
     });
 
     it('should handle empty choices array', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: vi.fn().mockResolvedValue({ choices: [] }),
@@ -460,9 +529,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBeNull();
+      restore();
     });
 
     it('should handle missing message in choice', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: vi.fn().mockResolvedValue({
@@ -477,9 +548,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBeNull();
+      restore();
     });
 
     it('should handle missing content in message', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: vi.fn().mockResolvedValue({
@@ -494,9 +567,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBeNull();
+      restore();
     });
 
     it('should handle null content in message', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: vi.fn().mockResolvedValue({
@@ -511,11 +586,13 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBeNull();
+      restore();
     });
   });
 
   describe('prompt construction', () => {
     it('should include brewer when provided', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.0'));
 
       await fetchAbvFromPerplexity(createMockEnv(), 'Test IPA', 'Famous Brewery');
@@ -527,9 +604,11 @@ describe('fetchAbvFromPerplexity', () => {
           body: expect.stringContaining('Famous Brewery'),
         })
       );
+      restore();
     });
 
     it('should include beer name in prompt', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.0'));
 
       await fetchAbvFromPerplexity(createMockEnv(), 'Sierra Nevada Pale Ale', 'Sierra Nevada');
@@ -540,9 +619,11 @@ describe('fetchAbvFromPerplexity', () => {
           body: expect.stringContaining('Sierra Nevada Pale Ale'),
         })
       );
+      restore();
     });
 
     it('should handle null brewer gracefully', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.0'));
 
       await fetchAbvFromPerplexity(createMockEnv(), 'Test IPA', null);
@@ -554,9 +635,11 @@ describe('fetchAbvFromPerplexity', () => {
       expect(userContent).not.toContain('by null');
       // Should contain the beer name
       expect(userContent).toContain('Test IPA');
+      restore();
     });
 
     it('should send correct request headers', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.0'));
 
       await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
@@ -570,18 +653,22 @@ describe('fetchAbvFromPerplexity', () => {
           },
         })
       );
+      restore();
     });
 
     it('should use sonar model', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.0'));
 
       await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
 
       const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(callBody.model).toBe('sonar');
+      restore();
     });
 
     it('should include system message for beer expertise', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.0'));
 
       await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
@@ -589,9 +676,11 @@ describe('fetchAbvFromPerplexity', () => {
       const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(callBody.messages[0].role).toBe('system');
       expect(callBody.messages[0].content).toContain('beer expert');
+      restore();
     });
 
     it('should enable web search in request', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.0'));
 
       await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
@@ -599,29 +688,35 @@ describe('fetchAbvFromPerplexity', () => {
       const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(callBody.web_search_options).toBeDefined();
       expect(callBody.web_search_options.search_context_size).toBe('medium');
+      restore();
     });
 
     it('should set low temperature for consistent responses', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.0'));
 
       await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
 
       const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(callBody.temperature).toBe(0.1);
+      restore();
     });
 
     it('should set max_tokens to limit response', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.0'));
 
       await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
 
       const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(callBody.max_tokens).toBe(100);
+      restore();
     });
   });
 
   describe('API endpoint', () => {
     it('should call correct Perplexity API endpoint', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.0'));
 
       await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
@@ -630,9 +725,11 @@ describe('fetchAbvFromPerplexity', () => {
         'https://api.perplexity.ai/chat/completions',
         expect.any(Object)
       );
+      restore();
     });
 
     it('should use POST method', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.0'));
 
       await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
@@ -643,11 +740,13 @@ describe('fetchAbvFromPerplexity', () => {
           method: 'POST',
         })
       );
+      restore();
     });
   });
 
   describe('edge cases', () => {
     it('should handle beer name with special characters', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.5'));
 
       const result = await fetchAbvFromPerplexity(
@@ -663,9 +762,11 @@ describe('fetchAbvFromPerplexity', () => {
           body: expect.stringContaining("O'Hara's Irish Red"),
         })
       );
+      restore();
     });
 
     it('should handle beer name with unicode characters', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('4.9'));
 
       const result = await fetchAbvFromPerplexity(
@@ -675,9 +776,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(4.9);
+      restore();
     });
 
     it('should handle very long beer name', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('8.0'));
       const longBeerName =
         'This Is A Really Long Beer Name That Goes On And On And On For Testing Purposes';
@@ -689,9 +792,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(8.0);
+      restore();
     });
 
     it('should handle decimal ABV with many decimal places', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('5.123456'));
 
       const result = await fetchAbvFromPerplexity(
@@ -701,9 +806,11 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(5.123456);
+      restore();
     });
 
     it('should handle ABV response with newlines', async () => {
+      const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('\n6.5\n'));
 
       const result = await fetchAbvFromPerplexity(
@@ -713,6 +820,7 @@ describe('fetchAbvFromPerplexity', () => {
       );
 
       expect(result).toBe(6.5);
+      restore();
     });
   });
 });

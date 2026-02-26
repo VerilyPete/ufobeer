@@ -12,7 +12,7 @@
  * @module test/cleanup-integration.test
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   handleCleanupBatch,
   processAIConcurrently,
@@ -239,12 +239,6 @@ function expectAllProcessed(batch: MessageBatch<CleanupMessage>): void {
 // ============================================================================
 
 describe('handleCleanupBatch integration', () => {
-  let mockEnv: MockEnv;
-
-  beforeEach(() => {
-    defaultCircuitBreaker.reset();
-    mockEnv = createFullMockEnv();
-  });
 
   // --------------------------------------------------------------------------
   // Happy Path Tests
@@ -252,6 +246,8 @@ describe('handleCleanupBatch integration', () => {
 
   describe('happy path', () => {
     it('processes batch with all AI successes', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       const batch = createBatch(5, (i) => `Beer ${i} description 5.${i}% ABV`);
 
       await handleCleanupBatch(batch as unknown as MessageBatch<CleanupMessage>, mockEnv as unknown as Env);
@@ -264,6 +260,8 @@ describe('handleCleanupBatch integration', () => {
     });
 
     it('processes batch and extracts ABV from descriptions', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       const batch = createBatch(3, (i) => `A great IPA with ${6 + i}% ABV`);
 
       await handleCleanupBatch(batch as unknown as MessageBatch<CleanupMessage>, mockEnv as unknown as Env);
@@ -276,6 +274,8 @@ describe('handleCleanupBatch integration', () => {
     });
 
     it('queues to Perplexity when ABV not found in descriptions', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       const batch = createBatch(3, () => 'A delicious craft beer with no alcohol percentage');
 
       // Mock AI to return cleaned description without ABV
@@ -299,8 +299,9 @@ describe('handleCleanupBatch integration', () => {
 
   describe('quota handling', () => {
     it('processes available quota and uses fallback for exceeded', async () => {
+      defaultCircuitBreaker.reset();
       // Create environment with quota nearly exhausted (only 3 available)
-      mockEnv = createFullMockEnv(997);
+      const mockEnv = createFullMockEnv(997);
       const batch = createBatch(5);
 
       await handleCleanupBatch(batch as unknown as MessageBatch<CleanupMessage>, mockEnv as unknown as Env);
@@ -310,8 +311,9 @@ describe('handleCleanupBatch integration', () => {
     });
 
     it('uses fallback for entire batch when quota exhausted', async () => {
+      defaultCircuitBreaker.reset();
       // Create environment with quota exhausted
-      mockEnv = createFullMockEnv(1000);
+      const mockEnv = createFullMockEnv(1000);
       const batch = createBatch(5, (i) => `Beer ${i} with 5% ABV`);
 
       await handleCleanupBatch(batch as unknown as MessageBatch<CleanupMessage>, mockEnv as unknown as Env);
@@ -324,6 +326,8 @@ describe('handleCleanupBatch integration', () => {
     });
 
     it('respects daily limit from environment variable', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       mockEnv.DAILY_CLEANUP_LIMIT = '10';
       const mockDb = createMockD1(8, 10); // 8 used, 10 limit = 2 available
       mockEnv.DB = mockDb;
@@ -343,6 +347,8 @@ describe('handleCleanupBatch integration', () => {
 
   describe('circuit breaker behavior', () => {
     it('opens circuit breaker after slow AI calls', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       // Manually trigger circuit breaker opening on the default instance
       for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
         defaultCircuitBreaker.recordLatency(SLOW_THRESHOLD_MS + 1000, i, 10, `beer-${i}`);
@@ -361,6 +367,8 @@ describe('handleCleanupBatch integration', () => {
     });
 
     it('uses fallback path when circuit breaker is open', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       // Pre-open the circuit breaker on the default instance
       for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
         defaultCircuitBreaker.recordLatency(SLOW_THRESHOLD_MS + 1000, i, 10, `slow-beer-${i}`);
@@ -380,6 +388,8 @@ describe('handleCleanupBatch integration', () => {
 
   describe('error recovery', () => {
     it('retries messages when AI fails', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       let callCount = 0;
       mockEnv.AI.run = vi.fn().mockImplementation(async () => {
         callCount++;
@@ -398,6 +408,8 @@ describe('handleCleanupBatch integration', () => {
     });
 
     it('retries all messages when D1 batch fails after retries', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       mockEnv.DB.batch = vi.fn().mockRejectedValue(new Error('D1 unavailable'));
 
       const batch = createBatch(3);
@@ -411,6 +423,8 @@ describe('handleCleanupBatch integration', () => {
     });
 
     it('continues processing if Perplexity queue fails', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       mockEnv.ENRICHMENT_QUEUE.sendBatch = vi.fn().mockRejectedValue(new Error('Queue error'));
 
       // Messages without ABV - need Perplexity
@@ -436,6 +450,8 @@ describe('handleCleanupBatch integration', () => {
     });
 
     it('retries messages when quota reservation fails', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       // Make quota reservation throw an error
       mockEnv.DB.prepare = vi.fn().mockImplementation((sql: string) => {
         if (sql.includes('cleanup_limits')) {
@@ -471,6 +487,8 @@ describe('handleCleanupBatch integration', () => {
 
   describe('concurrency handling', () => {
     it('respects MAX_CLEANUP_CONCURRENCY setting', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       mockEnv.MAX_CLEANUP_CONCURRENCY = '2';
 
       const batch = createBatch(5);
@@ -499,6 +517,8 @@ describe('handleCleanupBatch integration', () => {
 
   describe('edge cases', () => {
     it('handles empty batch gracefully', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       const batch = {
         messages: [],
         queue: 'description-cleanup',
@@ -513,6 +533,8 @@ describe('handleCleanupBatch integration', () => {
     });
 
     it('handles single message batch', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       const batch = createBatch(1, () => 'Single beer 6% ABV');
 
       await handleCleanupBatch(batch as unknown as MessageBatch<CleanupMessage>, mockEnv as unknown as Env);
@@ -527,6 +549,8 @@ describe('handleCleanupBatch integration', () => {
 
   describe('metrics logging', () => {
     it('logs batch metrics on completion', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
       const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
       const batch = createBatch(5);
@@ -557,13 +581,9 @@ describe('handleCleanupBatch integration', () => {
 // ============================================================================
 
 describe('processAIConcurrently', () => {
-  let mockAI: MockAI;
-
-  beforeEach(() => {
-    mockAI = createMockAI(10);
-  });
 
   it('processes messages in parallel', async () => {
+    const mockAI = createMockAI(10);
     const messages = [
       createMockMessage(0, 'Beer 0 5.0% ABV'),
       createMockMessage(1, 'Beer 1 5.5% ABV'),
@@ -581,6 +601,7 @@ describe('processAIConcurrently', () => {
   });
 
   it('returns results in correct order regardless of completion order', async () => {
+    const mockAI = createMockAI(10);
     const messages = [
       createMockMessage(0, 'Beer 0'),
       createMockMessage(1, 'Beer 1'),
@@ -609,6 +630,7 @@ describe('processAIConcurrently', () => {
   });
 
   it('handles mixed success and failure', async () => {
+    const mockAI = createMockAI(10);
     const messages = [
       createMockMessage(0, 'Beer 0'),
       createMockMessage(1, 'Beer 1'),
@@ -640,6 +662,7 @@ describe('processAIConcurrently', () => {
   });
 
   it('handles empty message array', async () => {
+    const mockAI = createMockAI(10);
     const results = await processAIConcurrently(
       [],
       mockAI as unknown as Ai,
@@ -651,6 +674,7 @@ describe('processAIConcurrently', () => {
   });
 
   it('marks results with useFallback when circuit breaker is open', async () => {
+    const mockAI = createMockAI(10);
     // Create a breaker and open it
     const breaker = createCircuitBreaker();
     for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
@@ -678,6 +702,7 @@ describe('processAIConcurrently', () => {
   });
 
   it('respects custom timeout', async () => {
+    const mockAI = createMockAI(10);
     const messages = [createMockMessage(0, 'Beer 0')];
 
     // Create AI that takes longer than timeout

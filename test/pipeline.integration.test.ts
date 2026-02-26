@@ -12,7 +12,7 @@
  * @module test/pipeline.integration.test
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { insertPlaceholders, getEnrichmentForBeerIds, extractABV } from '../src/db';
 import type { InsertPlaceholdersResult, BeerEnrichmentData } from '../src/db';
 
@@ -170,13 +170,6 @@ function createTestBeer(
 // ============================================================================
 
 describe('Pipeline Integration', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    // Reset mock implementations
-    vi.mocked(shouldSkipEnrichment).mockImplementation((name: string) => {
-      return name.toLowerCase().includes('flight');
-    });
-  });
 
   // --------------------------------------------------------------------------
   // insertPlaceholders Flow Tests
@@ -184,6 +177,10 @@ describe('Pipeline Integration', () => {
 
   describe('insertPlaceholders flow', () => {
     it('should insert new beers and return correct counts', async () => {
+      vi.clearAllMocks();
+      vi.mocked(shouldSkipEnrichment).mockImplementation((name: string) => {
+        return name.toLowerCase().includes('flight');
+      });
       const mockDb = createMockD1();
       const beers = [
         createTestBeer('beer-1', 'Test IPA', 'Test Brewery', 'A hoppy IPA'),
@@ -307,6 +304,10 @@ describe('Pipeline Integration', () => {
     });
 
     it('should skip blocklisted beers (flights) for enrichment', async () => {
+      vi.clearAllMocks();
+      vi.mocked(shouldSkipEnrichment).mockImplementation((name: string) => {
+        return name.toLowerCase().includes('flight');
+      });
       const mockDb = createMockD1();
       const beers = [
         createTestBeer('flight-1', 'Texas Flight Sampler', 'Various'),
@@ -489,6 +490,10 @@ describe('Pipeline Integration', () => {
 
   describe('end-to-end data flow', () => {
     it('should correctly categorize mixed beer batch', async () => {
+      vi.clearAllMocks();
+      vi.mocked(shouldSkipEnrichment).mockImplementation((name: string) => {
+        return name.toLowerCase().includes('flight');
+      });
       // Setup: one existing beer with ABV
       const existingDesc = 'Existing description';
       const existingHash = `hash-${existingDesc.slice(0, 20).replace(/\s/g, '-')}`;

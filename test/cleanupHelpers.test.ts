@@ -34,7 +34,7 @@ describe('withTimeout', () => {
   it('clears timeout on success (no memory leak)', async () => {
     const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
     await withTimeout(Promise.resolve('success'), 1000);
-    expect(clearTimeoutSpy).toHaveBeenCalled();
+    expect(clearTimeoutSpy).toHaveBeenCalledOnce();
     clearTimeoutSpy.mockRestore();
   });
 
@@ -42,13 +42,18 @@ describe('withTimeout', () => {
     const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
     await expect(withTimeout(Promise.reject(new Error('original error')), 1000))
       .rejects.toThrow('original error');
-    expect(clearTimeoutSpy).toHaveBeenCalled();
+    expect(clearTimeoutSpy).toHaveBeenCalledOnce();
     clearTimeoutSpy.mockRestore();
   });
 
   it('propagates the original error when promise rejects before timeout', async () => {
     const error = new Error('custom error');
     await expect(withTimeout(Promise.reject(error), 1000)).rejects.toThrow('custom error');
+  });
+
+  it('preserves the resolved value type', async () => {
+    const result = await withTimeout(Promise.resolve(42), 1000);
+    expect(result).toBe(42);
   });
 });
 

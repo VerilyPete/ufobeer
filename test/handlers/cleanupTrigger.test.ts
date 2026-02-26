@@ -10,7 +10,7 @@
  * - Quota reporting
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { handleCleanupTrigger } from '../../src/handlers/cleanupTrigger';
 import type { Env, RequestContext } from '../../src/types';
 
@@ -172,15 +172,18 @@ const headers = { 'Content-Type': 'application/json' };
 // Tests
 // ============================================================================
 
-describe('handleCleanupTrigger', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    // Reset mock implementations to defaults
-    vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 1, skipped: 0 });
-    vi.mocked(shouldSkipEnrichment).mockImplementation((name: string) => {
-      return name.toLowerCase().includes('flight');
-    });
+/**
+ * Resets module-level mocks to default implementations.
+ */
+function resetMocks() {
+  vi.clearAllMocks();
+  vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 1, skipped: 0 });
+  vi.mocked(shouldSkipEnrichment).mockImplementation((name: string) => {
+    return name.toLowerCase().includes('flight');
   });
+}
+
+describe('handleCleanupTrigger', () => {
 
   // --------------------------------------------------------------------------
   // Validation Tests
@@ -497,6 +500,7 @@ describe('handleCleanupTrigger', () => {
 
   describe('dry run', () => {
     it('does not call queue sendBatch', async () => {
+      resetMocks();
       const env = createMockEnv({
         beers: [
           { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
@@ -677,6 +681,7 @@ describe('handleCleanupTrigger', () => {
 
   describe('blocklist filtering', () => {
     it('skips blocklisted beers (flights)', async () => {
+      resetMocks();
       const env = createMockEnv({
         beers: [
           { id: '1', brew_name: 'Regular Beer', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
@@ -695,6 +700,7 @@ describe('handleCleanupTrigger', () => {
     });
 
     it('returns no_eligible_beers when all beers are blocklisted', async () => {
+      resetMocks();
       const env = createMockEnv({
         beers: [
           { id: '1', brew_name: 'Texas Flight', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
