@@ -289,7 +289,7 @@ describe('handleCleanupTrigger', () => {
           // Beer 2: already queued - should be excluded
           { id: '2', brew_name: 'Beer 2', brewer: 'Brewer', brew_description_original: 'Desc 2', brew_description_cleaned: null, queued_for_cleanup_at: Date.now() - 60000 },
           // Beer 3: eligible - no cleaned description and not yet queued
-          { id: '3', brew_name: 'Beer 3', brewer: 'Brewer', brew_description_original: 'Desc 3', brew_description_cleaned: null, queued_for_cleanup_at: undefined },
+          { id: '3', brew_name: 'Beer 3', brewer: 'Brewer', brew_description_original: 'Desc 3', brew_description_cleaned: null },
         ],
       });
       const request = createMockRequest({ mode: 'missing', dry_run: true });

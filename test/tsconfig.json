@@ -5,7 +5,7 @@
 		"noUnusedLocals": false,
 		"noUnusedParameters": false,
 		"noUncheckedIndexedAccess": false,
-		"exactOptionalPropertyTypes": false
+		"exactOptionalPropertyTypes": true
 	},
 	"include": ["./**/*.ts", "../worker-configuration.d.ts"],
 	"exclude": []
