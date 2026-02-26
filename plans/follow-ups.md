@@ -1,60 +1,19 @@
 # Type Safety Hardening: Follow-Up Items
 
-Two items deferred from the strictness migration. Neither is blocking.
+One item remains from the strictness migration.
 
-## 1. Re-enable `exactOptionalPropertyTypes` in test tsconfig
+## ~~1. Re-enable `exactOptionalPropertyTypes` in test tsconfig~~
 
-**Status**: Deferred (pragmatic unblock for migration)
-**File**: `test/tsconfig.json` line 8
-**Flag**: `"exactOptionalPropertyTypes": false`
+**Status**: Done (f4011ab)
 
-### Problem
+Only 1 violation existed (not ~90 as estimated — that count was
+`noUncheckedIndexedAccess` errors). Fixed by omitting
+`queued_for_cleanup_at` instead of assigning `undefined` in
+`test/handlers/cleanupTrigger.test.ts`. Flag now enabled in
+`test/tsconfig.json`, aligned with production config.
 
-The test tsconfig disables `exactOptionalPropertyTypes` because ~90 test
-files assign `undefined` to optional properties in mock objects. Example:
-
-```typescript
-// This is invalid when exactOptionalPropertyTypes is true:
-const mock: Partial<SomeType> = { optionalProp: undefined };
-
-// The flag distinguishes between "property is absent" and "property is
-// explicitly undefined". This matters because `'prop' in obj` returns
-// true when prop is explicitly undefined but false when omitted.
-```
-
-### Why it matters
-
-Tests that assign `undefined` to optional properties can mask real bugs.
-If production code uses `'prop' in obj` to check for presence, a test mock
-with `{ prop: undefined }` will pass the check even though a real omitted
-property would not.
-
-### Fix pattern
-
-Replace `{ prop: undefined }` in test mocks with one of:
-
-1. **Omit the property entirely** (simplest)
-2. **`Partial<T>`** — lets you skip properties without assigning undefined
-3. **Conditional spread** — `...(condition && { prop: value })`
-4. **Factory functions** — `createMock({ overrides })` that only set provided keys
-
-### Scope
-
-~90 indexed access errors when the flag is enabled. Most are mechanical
-fixes. Estimate: 1-2 hours of focused work.
-
-### Also disabled: `noUncheckedIndexedAccess`
-
-The test tsconfig also disables `noUncheckedIndexedAccess` (line 7) because
-~90 test array accesses would need `if (!item) continue` guards. This is
-lower priority — test code accessing known-length arrays is safe in practice.
-
-### Verification
-
-After cleanup:
-1. Remove `exactOptionalPropertyTypes: false` from `test/tsconfig.json`
-2. `npx tsc --project test/tsconfig.json --noEmit` — zero errors
-3. `npx vitest run --config vitest.unit.config.mts` — all tests pass
+`noUncheckedIndexedAccess` remains disabled in test tsconfig (line 7).
+Low priority — test code accessing known-length arrays is safe in practice.
 
 ---
 
