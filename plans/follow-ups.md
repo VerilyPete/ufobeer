@@ -97,6 +97,43 @@ The current `withTimeout` + `Promise.race` approach is acceptable:
 
 Consider AI Gateway if infrastructure-level timeout enforcement is needed.
 
+---
+
+## 3. Make cache lookup resilient to D1 failures
+
+**Status**: Open
+**File**: `src/handlers/beers.ts` ~line 130-150
+**Severity**: High — caused production outage (1101) on first deploy
+
+### Problem
+
+`getCachedTaplist()` is called in the critical path of `handleBeerList` with
+no try/catch. If D1 throws (missing table, connection failure, schema
+mismatch), the error propagates through the top-level handler and returns a
+Cloudflare 1101 error to the client — even though the handler could have
+fallen through to a live Flying Saucer fetch.
+
+### Fix
+
+Wrap the cache lookup in try/catch and fall through to live fetch on failure:
+
+```typescript
+if (!freshRequested) {
+  try {
+    cachedRow = await getCachedTaplist(env.DB, storeId);
+  } catch (err) {
+    logError('cache.read.failed', err, { requestId: reqCtx.requestId, storeId });
+    // Fall through to live fetch
+  }
+  // ... existing TTL check and cache hit logic
+}
+```
+
+TDD approach: write a test that mocks `getCachedTaplist` to throw, assert
+the handler returns a 200 with `source: 'live'` from upstream.
+
+---
+
 ### How to check for native support
 
 Periodically run `wrangler types` and check `worker-configuration.d.ts`

@@ -69,6 +69,21 @@ async function processBackgroundEnrichment(
 // Stale Fallback Helper
 // ============================================================================
 
+async function resolveStaleRow(
+  db: D1Database,
+  cachedRow: CachedTaplistRow | null,
+  cacheReadSucceeded: boolean,
+  storeId: string,
+): Promise<CachedTaplistRow | null> {
+  if (cachedRow) return cachedRow;
+  if (!cacheReadSucceeded) return null;
+  try {
+    return await getCachedTaplist(db, storeId);
+  } catch {
+    return null;
+  }
+}
+
 function serveStaleFallback(
   fallbackRow: CachedTaplistRow,
   staleBeers: readonly CachedBeer[],
@@ -132,8 +147,14 @@ export async function handleBeerList(
 
   // Check cache (skip on force refresh)
   let cachedRow: CachedTaplistRow | null = null;
+  let cacheReadSucceeded = true;
   if (!freshRequested) {
-    cachedRow = await getCachedTaplist(env.DB, storeId);
+    try {
+      cachedRow = await getCachedTaplist(env.DB, storeId);
+    } catch (err) {
+      cacheReadSucceeded = false;
+      logError('cache.read.failed', err, { requestId: reqCtx.requestId, storeId });
+    }
     if (cachedRow && Date.now() - cachedRow.cached_at < CACHE_TTL_MS) {
       const cachedBeers = parseCachedBeers(cachedRow.response_json);
       if (cachedBeers) {
@@ -170,7 +191,7 @@ export async function handleBeerList(
       });
 
       // Stale fallback: serve cached data when upstream fails
-      const fallbackRow = cachedRow ?? await getCachedTaplist(env.DB, storeId);
+      const fallbackRow = await resolveStaleRow(env.DB, cachedRow, cacheReadSucceeded, storeId);
       if (fallbackRow) {
         const staleBeers = parseCachedBeers(fallbackRow.response_json);
         if (staleBeers) return serveStaleFallback(fallbackRow, staleBeers, storeId, reqCtx, headers, upstreamLatencyMs);
@@ -187,8 +208,7 @@ export async function handleBeerList(
       };
     }
 
-    // Safe: narrowing to unknown[] before Array.isArray validation below
-    const fsData = await fsResp.json() as unknown[];
+    const fsData: unknown = await fsResp.json();
 
     // 2. Parse response with type guards
     // Flying Saucer API returns: [{...}, {brewInStock: [...]}]
@@ -270,7 +290,7 @@ export async function handleBeerList(
     logError('beers.list.error', error, { requestId: reqCtx.requestId, storeId });
 
     // Stale fallback: serve cached data when upstream throws
-    const fallbackRow = cachedRow ?? await getCachedTaplist(env.DB, storeId);
+    const fallbackRow = await resolveStaleRow(env.DB, cachedRow, cacheReadSucceeded, storeId);
     if (fallbackRow) {
       const staleBeers = parseCachedBeers(fallbackRow.response_json);
       if (staleBeers) return serveStaleFallback(fallbackRow, staleBeers, storeId, reqCtx, headers, Date.now() - upstreamStartTime);

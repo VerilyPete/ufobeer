@@ -8,7 +8,11 @@
 		"start": "wrangler dev",
 		"test": "vitest",
 		"test:unit": "vitest --config vitest.unit.config.mts",
+		"typecheck": "tsc --noEmit",
 		"typecheck:test": "tsc --project test/tsconfig.json --noEmit",
+		"migrate:remote": "wrangler d1 migrations apply beer-db --remote",
+		"migrate:local": "wrangler d1 migrations apply beer-db --local",
+		"migrate:list": "wrangler d1 migrations list beer-db --remote",
 		"cf-typegen": "wrangler types"
 	},
 	"devDependencies": {

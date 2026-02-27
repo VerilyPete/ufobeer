@@ -15,7 +15,8 @@
 		{
 			"binding": "DB",
 			"database_name": "beer-db",
-			"database_id": "ea60d64b-d7a9-40ce-8e08-7155d78cfd3b"
+			"database_id": "ea60d64b-d7a9-40ce-8e08-7155d78cfd3b",
+			"migrations_dir": "migrations"
 		}
 	],
 	"queues": {

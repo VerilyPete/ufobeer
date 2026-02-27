@@ -1665,4 +1665,53 @@ describe('handleBeerList', () => {
       expect(result.cacheOutcome).toBe('miss');
     });
   });
+
+  // --------------------------------------------------------------------------
+  // Cache D1 Failure Tests (Step 0b)
+  // --------------------------------------------------------------------------
+
+  describe('cache D1 failure resilience', () => {
+    it('falls through to live fetch when getCachedTaplist throws on initial call', async () => {
+      vi.clearAllMocks();
+      vi.mocked(getCachedTaplist).mockRejectedValue(new Error('D1_ERROR: no such table: store_taplist_cache'));
+
+      const liveBeers = [createBeer({ id: 'live-1', brew_name: 'Live Beer' })];
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(liveBeers)),
+      });
+
+      const env = createMockEnv();
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(200);
+      const body = await result.response.json() as { source: string; beers: Array<{ id: string }> };
+      expect(body.source).toBe('live');
+      expect(body.beers[0].id).toBe('live-1');
+    });
+
+    it('returns 502 when getCachedTaplist throws and upstream also fails — no stale fallback attempted', async () => {
+      vi.clearAllMocks();
+      vi.mocked(getCachedTaplist).mockRejectedValue(new Error('D1_ERROR: no such table: store_taplist_cache'));
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+      });
+
+      const env = createMockEnv();
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(502);
+      // getCachedTaplist must NOT be called again as a stale fallback since the table is broken.
+      // It was called once (initial read), and should not be called a second time.
+      expect(getCachedTaplist).toHaveBeenCalledTimes(1);
+    });
+  });
 });

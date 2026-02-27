@@ -116,9 +116,12 @@ export default {
     };
 
     // Handle CORS preflight
+    // OPTIONS stays outside try/catch — it has no D1 dependency
     if (request.method === 'OPTIONS') {
       return respond(null, 204, corsHeaders || {});
     }
+
+    try {
 
     // Health check (no auth required)
     if (url.pathname === '/health') {
@@ -426,6 +429,25 @@ export default {
       404,
       { ...corsHeaders, ...rateLimitHeaders }
     );
+
+    } catch (error) {
+      // Log the full error server-side (visible in Cloudflare observability logs)
+      console.error('Unhandled fetch error:', error);
+      // Return a generic message — do NOT expose error.message to clients.
+      // Raw error text can contain D1 internals, table names, or SQL fragments.
+      //
+      // Compute CORS headers directly from env rather than using the `corsHeaders`
+      // variable: the error may have occurred before getCorsHeaders() ran, or
+      // getCorsHeaders() itself may have thrown.
+      const errorHeaders: Record<string, string> = {};
+      if (env.ALLOWED_ORIGIN) {
+        errorHeaders['Access-Control-Allow-Origin'] = env.ALLOWED_ORIGIN;
+      }
+      return Response.json(
+        { error: 'Internal Server Error', requestId: requestContext.requestId },
+        { status: 500, headers: errorHeaders }
+      );
+    }
   },
 
   // Cron job: Delegate to scheduled handler

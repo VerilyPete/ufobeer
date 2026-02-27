@@ -75,10 +75,53 @@ D1 SQLite database. Schema is fully documented in `schema.sql`.
 - `audit_log` - Request audit trail
 - `system_state` - Locks and configuration
 
-### Running Migrations
-```bash
-wrangler d1 execute beer-db --file=migrations/XXXX_name.sql
+### Migrations
+
+Migrations are plain SQL files in `migrations/`, numbered sequentially
+(e.g., `0007_description.sql`). Applied automatically on deploy via
+GitHub Actions using `wrangler d1 migrations apply`.
+
+#### Idempotent Migrations Required
+
+**All migrations MUST be idempotent.** Use these patterns:
+- `CREATE TABLE IF NOT EXISTS` (never bare `CREATE TABLE`)
+- `CREATE INDEX IF NOT EXISTS`
+- `DROP TABLE IF EXISTS` / `DROP INDEX IF EXISTS`
+- `INSERT OR IGNORE` / `INSERT OR REPLACE` for seed data
+- `UPDATE ... WHERE` (naturally idempotent)
+
+**`ALTER TABLE ADD COLUMN` is the exception.** SQLite has no
+`IF NOT EXISTS` variant. The migration runner's tracking prevents
+re-runs, but the SQL itself is not re-runnable. If you must use
+ALTER TABLE ADD COLUMN, document it with a comment:
+```sql
+-- NOT IDEMPOTENT: relies on migration tracking to prevent re-runs
+ALTER TABLE foo ADD COLUMN bar INTEGER;
 ```
+
+#### Migration Numbering
+
+Migration 0001 was the initial schema (`schema.sql`), applied before
+the migration tracking system existed. Numbering starts at 0002.
+
+#### Creating a New Migration
+
+```bash
+wrangler d1 migrations create beer-db "description of change"
+```
+
+This creates a numbered .sql file in migrations/. Fill in the SQL,
+commit, and push. The deploy pipeline applies it automatically.
+
+#### Rollback Strategy
+
+- If a migration **fails mid-execution**, wrangler auto-rolls back that
+  single migration. Previously applied migrations are unaffected.
+- If a migration **succeeds but breaks the app**, write a compensating
+  "down" migration (e.g., `ALTER TABLE DROP COLUMN` for an unwanted
+  column — supported in D1's SQLite 3.35+).
+- **Emergency recovery:** D1 Time Travel provides 30-day point-in-time
+  restore: `wrangler d1 time-travel restore beer-db --timestamp=<unix>`
 
 ## Queue Processing
 
