@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { handleBeerList } from '../../src/handlers/beers';
+import { handleBeerList, refreshTaplistForStore } from '../../src/handlers/beers';
 import type { Env, RequestContext, FlyingSaucerBeer } from '../../src/types';
 
 // ============================================================================
@@ -671,6 +671,74 @@ describe('handleBeerList', () => {
       // Beer 3: has ABV but no cleaned description
       expect(body.beers[2].enriched_abv).toBe(7.5);
       expect(body.beers[2].brew_description).toBe('Desc 3');
+    });
+
+    it('sets is_description_cleaned to false when no cleaned description in enrichment', async () => {
+      vi.clearAllMocks();
+      const beers = [
+        createBeer({ id: '1', brew_name: 'Test IPA', brew_description: 'A hoppy IPA' }),
+      ];
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+      });
+
+      const enrichmentMap = new Map([
+        ['1', {
+          abv: 5.5,
+          confidence: 0.9,
+          source: 'description',
+          brew_description_cleaned: null,
+        }],
+      ]);
+      vi.mocked(getEnrichmentForBeerIds).mockResolvedValue(enrichmentMap);
+
+      const env = createMockEnv();
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+
+      const body = await result.response.json() as {
+        beers: Array<{ is_description_cleaned: boolean }>;
+      };
+
+      expect(body.beers[0].is_description_cleaned).toBe(false);
+    });
+
+    it('sets is_description_cleaned to true when enrichment has a brew_description_cleaned value', async () => {
+      vi.clearAllMocks();
+      const beers = [
+        createBeer({ id: '1', brew_name: 'Test IPA', brew_description: 'Original marketing text' }),
+      ];
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+      });
+
+      const enrichmentMap = new Map([
+        ['1', {
+          abv: 5.5,
+          confidence: 0.9,
+          source: 'description',
+          brew_description_cleaned: 'A crisp IPA with citrus notes.',
+        }],
+      ]);
+      vi.mocked(getEnrichmentForBeerIds).mockResolvedValue(enrichmentMap);
+
+      const env = createMockEnv();
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+
+      const body = await result.response.json() as {
+        beers: Array<{ is_description_cleaned: boolean }>;
+      };
+
+      expect(body.beers[0].is_description_cleaned).toBe(true);
     });
 
     it('passes correct beer IDs to getEnrichmentForBeerIds', async () => {
@@ -1710,5 +1778,61 @@ describe('handleBeerList', () => {
       // It was called once (initial read), and should not be called a second time.
       expect(getCachedTaplist).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// ============================================================================
+// refreshTaplistForStore
+// ============================================================================
+
+describe('refreshTaplistForStore', () => {
+  it('fetches from Flying Saucer and returns beersRefreshed count', async () => {
+    const beers = [
+      createBeer({ id: '1', brew_name: 'IPA' }),
+      createBeer({ id: '2', brew_name: 'Stout' }),
+    ];
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValueOnce(new Map());
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      Response.json(createFlyingSaucerResponse(beers))
+    );
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+
+    const result = await refreshTaplistForStore(env, ctx, '13879', 'test-req');
+
+    expect(result.success).toBe(true);
+    expect(result.beersRefreshed).toBe(2);
+    expect(result.upstreamLatencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('calls ctx.waitUntil for cache write and enrichment', async () => {
+    const beers = [createBeer({ id: '1', brew_name: 'IPA' })];
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValueOnce(new Map());
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      Response.json(createFlyingSaucerResponse(beers))
+    );
+
+    const env = createMockEnv();
+    const { ctx, waitUntilPromises } = createMockExecutionContext();
+
+    await refreshTaplistForStore(env, ctx, '13879', 'test-req');
+
+    expect(ctx.waitUntil).toHaveBeenCalled();
+    expect(waitUntilPromises.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('returns success false when Flying Saucer is down', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      new Response('Server Error', { status: 500 })
+    );
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+
+    const result = await refreshTaplistForStore(env, ctx, '13879', 'test-req');
+
+    expect(result.success).toBe(false);
+    expect(result.beersRefreshed).toBe(0);
   });
 });

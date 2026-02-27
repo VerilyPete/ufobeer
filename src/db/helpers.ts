@@ -393,6 +393,7 @@ export async function insertPlaceholders(
              brew_description_cleaned = NULL,
              description_cleaned_at = NULL,
              cleanup_source = NULL,
+             enrichment_status = 'pending',
              last_seen_at = excluded.last_seen_at,
              updated_at = excluded.updated_at`
             )
@@ -421,6 +422,7 @@ export async function insertPlaceholders(
               `INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
+             enrichment_status = 'skipped',
              last_seen_at = excluded.last_seen_at`
             )
             .bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description || null, descriptionHash, now, now)
@@ -432,8 +434,8 @@ export async function insertPlaceholders(
         writeStatements.push(
           db
             .prepare(
-              `INSERT INTO enriched_beers (id, brew_name, brewer, abv, confidence, enrichment_source, brew_description_original, description_hash, last_seen_at, updated_at)
-             VALUES (?, ?, ?, ?, 0.9, 'description', ?, ?, ?, ?)`
+              `INSERT INTO enriched_beers (id, brew_name, brewer, abv, confidence, enrichment_source, enrichment_status, brew_description_original, description_hash, last_seen_at, updated_at)
+             VALUES (?, ?, ?, ?, 0.9, 'description', 'enriched', ?, ?, ?, ?)`
             )
             .bind(beer.id, beer.brew_name, beer.brewer, c.abv, beer.brew_description || null, descriptionHash, now, now)
         );
@@ -449,8 +451,8 @@ export async function insertPlaceholders(
         writeStatements.push(
           db
             .prepare(
-              `INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`
+              `INSERT INTO enriched_beers (id, brew_name, brewer, enrichment_status, brew_description_original, description_hash, last_seen_at, updated_at)
+             VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`
             )
             .bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description, descriptionHash, now, now)
         );
@@ -461,8 +463,8 @@ export async function insertPlaceholders(
         writeStatements.push(
           db
             .prepare(
-              `INSERT INTO enriched_beers (id, brew_name, brewer, last_seen_at, updated_at)
-             VALUES (?, ?, ?, ?, ?)`
+              `INSERT INTO enriched_beers (id, brew_name, brewer, enrichment_status, last_seen_at, updated_at)
+             VALUES (?, ?, ?, 'pending', ?, ?)`
             )
             .bind(beer.id, beer.brew_name, beer.brewer, now, now)
         );
@@ -472,8 +474,8 @@ export async function insertPlaceholders(
         writeStatements.push(
           db
             .prepare(
-              `INSERT INTO enriched_beers (id, brew_name, brewer, last_seen_at, updated_at)
-             VALUES (?, ?, ?, ?, ?)`
+              `INSERT INTO enriched_beers (id, brew_name, brewer, enrichment_status, last_seen_at, updated_at)
+             VALUES (?, ?, ?, 'skipped', ?, ?)`
             )
             .bind(beer.id, beer.brew_name, beer.brewer, now, now)
         );

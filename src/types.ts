@@ -196,78 +196,10 @@ export type TriggerEnrichmentData = {
 };
 
 // ============================================================================
-// Force Re-Enrichment Types
+// Enrichment Status
 // ============================================================================
 
-/**
- * Request body for POST /admin/enrich/force.
- * Forces re-enrichment of beers matching criteria (even if already enriched).
- */
-export type ForceEnrichmentRequest = {
-  readonly admin_id?: string | undefined;
-  readonly beer_ids?: readonly string[] | undefined;
-  readonly criteria?: {
-    readonly confidence_below?: number | undefined;           // 0.0-1.0
-    readonly enrichment_older_than_days?: number | undefined; // positive integer
-    readonly enrichment_source?: 'perplexity' | 'manual' | undefined;
-  } | undefined;
-  readonly limit?: number | undefined;      // 1-100, default 50
-  readonly dry_run?: boolean | undefined;   // default false
-};
-
-/**
- * Response for POST /admin/enrich/force.
- */
-export type ForceEnrichmentResponse = {
-  readonly success: boolean;
-  readonly requestId: string;
-  readonly data?: {
-    readonly matched_count: number;
-    readonly queued_count: number;
-    readonly skipped_count: number;
-    readonly skipped_ids?: readonly string[] | undefined;    // IDs skipped due to race condition (included if <= 50)
-    readonly queued_ids?: readonly string[] | undefined;     // IDs that were queued (included if <= 50)
-    readonly dry_run: boolean;
-    readonly applied_criteria?: EnrichmentCriteria | undefined;
-    readonly quota: {
-      readonly daily: { readonly used: number; readonly limit: number; readonly remaining: number };
-      readonly monthly: { readonly used: number; readonly limit: number; readonly remaining: number };
-    };
-  } | undefined;
-  readonly error?: { readonly message: string; readonly code: string } | undefined;
-};
-
-/**
- * Beer data returned from database when querying for re-enrichment.
- */
-export type BeerToReEnrich = {
-  readonly id: string;
-  readonly brew_name: string;
-  readonly brewer: string | null;
-  readonly abv: number | null;
-  readonly confidence: number | null;
-  readonly enrichment_source: string | null;
-  readonly updated_at: number;
-};
-
-/**
- * Validation result for force enrichment request.
- */
-export type ForceEnrichmentValidationResult = {
-  readonly valid: boolean;
-  readonly error?: string | undefined;
-  readonly errorCode?: string | undefined;
-};
-
-/**
- * Result of clearing enrichment data (used in force re-enrichment).
- */
-export type ClearResult = {
-  readonly clearedCount: number;
-  readonly skippedCount: number;
-  readonly skippedIds: readonly string[];
-  readonly clearedIds: readonly string[];
-};
+export type EnrichmentStatus = 'pending' | 'enriched' | 'not_found' | 'skipped';
 
 // ============================================================================
 // Enrichment Quota Types
@@ -323,8 +255,6 @@ export type GetBeersResult = {
 
 import { z } from 'zod';
 import { FlyingSaucerBeerSchema } from './schemas/external';
-import type { EnrichmentCriteria } from './schemas/request';
-
 /**
  * Type guard: Validates that an object is a valid FlyingSaucerBeer.
  */

@@ -543,7 +543,8 @@ function buildBatchOperations(
               cleanup_source = ?,
               abv = ?,
               confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION},
-              enrichment_source = 'description'
+              enrichment_source = 'description',
+              enrichment_status = 'enriched'
             WHERE id = ?
           `).bind(
             c.cleaned,
@@ -588,7 +589,8 @@ function buildBatchOperations(
               cleanup_source = 'fallback-circuit-breaker',
               abv = ?,
               confidence = 0.8,
-              enrichment_source = 'description-fallback'
+              enrichment_source = 'description-fallback',
+              enrichment_status = 'enriched'
             WHERE id = ?
           `).bind(c.brewDescription, now, c.abv, c.beerId)
         );

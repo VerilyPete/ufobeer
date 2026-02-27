@@ -86,12 +86,12 @@ export async function handleEnrichmentBatch(
     if (!message) continue;
     const { beerId, beerName, brewer } = message.body;
 
-    // Check if beer already has ABV (from description parsing or previous enrichment)
+    // Check if beer still needs enrichment (pending status)
     const existing = await env.DB.prepare(
-      'SELECT abv FROM enriched_beers WHERE id = ?'
-    ).bind(beerId).first<{ abv: number | null }>();
+      'SELECT enrichment_status FROM enriched_beers WHERE id = ?'
+    ).bind(beerId).first<{ enrichment_status: string | null }>();
 
-    if (existing !== null && existing.abv !== null) {
+    if (existing !== null && existing.enrichment_status !== 'pending') {
       console.log(`[enrichment] Skipping ${beerId}: already has ABV`);
       message.ack();
       continue;
@@ -140,13 +140,18 @@ export async function handleEnrichmentBatch(
       if (abv !== null) {
         await env.DB.prepare(`
           UPDATE enriched_beers
-          SET abv = ?, confidence = 0.7, enrichment_source = 'perplexity', updated_at = ?
+          SET abv = ?, confidence = 0.7, enrichment_source = 'perplexity', enrichment_status = 'enriched', updated_at = ?
           WHERE id = ?
         `).bind(abv, Date.now(), beerId).run();
 
         console.log(`Enriched ${beerId}: ${beerName} -> ABV ${abv}%`);
       } else {
         console.log(`No ABV found for ${beerId}: ${beerName}`);
+        await env.DB.prepare(`
+          UPDATE enriched_beers
+          SET enrichment_status = 'not_found', updated_at = ?
+          WHERE id = ?
+        `).bind(Date.now(), beerId).run();
       }
 
       message.ack();

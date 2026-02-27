@@ -17,9 +17,10 @@
 
 import type { Env } from '../types';
 import { trackCron } from '../analytics';
-import { shouldSkipEnrichment } from '../config';
+import { shouldSkipEnrichment, VALID_STORE_IDS } from '../config';
 import { cleanupOldDlqMessages } from './dlq';
 import { getToday } from '../utils/date';
+import { refreshTaplistForStore } from './beers';
 
 // ============================================================================
 // Scheduled Enrichment Handler
@@ -39,9 +40,10 @@ import { getToday } from '../utils/date';
  */
 export async function handleScheduledEnrichment(
   env: Env,
-  _ctx: ExecutionContext
+  ctx: ExecutionContext
 ): Promise<void> {
   const cronStartTime = Date.now();
+  const cronRequestId = crypto.randomUUID();
 
   // Layer 3: Kill switch
   if (env.ENRICHMENT_ENABLED === 'false') {
@@ -57,6 +59,18 @@ export async function handleScheduledEnrichment(
     return;
   }
 
+  // Phase 1: Refresh taplist for all active stores
+  for (const storeId of VALID_STORE_IDS) {
+    try {
+      const result = await refreshTaplistForStore(env, ctx, storeId, cronRequestId);
+      console.log(`[cron] Store ${storeId}: ${result.beersRefreshed} beers refreshed`);
+    } catch (error) {
+      console.error(`[cron] Store ${storeId} refresh failed:`, error);
+      // Continue — don't let one store failure block enrichment
+    }
+  }
+
+  // Phase 2: Enrichment sweep
   const today = getToday();
   const monthStart = today.slice(0, 7) + '-01';
   const monthEnd = today.slice(0, 7) + '-31';
@@ -109,12 +123,12 @@ export async function handleScheduledEnrichment(
     // Only queue as many as we can process today (max 100)
     const batchSize = Math.min(100, remainingToday);
 
-    // Query beers with NULL ABV
+    // Query beers with pending enrichment status
     // Column names match Flying Saucer API / mobile app convention
     const beersToEnrich = await env.DB.prepare(`
       SELECT id, brew_name, brewer
       FROM enriched_beers
-      WHERE abv IS NULL
+      WHERE enrichment_status = 'pending'
       LIMIT ?
     `).bind(batchSize).all<{ id: string; brew_name: string; brewer: string }>();
 
@@ -152,6 +166,19 @@ export async function handleScheduledEnrichment(
     const skippedCount = beersToEnrich.results.length - eligibleBeers.length;
     if (skippedCount > 0) {
       console.log(`[cron] Skipped ${skippedCount} blocklisted items`);
+    }
+
+    // Mark blocklisted beers as skipped so they don't appear in future queries
+    const blocklistedBeers = beersToEnrich.results.filter(
+      beer => shouldSkipEnrichment(beer.brew_name)
+    );
+    if (blocklistedBeers.length > 0) {
+      const skipStatements = blocklistedBeers.map(beer =>
+        env.DB.prepare(
+          `UPDATE enriched_beers SET enrichment_status = 'skipped' WHERE id = ?`
+        ).bind(beer.id)
+      );
+      await env.DB.batch(skipStatements);
     }
 
     // Queue each beer for enrichment (processed in parallel by consumers)
@@ -193,7 +220,6 @@ export async function handleScheduledEnrichment(
     }
 
     // Cleanup old DLQ messages (older than 30 days)
-    const cronRequestId = crypto.randomUUID();
     await cleanupOldDlqMessages(env.DB, cronRequestId);
 
   } catch (error) {

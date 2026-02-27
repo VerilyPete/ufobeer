@@ -4,7 +4,6 @@
  * Handles manual enrichment trigger requests from admin endpoints.
  * Includes:
  * - handleEnrichmentTrigger() - POST /admin/enrich/trigger
- * - validateForceEnrichmentRequest() - Validation for force re-enrichment
  *
  * Extracted from index.ts as part of Phase 7 refactoring.
  */
@@ -13,50 +12,13 @@ import type {
   Env,
   RequestContext,
   TriggerEnrichmentData,
-  ForceEnrichmentValidationResult,
 } from '../types';
 import { shouldSkipEnrichment } from '../config';
 import { errorResponse } from '../context';
 import { getToday, getMonthEnd } from '../utils/date';
 import {
   TriggerEnrichmentRequestSchema,
-  ForceEnrichmentRequestSchema,
 } from '../schemas/request';
-import { mapZodIssueToErrorCode, extractZodErrorMessage } from '../schemas/errors';
-
-// ============================================================================
-// Request Validation
-// ============================================================================
-
-/**
- * Validate force re-enrichment request using ForceEnrichmentRequestSchema.
- * Preserves backwards-compatible error codes via mapZodIssueToErrorCode.
- */
-export function validateForceEnrichmentRequest(body: unknown): ForceEnrichmentValidationResult {
-  if (body === null || body === undefined || typeof body !== 'object') {
-    return {
-      valid: false,
-      error: 'Request body must be a JSON object with beer_ids or criteria',
-      errorCode: 'INVALID_BODY',
-    };
-  }
-
-  const result = ForceEnrichmentRequestSchema.safeParse(body);
-  if (!result.success) {
-    const firstIssue = result.error.issues[0];
-    if (!firstIssue) {
-      return { valid: false, error: 'Invalid request', errorCode: 'INVALID_REQUEST' };
-    }
-    const errorCode = mapZodIssueToErrorCode(firstIssue);
-    const errorMessage = extractZodErrorMessage(firstIssue);
-    return {
-      valid: false,
-      error: errorMessage,
-      errorCode,
-    };
-  }
-  return { valid: true };
-}
 
 // ============================================================================
 // Enrichment Trigger Handler
@@ -182,11 +144,11 @@ export async function handleEnrichmentTrigger(
     const monthlyRemaining = monthlyLimit - monthlyUsed;
     const effectiveBatchSize = Math.min(requestedLimit, dailyRemaining, monthlyRemaining, 100);
 
-    // Query beers with NULL ABV
+    // Query beers with pending enrichment status
     let query = `
       SELECT id, brew_name, brewer
       FROM enriched_beers
-      WHERE abv IS NULL
+      WHERE enrichment_status = 'pending'
     `;
 
     // Optionally exclude beers that have failed (exist in DLQ)
@@ -222,6 +184,19 @@ export async function handleEnrichmentTrigger(
     const skippedCount = beersToEnrich.results.length - eligibleBeers.length;
     if (skippedCount > 0) {
       console.log(`[trigger] Skipped ${skippedCount} blocklisted items`);
+    }
+
+    // Mark blocklisted beers as skipped
+    const blocklistedBeers = beersToEnrich.results.filter(
+      beer => shouldSkipEnrichment(beer.brew_name)
+    );
+    if (blocklistedBeers.length > 0) {
+      const skipStatements = blocklistedBeers.map(beer =>
+        env.DB.prepare(
+          `UPDATE enriched_beers SET enrichment_status = 'skipped' WHERE id = ?`
+        ).bind(beer.id)
+      );
+      await env.DB.batch(skipStatements);
     }
 
     // Queue beers for enrichment using sendBatch (max 100 messages)

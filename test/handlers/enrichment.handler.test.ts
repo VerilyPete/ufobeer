@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  validateForceEnrichmentRequest,
   handleEnrichmentTrigger,
 } from '../../src/handlers/enrichment';
 import type { Env, RequestContext } from '../../src/types';
@@ -89,89 +88,6 @@ const makeRequest = (body: unknown = {}): Request =>
     body: JSON.stringify(body),
     headers: { 'Content-Type': 'application/json' },
   });
-
-// ============================================================================
-// validateForceEnrichmentRequest
-// ============================================================================
-
-describe('validateForceEnrichmentRequest', () => {
-  it('returns valid false with errorCode INVALID_BODY when body is null', () => {
-    const result = validateForceEnrichmentRequest(null);
-
-    expect(result.valid).toBe(false);
-    expect(result.errorCode).toBe('INVALID_BODY');
-  });
-
-  it('returns valid false with errorCode INVALID_BODY when body is undefined', () => {
-    const result = validateForceEnrichmentRequest(undefined);
-
-    expect(result.valid).toBe(false);
-    expect(result.errorCode).toBe('INVALID_BODY');
-  });
-
-  it('returns valid false with errorCode INVALID_BODY when body is a string', () => {
-    const result = validateForceEnrichmentRequest('not an object');
-
-    expect(result.valid).toBe(false);
-    expect(result.errorCode).toBe('INVALID_BODY');
-  });
-
-  it('returns valid false with errorCode INVALID_BODY when body is a number', () => {
-    const result = validateForceEnrichmentRequest(42);
-
-    expect(result.valid).toBe(false);
-    expect(result.errorCode).toBe('INVALID_BODY');
-  });
-
-  it('returns valid true when body has valid beer_ids', () => {
-    const result = validateForceEnrichmentRequest({ beer_ids: ['abc', 'def'] });
-
-    expect(result.valid).toBe(true);
-  });
-
-  it('returns valid true when body has valid criteria.confidence_below', () => {
-    const result = validateForceEnrichmentRequest({
-      criteria: { confidence_below: 0.5 },
-    });
-
-    expect(result.valid).toBe(true);
-  });
-
-  it('returns valid false with error and errorCode when body has invalid fields', () => {
-    const result = validateForceEnrichmentRequest({
-      criteria: { confidence_below: -1 },
-    });
-
-    expect(result.valid).toBe(false);
-    expect(result.error).toBeDefined();
-    expect(result.errorCode).toBeDefined();
-  });
-
-  it('returns valid false when confidence_below exceeds 1', () => {
-    const result = validateForceEnrichmentRequest({
-      criteria: { confidence_below: 1.5 },
-    });
-
-    expect(result.valid).toBe(false);
-    expect(result.errorCode).toBe('INVALID_CONFIDENCE');
-  });
-
-  it('returns valid false when both beer_ids and criteria are specified', () => {
-    const result = validateForceEnrichmentRequest({
-      beer_ids: ['abc'],
-      criteria: { confidence_below: 0.5 },
-    });
-
-    expect(result.valid).toBe(false);
-  });
-
-  it('returns valid false when neither beer_ids nor criteria is specified for empty object', () => {
-    // ForceEnrichmentRequestSchema requires exactly one of beer_ids or criteria
-    const result = validateForceEnrichmentRequest({});
-
-    expect(result.valid).toBe(false);
-  });
-});
 
 // ============================================================================
 // handleEnrichmentTrigger

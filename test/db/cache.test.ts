@@ -164,6 +164,45 @@ describe('CachedBeersArraySchema', () => {
 });
 
 // ============================================================================
+// CachedBeersArraySchema — is_description_cleaned field
+// ============================================================================
+
+describe('CachedBeersArraySchema — is_description_cleaned', () => {
+  it('accepts is_description_cleaned: true', () => {
+    const beers = [createEnrichedBeer({ is_description_cleaned: true })];
+
+    const result = CachedBeersArraySchema.safeParse(beers);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data[0].is_description_cleaned).toBe(true);
+    }
+  });
+
+  it('accepts is_description_cleaned: false', () => {
+    const beers = [createEnrichedBeer({ is_description_cleaned: false })];
+
+    const result = CachedBeersArraySchema.safeParse(beers);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data[0].is_description_cleaned).toBe(false);
+    }
+  });
+
+  it('defaults is_description_cleaned to false when field is missing (old cached entries)', () => {
+    const beers = [createEnrichedBeer()]; // no is_description_cleaned field
+
+    const result = CachedBeersArraySchema.safeParse(beers);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data[0].is_description_cleaned).toBe(false);
+    }
+  });
+});
+
+// ============================================================================
 // parseCachedBeers
 // ============================================================================
 

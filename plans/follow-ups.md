@@ -150,3 +150,14 @@ for an `AiOptions` type that includes `signal?: AbortSignal`.
 4. Delete `test/cleanupHelpers.test.ts` `withTimeout` describe block (no longer needed)
 5. Verify all cleanup tests still pass
 
+---
+
+## 4. Maximum stale cache age
+
+**Status**: Future consideration
+
+Consider adding a maximum stale age (e.g., 24 hours) to the stale fallback in
+`handleBeerList`. Currently `resolveStaleRow` serves cached data regardless of
+age. With the hourly cron, worst-case staleness under normal conditions is ~1
+hour, so a 24-hour max would be a safety net for prolonged FS outages.
+

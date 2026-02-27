@@ -107,6 +107,92 @@ function serveStaleFallback(
 }
 
 // ============================================================================
+// Taplist Refresh (shared by GET /beers live-fetch path and scheduled cron)
+// ============================================================================
+
+export type TaplistRefreshResult = {
+  readonly beersRefreshed: number;
+  readonly upstreamLatencyMs: number;
+  readonly success: boolean;
+};
+
+/**
+ * Fetch a live taplist from Flying Saucer, merge enrichment data, write cache,
+ * and queue new beers for enrichment in the background.
+ *
+ * Used by both handleBeerList (live-fetch path) and handleScheduledEnrichment
+ * (hourly cron taplist refresh phase).
+ */
+export async function refreshTaplistForStore(
+  env: Env,
+  ctx: ExecutionContext,
+  storeId: string,
+  requestId: string,
+): Promise<TaplistRefreshResult> {
+  const start = Date.now();
+  try {
+    const fsUrl = `${env.FLYING_SAUCER_API_BASE}?sid=${storeId}`;
+    const fsResp = await fetch(fsUrl, {
+      headers: { 'User-Agent': 'BeerSelector/1.0' },
+    });
+
+    const upstreamLatencyMs = Date.now() - start;
+
+    if (!fsResp.ok) {
+      return { beersRefreshed: 0, upstreamLatencyMs, success: false };
+    }
+
+    const fsData: unknown = await fsResp.json();
+
+    let rawBeersUnvalidated: unknown[] = [];
+    if (Array.isArray(fsData)) {
+      const stockObject = fsData.find(hasBeerStock);
+      if (stockObject) {
+        rawBeersUnvalidated = stockObject.brewInStock;
+      }
+    }
+
+    const rawBeers = rawBeersUnvalidated.filter(isValidBeer);
+
+    const beerIds = rawBeers.map(b => b.id);
+    const enrichmentMap = await getEnrichmentForBeerIds(env.DB, beerIds, requestId);
+
+    const enrichedBeers = rawBeers.map(beer => {
+      const enrichment = enrichmentMap.get(beer.id);
+      return {
+        ...beer,
+        brew_description: enrichment?.brew_description_cleaned ?? beer.brew_description,
+        enriched_abv: enrichment?.abv ?? null,
+        enrichment_confidence: enrichment?.confidence ?? null,
+        enrichment_source: enrichment?.source ?? null,
+        is_description_cleaned: !!enrichment?.brew_description_cleaned,
+      };
+    });
+
+    ctx.waitUntil(
+      setCachedTaplist(env.DB, storeId, enrichedBeers).catch((err) => {
+        logError('cache.write.failed', err, { requestId, storeId });
+      })
+    );
+
+    const beersForPlaceholders = rawBeers.map(beer => ({
+      id: beer.id,
+      brew_name: beer.brew_name,
+      brewer: beer.brewer,
+      brew_description: beer.brew_description,
+    }));
+    ctx.waitUntil(
+      processBackgroundEnrichment(env, beersForPlaceholders, requestId)
+    );
+
+    return { beersRefreshed: enrichedBeers.length, upstreamLatencyMs, success: true };
+  } catch (error) {
+    logError('taplist.refresh.failed', error, { requestId, storeId });
+    return { beersRefreshed: 0, upstreamLatencyMs: Date.now() - start, success: false };
+  }
+}
+
+// ============================================================================
 // Beer List Handler (GET /beers)
 // ============================================================================
 
@@ -241,6 +327,7 @@ export async function handleBeerList(
         enriched_abv: enrichment?.abv ?? null,
         enrichment_confidence: enrichment?.confidence ?? null,
         enrichment_source: enrichment?.source ?? null,
+        is_description_cleaned: !!enrichment?.brew_description_cleaned,
       };
     });
 
