@@ -98,4 +98,9 @@
 			"persist": true,
 		},
 	},
+	"tail_consumers": [
+		{
+			"service": "ufobeer-error-alerts",
+		},
+	],
 }
