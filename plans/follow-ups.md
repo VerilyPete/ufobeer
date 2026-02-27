@@ -1,6 +1,6 @@
 # Type Safety Hardening: Follow-Up Items
 
-One item remains from the strictness migration. TDD remediation (see `TDD-REMEDIATION-PLAN.md`) is fully complete.
+One item remains (blocked on Cloudflare). TDD remediation and cache resilience are complete.
 
 ## ~~1. Re-enable `exactOptionalPropertyTypes` in test tsconfig~~
 
@@ -99,11 +99,14 @@ Consider AI Gateway if infrastructure-level timeout enforcement is needed.
 
 ---
 
-## 3. Make cache lookup resilient to D1 failures
+## ~~3. Make cache lookup resilient to D1 failures~~
 
-**Status**: Open
-**File**: `src/handlers/beers.ts` ~line 130-150
-**Severity**: High — caused production outage (1101) on first deploy
+**Status**: Done (e6c4472)
+
+Implemented in Step 0b of the CI/CD deployment plan. Cache lookup
+wrapped in try/catch with `cacheReadSucceeded` guard. Stale fallback
+re-calls extracted to `resolveStaleRow` helper. Top-level fetch handler
+also wrapped in try/catch (Step 0a). Two tests added.
 
 ### Problem
 
