@@ -187,7 +187,8 @@ export default {
       }
 
       storeIdForAnalytics = storeId;
-      const result = await handleBeerList(env, ctx, { ...corsHeaders, ...rateLimitHeaders }, authedContext, storeId);
+      const freshRequested = url.searchParams.get('fresh') === 'true';
+      const result = await handleBeerList(env, ctx, { ...corsHeaders, ...rateLimitHeaders }, authedContext, storeId, freshRequested);
       beersReturnedCount = result.beersReturned;
       upstreamLatency = result.upstreamLatencyMs;
 
@@ -200,6 +201,7 @@ export default {
         responseTimeMs: Date.now() - authedContext.startTime,
         beersReturned: beersReturnedCount,
         upstreamLatencyMs: upstreamLatency,
+        cacheOutcome: result.cacheOutcome,
       });
       ctx.waitUntil(writeAuditLog(env.DB, authedContext, request.method, url.pathname, result.response.status));
 

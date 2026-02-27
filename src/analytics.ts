@@ -1,4 +1,5 @@
 import { getToday } from './utils/date';
+import type { CacheOutcome } from './types';
 
 /**
  * Analytics Engine helper functions for tracking worker metrics.
@@ -16,12 +17,13 @@ import { getToday } from './utils/date';
  *     blob6: client_id
  *     blob7: event_type
  *     blob8: enrichment_source
+ *     blob9: cache_outcome ("hit"|"miss"|"stale"|"bypass") — /beers endpoint only
  * - Doubles (metrics):
  *     double1: response_time_ms
  *     double2: request_count
  *     double3: beers_returned
  *     double4: enrichment_count (or beers_queued for cron)
- *     double5: cache_hit (TODO: not yet populated for /beers - caching not implemented)
+ *     double5: (reserved)
  *     double6: error_count
  *     double7: rate_limit_triggered
  *     double8: upstream_latency_ms
@@ -53,7 +55,7 @@ export type RequestMetrics = {
   readonly clientId: string;
   readonly responseTimeMs: number;
   readonly beersReturned?: number | undefined;
-  readonly cacheHit?: boolean | undefined;
+  readonly cacheOutcome?: CacheOutcome | undefined;
   readonly upstreamLatencyMs?: number | undefined;
 };
 
@@ -164,13 +166,14 @@ export function trackRequest(
       metrics.clientId,           // blob6: client_id
       'request',                  // blob7: event_type
       '',                         // blob8: enrichment_source (N/A for requests)
+      metrics.cacheOutcome || '', // blob9: cache_outcome
     ],
     doubles: [
       metrics.responseTimeMs,           // double1: response_time_ms
       1,                                // double2: request_count
       metrics.beersReturned || 0,       // double3: beers_returned
       0,                                // double4: enrichment_count
-      metrics.cacheHit ? 1 : 0,         // double5: cache_hit (TODO: not populated - caching not implemented)
+      0,                                // double5: (reserved)
       isError ? 1 : 0,                  // double6: error_count
       isRateLimited ? 1 : 0,            // double7: rate_limit_triggered
       metrics.upstreamLatencyMs || 0,   // double8: upstream_latency_ms

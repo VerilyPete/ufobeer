@@ -285,6 +285,14 @@ export type EnrichmentQuotaStatus = {
 };
 
 // ============================================================================
+// Cache Types
+// ============================================================================
+
+export type TaplistSource = 'live' | 'cache' | 'stale';
+
+export type CacheOutcome = 'hit' | 'miss' | 'stale' | 'bypass';
+
+// ============================================================================
 // Response Helper Types
 // ============================================================================
 
@@ -306,6 +314,7 @@ export type GetBeersResult = {
   readonly response: Response;
   readonly beersReturned: number;
   readonly upstreamLatencyMs: number;
+  readonly cacheOutcome: CacheOutcome;
 };
 
 // ============================================================================

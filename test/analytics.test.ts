@@ -263,25 +263,28 @@ describe('trackRequest', () => {
     expect(doubles[2]).toBe(42);
   });
 
-  it('sets double5 (cache_hit) to 1 when cacheHit is true', () => {
+  it('sets blob9 to cacheOutcome value when provided', () => {
     const analytics = getMockAnalytics();
-    trackRequest(analytics, getRequestMetrics({ cacheHit: true }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[4]).toBe(1);
+    trackRequest(analytics, getRequestMetrics({ cacheOutcome: 'hit' }));
+    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
+    expect(blobs[8]).toBe('hit');
   });
 
-  it('sets double5 (cache_hit) to 0 when cacheHit is false', () => {
+  it('sets blob9 to empty string when cacheOutcome is undefined', () => {
     const analytics = getMockAnalytics();
-    trackRequest(analytics, getRequestMetrics({ cacheHit: false }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[4]).toBe(0);
+    trackRequest(analytics, getRequestMetrics({ cacheOutcome: undefined }));
+    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
+    expect(blobs[8]).toBe('');
   });
 
-  it('sets double5 (cache_hit) to 0 when cacheHit is undefined', () => {
-    const analytics = getMockAnalytics();
-    trackRequest(analytics, getRequestMetrics({ cacheHit: undefined }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[4]).toBe(0);
+  it('tracks all four cache outcomes in blob9', () => {
+    const outcomes = ['hit', 'miss', 'stale', 'bypass'] as const;
+    for (const outcome of outcomes) {
+      const analytics = getMockAnalytics();
+      trackRequest(analytics, getRequestMetrics({ cacheOutcome: outcome }));
+      const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
+      expect(blobs[8]).toBe(outcome);
+    }
   });
 
   it('sets double8 (upstream_latency_ms) to 0 when upstreamLatencyMs is undefined', () => {

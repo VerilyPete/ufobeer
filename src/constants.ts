@@ -79,3 +79,14 @@ export const D1_MAX_PARAMS_PER_STATEMENT = 90;
  * Maximum statements per D1 batch() call.
  */
 export const D1_MAX_STATEMENTS_PER_BATCH = 100;
+
+// =============================================================================
+// Cache Constants
+// =============================================================================
+
+/**
+ * Time-to-live for store taplist cache entries.
+ * Cached responses are served for this duration before triggering a fresh
+ * upstream fetch. Pull-to-refresh bypasses this via fresh=true.
+ */
+export const CACHE_TTL_MS = 300_000; // 5 minutes
