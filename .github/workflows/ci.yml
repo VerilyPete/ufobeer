@@ -22,3 +22,12 @@ jobs:
 
       - name: Run tests
         run: npx vitest run
+
+      - name: Install tail worker deps
+        run: npm ci --prefix workers/error-alerts
+
+      - name: Type check tail worker
+        run: npm run typecheck --prefix workers/error-alerts
+
+      - name: Test tail worker
+        run: npx vitest run --prefix workers/error-alerts
