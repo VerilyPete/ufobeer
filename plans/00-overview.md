@@ -157,6 +157,14 @@ After the 8-commit type safety migration, TDD remediation was completed in 2 add
 - 748 total tests across 30 files
 - `test/queue/routing.test.ts` and `test/handlers/admin-analytics.test.ts` (planned in 04b) were NOT created — skipped as low-value given coverage by integration tests
 
+### Cache Proxy + CI/CD Deployment (subsequent work)
+
+After TDD remediation, two more features were implemented:
+- **Cache proxy** (`06-beers-cache-proxy.md`): GET /beers caching proxy with D1 store_taplist_cache table, stale fallback, and `fresh=true` bypass. Commit `e6c4472` and others.
+- **CI/CD deployment** (`ufobeer-deployment.md`): GitHub Actions pipeline (typecheck → test → migrate → deploy), top-level try/catch in fetch handler, cache D1 failure resilience with `resolveStaleRow` helper.
+
+Current totals: **823 tests across 34 files**.
+
 ## Verification Checklist (per phase)
 
 1. `npx tsc --noEmit` -- zero errors (src)

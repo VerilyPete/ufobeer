@@ -4,7 +4,7 @@
 - All 6 flags correct and complete
 - Undefined guards (Section 4) correct across all 5 patterns
 - exactOptionalPropertyTypes fixes correct (conditional spread + `| undefined`)
-- Test tsconfig adds `noUncheckedIndexedAccess: false` beyond plan (reasonable - ~90 test indexed access errors)
+- Test tsconfig adds `noUncheckedIndexedAccess: false` beyond plan (original estimate ~90 errors; actual `exactOptionalPropertyTypes` violations turned out to be just 1 — the ~90 were `noUncheckedIndexedAccess` errors)
 - Minor: `analytics.ts:trackCron` does inline `parts[0] ?? ''` instead of `getToday()` (inconsistency, not a bug)
 - `global` -> `globalThis` fix in tests necessary (not in plan, but correct)
 - Pre-existing: 4 date test failures (timezone bug in getMonthEnd)

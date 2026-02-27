@@ -439,6 +439,25 @@ After Claude's changes are committed and Manual Steps 1–3 are complete:
 
 ---
 
+## Implementation Status: COMPLETE
+
+All steps implemented and deployed. Commits: `e6c4472` (Steps 0a/0b + Steps 1-5), plus follow-up push with Cloudflare permission name fix.
+
+### Implementation Notes
+
+- **Step 0a**: Top-level try/catch added to `src/index.ts`. Catch block computes CORS from `env.ALLOWED_ORIGIN` directly (avoids cascading D1 failure via `respond()` helper). 8 tests in `test/index.test.ts`.
+- **Step 0b**: Cache lookup wrapped in try/catch with `cacheReadSucceeded` boolean guard. Stale fallback logic deduplicated into `resolveStaleRow` helper in `src/handlers/beers.ts`. 2 tests in `test/handlers/beers.list.test.ts`.
+- **Step 1**: `migrations_dir` added to `wrangler.jsonc`.
+- **Step 2**: npm scripts added: `typecheck`, `migrate:remote`, `migrate:local`, `migrate:list`.
+- **Step 3**: `.github/workflows/deploy.yml` created with concurrency group.
+- **Step 4**: `.github/workflows/ci.yml` created for PR checks.
+- **Step 5**: Migrations section added to `CLAUDE.md`.
+- **Manual steps**: All completed. API token uses "Workers Scripts" permission (not "Cloudflare Workers" — the dropdown label changed). Migration tracking table bootstrapped with 5 existing migrations. First deploy succeeded.
+- **Refactor scan finding**: Duplicated stale fallback logic extracted to `resolveStaleRow`.
+- **TS enforcer finding**: Unnecessary `as unknown[]` cast on `fsResp.json()` replaced with `const fsData: unknown`.
+
+---
+
 ## Future Workflow
 
 To add a new migration after this is set up:
