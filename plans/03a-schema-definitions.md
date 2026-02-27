@@ -568,3 +568,30 @@ This avoids a big-bang migration of all import paths.
 ## Next
 
 Continue to **Phase 3b** to integrate these schemas into the handler files.
+
+---
+
+## Implementation Notes (post-implementation drift)
+
+The implementation added two schemas beyond the 7 planned:
+
+1. **`EnrichmentMessageSchema`** (`src/schemas/request.ts:114`): Added for Phase 3b
+   Step 3h-ii (DLQ `raw_message` parsing). The 3b plan noted this schema should be
+   added "if not already present" — it was added directly to `request.ts` rather than
+   as a separate file. Exports `EnrichmentMessage` type (overlaps with the type in
+   `src/types.ts`; the schema version is the canonical one for DLQ re-parsing).
+
+2. **`SyncBeersRequestOuterSchema`** (`src/schemas/request.ts:18`): A two-stage
+   schema for `handleBeerSync`. The outer schema validates `{ beers: unknown[] }` (top-level
+   shape only), and `SyncBeerItemSchema` validates each beer individually (preserving
+   per-beer partial success behavior). The plan described this two-stage approach at
+   Step 1d but did not name the outer schema explicitly.
+
+Additionally, **`src/schemas/errors.ts`** was created as planned with
+`mapZodIssueToErrorCode` — but it also exports `extractZodErrorMessage` (a
+companion helper not mentioned in the plan). This function extracts the human-readable
+portion after the `CODE:` prefix with `.trim()`, implementing the fix from Review
+Finding #25 (leading space issue).
+
+The final `src/schemas/request.ts` exports 9 schemas (not 7) plus `EnrichmentMessage`
+as a type derived from `EnrichmentMessageSchema`.

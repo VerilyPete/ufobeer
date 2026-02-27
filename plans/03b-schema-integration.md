@@ -463,3 +463,34 @@ type, so callers do not need to change.
 - ~2 `as` casts replaced with `satisfies`
 - ~5 `as` casts left unchanged (internal, not trust boundaries)
 - Net: ~60 fewer lines, much stronger runtime guarantees
+
+---
+
+## Implementation Notes (post-implementation drift)
+
+**`mapZodIssueToErrorCode` lives in `src/schemas/errors.ts`**: As planned. But the file
+also exports a companion helper `extractZodErrorMessage(issue)` that returns the
+human-readable portion after the `CODE:` prefix with `.trim()`. This was added to fix
+Review Finding #25 (the `mapZodIssueToErrorCode` callers had inline `.slice(colonIdx + 1).trim()`
+patterns — `extractZodErrorMessage` is the DRY version of that logic).
+
+**Step 3h-iii (DLQ cursor validation)**: The `CursorSchema` inline validation for the
+base64 cursor parameter was implemented. However, the cursor fields in the actual code
+differ slightly from the plan's example — the plan showed `{ id: z.number(), created_at: z.string() }`
+but the actual `PaginationCursor` type uses `{ id: number, failed_at: number }`. The
+implementation used the correct field names from the actual schema.
+
+**`SyncBeersRequestOuterSchema` naming**: Step 3d described a two-stage approach for
+`handleBeerSync` (outer schema validates `{ beers: unknown[] }`, per-item schema validates
+each beer). The outer schema is named `SyncBeersRequestOuterSchema` in the implementation
+— this name is not in the plan but accurately describes its role.
+
+**`isValidBeer` moved to `types.ts`**: Plan Step 5b showed `isValidBeer` being rewritten
+in `src/types.ts`. Implementation kept it there, importing `FlyingSaucerBeerSchema` from
+`src/schemas/external`. The `BeerStockSchema` for `hasBeerStock` is defined inline in
+`types.ts` (not in a schema file), consistent with its localized use.
+
+**`EnrichmentMessageSchema` added to `src/schemas/request.ts`**: For Step 3h-ii
+(DLQ `raw_message` parsing). The plan said "Add to Phase 3a's schema definitions if not
+already present." It was added at the end of `request.ts` rather than in the original
+7-schema group, interleaved with the type exports.

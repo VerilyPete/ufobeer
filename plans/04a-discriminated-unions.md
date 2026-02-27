@@ -277,3 +277,25 @@ are untyped by design) with documentation.
 
 Continue to **Phase 4b** for remaining cast cleanup (queue routing, admin
 response parsing, FlyingSaucerBeer, `object` type, brew_description).
+
+---
+
+## Implementation Notes (post-implementation drift)
+
+**All three AIResult variants are exported**: The plan said "export the union type and both
+variants for test consumers". Implementation exports all three: `AIResultSuccess`,
+`AIResultFallback`, `AIResultFailure`, and `AIResult` from `src/queue/cleanup.ts`.
+
+**`AIResultFallback.latencyMs` is `number | undefined`**: The plan shows `latencyMs?: number`.
+Implementation uses `readonly latencyMs?: number | undefined` — consistent with Phase 1's
+`exactOptionalPropertyTypes` flag, which requires explicit `| undefined` on optional properties.
+
+**`asTypedRows` is exported** (not just internal): The function is `export function asTypedRows`
+in `src/db/helpers.ts`. This allows test files to import and verify it directly.
+The plan showed it as an internal helper, but exporting it is strictly additive.
+
+**`test/queue/cleanup-airesult.test.ts`**: The plan called for tests in
+`test/queue/cleanup-airesult.test.ts` for the AIResult discriminated union. This file
+exists and tests the three-way union behavior. An additional file,
+`test/queue/categorizeAIResult.test.ts`, was created by Phase 5b to test the extracted
+pure `categorizeAIResult()` function. Both files exist; they test complementary concerns.

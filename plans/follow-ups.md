@@ -1,6 +1,6 @@
 # Type Safety Hardening: Follow-Up Items
 
-One item remains from the strictness migration.
+One item remains from the strictness migration. TDD remediation (see `TDD-REMEDIATION-PLAN.md`) is fully complete.
 
 ## ~~1. Re-enable `exactOptionalPropertyTypes` in test tsconfig~~
 
@@ -107,6 +107,6 @@ for an `AiOptions` type that includes `signal?: AbortSignal`.
 1. Remove `withTimeout` from `cleanupHelpers.ts`
 2. Remove `withTimeout` import from `cleanup.ts`
 3. Pass `{ signal: AbortSignal.timeout(AI_TIMEOUT_MS) }` to `ai.run()`
-4. Delete `test/queue/cleanupHelpers-timeout.test.ts` (no longer needed)
+4. Delete `test/cleanupHelpers.test.ts` `withTimeout` describe block (no longer needed)
 5. Verify all cleanup tests still pass
 

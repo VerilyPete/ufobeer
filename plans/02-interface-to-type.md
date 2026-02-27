@@ -353,3 +353,26 @@ After each file, run `npx tsc --noEmit` to catch any breakage immediately.
 - **1 new test file** (`test/type-checks/interface-to-type.test.ts`)
 - **0 behavior changes** — purely structural refactor
 - Mechanical transformation; each conversion is a search-and-replace with `readonly` addition
+
+---
+
+## Implementation Notes (post-implementation drift)
+
+**157 `readonly` modifiers in `types.ts` alone**: The actual implementation applied `readonly`
+very broadly, including nested object shapes inside types, `ReadonlyArray<>` for array properties,
+and all optional `| undefined` properties. Total across all files was significantly more than
+the ~50 conversions implied.
+
+**2 false-positive `@ts-expect-error` directives in compile-check test**: Caught during review
+(commit `e63fab2`). Two `@ts-expect-error` annotations in `test/type-checks/interface-to-type.test.ts`
+were targeting properties that did NOT have `readonly` — so the assignment was valid and the
+`@ts-expect-error` itself caused a compile error (error on an error-free line). Fixed by removing
+those two directives. The remaining `@ts-expect-error` annotations correctly verify `readonly`
+enforcement.
+
+**`FlyingSaucerBeer` index signature retained**: The plan noted the index signature
+`[key: string]: unknown` in `FlyingSaucerBeer`. In `src/types.ts` this was retained
+(line 85: `readonly [key: string]: unknown`) because `hasBeerStock` accesses the object
+with a key (`brewInStock`) not known at compile time. Phase 3b's `FlyingSaucerBeerSchema`
+with `.passthrough()` handles the external trust boundary; the type retains the index
+signature for internal type safety.

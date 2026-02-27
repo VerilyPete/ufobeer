@@ -149,6 +149,14 @@ All phases implemented and reviewed. 8 commits total.
 See `follow-ups.md`. One item remains:
 - `withTimeout` → `AbortSignal.timeout`: Blocked on Cloudflare `AiOptions` type lacking `signal`. Research (Feb 2026) confirms `env.AI.run()` still doesn't support it. AI Gateway `cf-aig-request-timeout` header is a viable workaround. Current `Promise.race` approach is acceptable — Worker I/O wait doesn't burn CPU.
 
+### TDD Remediation (subsequent work)
+
+After the 8-commit type safety migration, TDD remediation was completed in 2 additional commits (`402414e`, `6f32cf0`). See `TDD-REMEDIATION-PLAN.md` for the full plan and its implementation notes. Summary:
+- 11 new test files covering auth, analytics, audit, context, config, hash, constants, health, DLQ consumer, DLQ handler, enrichment handler
+- 8 existing test files refactored (let/beforeEach → factories, SQL assertions removed)
+- 748 total tests across 30 files
+- `test/queue/routing.test.ts` and `test/handlers/admin-analytics.test.ts` (planned in 04b) were NOT created — skipped as low-value given coverage by integration tests
+
 ## Verification Checklist (per phase)
 
 1. `npx tsc --noEmit` -- zero errors (src)

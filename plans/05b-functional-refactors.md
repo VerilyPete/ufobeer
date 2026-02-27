@@ -218,3 +218,40 @@ proceeding to the next.
 | `readonly` breaks callers that mutate received arrays | Run full test suite; fix any callers that rely on mutation |
 | `insertPlaceholders` refactor introduces categorization bugs | Test every branch of the categorization function individually |
 | `categorizeBeer()` can't encapsulate SQL building | Document that main function still needs category-to-SQL mapping |
+
+---
+
+## Implementation Notes (post-implementation drift)
+
+**Test file names differ from plan**:
+- Plan said add tests to `test/queue/cleanup.test.ts` (does not exist). Implementation created
+  `test/queue/categorizeAIResult.test.ts` as a dedicated file for the extracted pure function.
+- Plan said add tests to `test/db/helpers.test.ts` (does not exist). Implementation created
+  `test/db/categorizeBeer.test.ts` as a dedicated file for the extracted pure function.
+
+This is an improvement over the plan — dedicated files make the pure function tests
+easier to find and keep them isolated from broader integration concerns.
+
+**`categorizeBeer()` has 8 variants, not 6**: The plan listed 6 `BeerCategory` types.
+Implementation produces 8:
+- `description_changed`
+- `needs_enrichment` (existing beer, no ABV, not blocklisted)
+- `new_with_abv`
+- `new_needs_cleanup`
+- `new_needs_enrichment`
+- `unchanged`
+- `blocklisted_new` (new beer on blocklist — separate from `unchanged`)
+- `blocklisted_existing` (existing beer on blocklist — also separate)
+
+The blocklisted variants were split out to make the filtering logic in `insertPlaceholders`
+clearer. This is noted in `review-results.md` ("blocklisted split out").
+
+**`CategorizedResult` type**: The `categorizeAIResult()` function uses a `CategorizedResult`
+discriminated union (`success_with_abv`, `success_no_abv`, `fallback_with_abv`, `fallback_no_abv`,
+`failure`) defined in `src/queue/cleanup.ts:149-190`. This type is exported and used by
+`buildBatchOperations` to build the final batch arrays via `.filter()` + `.map()`.
+
+**Step 2f (queue helpers counter) — NOT implemented**: The `queued` counter derivation
+from `Promise.allSettled` was low priority and was not implemented. The imperative counter
+in `queueBeersForEnrichment` and `queueBeersForCleanup` remains unchanged and is listed
+in the WON'T-fix table as an acceptable pattern.

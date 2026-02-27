@@ -198,3 +198,29 @@ Re-enable `exactOptionalPropertyTypes` in `test/tsconfig.json` after cleaning up
 **Fix pattern**: Replace `{ prop: undefined }` assignments in test mocks with `Partial<T>`, `Pick<T, K>`, conditional spread (`...(condition && { prop: value })`), or test factory functions that construct compliant objects. Once all test mocks are cleaned up, remove the `exactOptionalPropertyTypes: false` override from `test/tsconfig.json`.
 
 This is not blocking for the strictness migration but should be tracked as a follow-up task.
+
+---
+
+## Implementation Notes (post-implementation drift)
+
+**`analytics.ts:trackCron` inconsistency**: The plan required importing `getToday()` in
+`analytics.ts` to fix the `split('T')[0]` indexed access. During implementation, one
+call site in `trackCron` used inline `parts[0] ?? ''` instead of `getToday()`.
+This was caught during review and fixed in commit `e63fab2` (replaced with `getToday()`
+for consistency). The inconsistency was not a bug but a style deviation.
+
+**Follow-up for `exactOptionalPropertyTypes` resolved**: Commit `f4011ab` re-enabled
+`exactOptionalPropertyTypes: true` in `test/tsconfig.json`. Only 1 violation existed
+(not the ~90 estimated — that count was actually `noUncheckedIndexedAccess` errors).
+Fixed by omitting `queued_for_cleanup_at` in a test mock in `test/handlers/cleanupTrigger.test.ts`
+rather than assigning `undefined`.
+
+**File count accuracy**: The plan listed 20 files modified. The actual implementation
+modified ~45 files total. The plan's list covered the primary changes but additional
+downstream fixes (imports in files that consumed the refactored functions) were necessary
+but not pre-listed.
+
+**`global` → `globalThis` fix in tests**: Several test files used `global.crypto` to
+mock the Web Crypto API. Under strict mode with the updated tsconfig, `global` is not
+recognized as a global identifier in the module system — replaced with `globalThis.crypto`
+throughout. Not in the plan but necessary for test compilation.

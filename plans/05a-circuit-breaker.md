@@ -109,3 +109,31 @@ function createCircuitBreaker(config: CircuitBreakerConfig = DEFAULT_CONFIG) {
 |------|-----------|
 | Circuit breaker behavior changes subtly | Pin current behavior in tests first |
 | `readonly` breaks callers that mutate received arrays | Run full test suite; fix any callers that rely on mutation |
+
+---
+
+## Implementation Notes (post-implementation drift)
+
+**Type declarations use `type` not `interface`**: The plan showed `interface CircuitBreakerConfig`
+(using the `interface` keyword). Implementation correctly uses `type CircuitBreakerConfig`
+per Phase 2's interface-to-type mandate. Same for `CircuitBreaker` and `CircuitBreakerState`.
+
+**`recordLatency` signature extended**: The plan showed `recordLatency(latencyMs, beerId, context)`.
+Implementation has `recordLatency(latencyMs, currentIndex, totalMessages, beerId, maxConcurrent?)`.
+The extra parameters support the log message that reports position in the batch and estimated
+in-flight requests when the breaker opens.
+
+**Test file name**: The plan said `test/queue/cleanup.test.ts` would be updated.
+Implementation created `test/queue/circuitBreaker.test.ts` as a new file (as also
+listed in the Files Changed table). There is no `test/queue/cleanup.test.ts`; the
+categorize-then-filter tests went into `test/queue/categorizeAIResult.test.ts`
+(see Phase 5b notes) and `test/queue/cleanup-airesult.test.ts` (Phase 4a).
+
+**`createInitialState` helper**: Implementation extracted a private `createInitialState()`
+function to avoid duplicating the default state object literal in both `createCircuitBreaker`
+and `reset()`. Not mentioned in plan; clean DRY improvement.
+
+**`getState()` freezes a shallow copy with spread `slowBeerIds`**: Plan says
+`Object.freeze({ ...state })`. Implementation is `Object.freeze({ ...state, slowBeerIds: [...state.slowBeerIds] })`
+to also copy the array, preventing callers from mutating the frozen snapshot's internal array.
+This matches the test expectation "getState() returns a frozen copy (not a reference)".

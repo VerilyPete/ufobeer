@@ -101,7 +101,7 @@
 - ~45 files changed, +5800 / -1460 lines
 - 6 compiler flags enabled
 - 50 interfaces → types with readonly
-- 9 Zod schemas created
+- 9 Zod schemas created (7 planned + EnrichmentMessageSchema + SyncBeersRequestOuterSchema)
 - 5 `!` assertions eliminated
 - ~25 `as` casts eliminated or documented
 - ~180 lines manual validation removed
@@ -110,3 +110,28 @@
 - ~120 new tests added
 - Zero runtime behavior changes
 - 1 pre-existing bug fixed (timezone in date utils)
+
+---
+
+## TDD Remediation — COMPLETE
+
+Additional 2 commits implemented the TDD remediation plan (`TDD-REMEDIATION-PLAN.md`):
+
+### 402414e - TDD Remediation (main)
+- 11 new test files across Waves 1-4
+- 8 existing test files fixed (let/beforeEach → factories, SQL assertion removal)
+- `test/queue/cleanupHelpers-timeout.test.ts` deleted (duplicate, merged into `cleanupHelpers.test.ts`)
+- 752 tests across 30 files
+
+### 6f32cf0 - SQL Assertion Cleanup (follow-up)
+- Removed remaining SQL string inspection tests from `audit.test.ts`, `queue/dlq.test.ts`, `handlers/dlq.handler.test.ts`
+- Renamed tests from implementation language to business behavior language
+- 748 tests, 30 files (net -4 due to deletion of SQL-shape tests)
+
+### TDD Remediation Stats
+- 11 new test files
+- 748 total tests in 30 files
+- All `beforeEach`/`let` anti-patterns removed
+- SQL string assertions removed
+- `test/queue/routing.test.ts` and `test/handlers/admin-analytics.test.ts` NOT created (planned in 04b but skipped — see 04b implementation notes)
+- `test/queue/categorizeAIResult.test.ts` and `test/db/categorizeBeer.test.ts` created as dedicated files for the extracted pure functions (plan named different file targets)
