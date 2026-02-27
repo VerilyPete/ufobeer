@@ -163,7 +163,17 @@ After TDD remediation, two more features were implemented:
 - **Cache proxy** (`06-beers-cache-proxy.md`): GET /beers caching proxy with D1 store_taplist_cache table, stale fallback, and `fresh=true` bypass. Commit `e6c4472` and others.
 - **CI/CD deployment** (`ufobeer-deployment.md`): GitHub Actions pipeline (typecheck → test → migrate → deploy), top-level try/catch in fetch handler, cache D1 failure resilience with `resolveStaleRow` helper.
 
-Current totals: **823 tests across 34 files**.
+### Tail Worker Error Alerting (subsequent work)
+
+Separate Cloudflare Worker (`ufobeer-error-alerts`) with a `tail()` handler that monitors main worker invocations and emails `pete@verily.org` when errors occur. See `07-tail-worker-error-alerts.md`.
+
+- Allowlist-based error detection (unknown outcomes default to alerting)
+- 5-minute in-memory cooldown to prevent email floods
+- Hand-built RFC 5322 email (no runtime deps)
+- Fallback alerting when the processing pipeline itself fails
+- 47 tests across 4 files in `workers/error-alerts/`
+
+Current totals: **869 tests across 38 files** (main worker), plus **47 tests across 4 files** (tail worker).
 
 ## Verification Checklist (per phase)
 
