@@ -30,4 +30,4 @@ jobs:
         run: npm run typecheck --prefix workers/error-alerts
 
       - name: Test tail worker
-        run: npx vitest run --prefix workers/error-alerts
+        run: npm test --prefix workers/error-alerts -- run
