@@ -296,4 +296,10 @@ describe('buildRawEmail', () => {
     // Date header should be present (value changes, just check key)
     expect(raw).toMatch(/^Date: /m);
   });
+
+  it('includes Message-ID header with ufobeer.app domain', () => {
+    const raw = buildRawEmail('Test', 'body');
+
+    expect(raw).toMatch(/^Message-ID: <.+@ufobeer\.app>/m);
+  });
 });

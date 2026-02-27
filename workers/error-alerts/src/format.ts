@@ -129,11 +129,13 @@ export function buildBody(traces: readonly TraceItem[], suppressedCount?: number
 
 export function buildRawEmail(subject: string, body: string): string {
   const date = new Date().toUTCString();
+  const messageId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@ufobeer.app>`;
   const headers = [
     `From: ${FROM_ADDRESS}`,
     `To: ${TO_ADDRESS}`,
     `Date: ${date}`,
     `Subject: ${subject}`,
+    `Message-ID: ${messageId}`,
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=utf-8',
   ].join('\r\n');
