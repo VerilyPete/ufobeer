@@ -14,6 +14,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { handleBeerList, refreshTaplistForStore } from '../../src/handlers/beers';
 import type { Env, RequestContext, FlyingSaucerBeer } from '../../src/types';
+import type { CachedBeer } from '../../src/schemas/cache';
 
 // ============================================================================
 // Mock Modules
@@ -77,6 +78,21 @@ function createBeer(overrides: Partial<FlyingSaucerBeer> = {}): FlyingSaucerBeer
     brewer: 'Test Brewery',
     brew_description: 'A hoppy IPA',
     container_type: 'pint',
+    ...overrides,
+  };
+}
+
+function createCachedBeer(overrides: Partial<CachedBeer> = {}): CachedBeer {
+  return {
+    id: '12345',
+    brew_name: 'Test IPA',
+    brewer: 'Test Brewery',
+    brew_description: 'A hoppy IPA',
+    container_type: 'pint',
+    enriched_abv: null,
+    enrichment_confidence: null,
+    enrichment_source: null,
+    is_description_cleaned: false,
     ...overrides,
   };
 }
@@ -1101,7 +1117,7 @@ describe('handleBeerList', () => {
   describe('cache hit', () => {
     it('returns cached beers with source "cache" when cache is fresh', async () => {
       vi.clearAllMocks();
-      const cachedBeers = [createBeer({ id: '1', brew_name: 'Cached IPA' })];
+      const cachedBeers = [createCachedBeer({ id: '1', brew_name: 'Cached IPA' })];
       const cachedAt = Date.now() - 60_000; // 1 minute ago (within 5 min TTL)
 
       vi.mocked(getCachedTaplist).mockResolvedValue({
@@ -1130,7 +1146,7 @@ describe('handleBeerList', () => {
 
     it('returns fresh requestId on cache hit (not from cache)', async () => {
       vi.clearAllMocks();
-      const cachedBeers = [createBeer({ id: '1' })];
+      const cachedBeers = [createCachedBeer({ id: '1' })];
       vi.mocked(getCachedTaplist).mockResolvedValue({
         store_id: '13885',
         response_json: JSON.stringify(cachedBeers),
@@ -1150,7 +1166,7 @@ describe('handleBeerList', () => {
 
     it('returns correct storeId on cache hit', async () => {
       vi.clearAllMocks();
-      const cachedBeers = [createBeer({ id: '1' })];
+      const cachedBeers = [createCachedBeer({ id: '1' })];
       vi.mocked(getCachedTaplist).mockResolvedValue({
         store_id: '13885',
         response_json: JSON.stringify(cachedBeers),
@@ -1173,7 +1189,7 @@ describe('handleBeerList', () => {
       const mockFetch = vi.fn();
       globalThis.fetch = mockFetch;
 
-      const cachedBeers = [createBeer({ id: '1' })];
+      const cachedBeers = [createCachedBeer({ id: '1' })];
       vi.mocked(getCachedTaplist).mockResolvedValue({
         store_id: '13885',
         response_json: JSON.stringify(cachedBeers),
@@ -1192,7 +1208,7 @@ describe('handleBeerList', () => {
 
     it('does not trigger background enrichment on cache hit', async () => {
       vi.clearAllMocks();
-      const cachedBeers = [createBeer({ id: '1' })];
+      const cachedBeers = [createCachedBeer({ id: '1' })];
       vi.mocked(getCachedTaplist).mockResolvedValue({
         store_id: '13885',
         response_json: JSON.stringify(cachedBeers),
@@ -1212,7 +1228,7 @@ describe('handleBeerList', () => {
 
     it('returns upstreamLatencyMs of 0 on cache hit', async () => {
       vi.clearAllMocks();
-      const cachedBeers = [createBeer({ id: '1' })];
+      const cachedBeers = [createCachedBeer({ id: '1' })];
       vi.mocked(getCachedTaplist).mockResolvedValue({
         store_id: '13885',
         response_json: JSON.stringify(cachedBeers),
@@ -1445,7 +1461,7 @@ describe('handleBeerList', () => {
         response_json: JSON.stringify([createBeer({ id: 'cached' })]),
         cached_at: Date.now() - 60_000, // fresh cache (1 min ago)
       });
-      vi.mocked(parseCachedBeers).mockReturnValue([createBeer({ id: 'cached' })]);
+      vi.mocked(parseCachedBeers).mockReturnValue([createCachedBeer({ id: 'cached' })]);
 
       const env = createMockEnv();
       const { ctx } = createMockExecutionContext();
@@ -1532,7 +1548,7 @@ describe('handleBeerList', () => {
 
     it('uses cache normally when freshRequested is false', async () => {
       vi.clearAllMocks();
-      const cachedBeers = [createBeer({ id: '1' })];
+      const cachedBeers = [createCachedBeer({ id: '1' })];
       vi.mocked(getCachedTaplist).mockResolvedValue({
         store_id: '13885',
         response_json: JSON.stringify(cachedBeers),
@@ -1559,7 +1575,7 @@ describe('handleBeerList', () => {
         status: 502,
       });
 
-      const cachedBeers = [createBeer({ id: 'stale', brew_name: 'Stale Beer' })];
+      const cachedBeers = [createCachedBeer({ id: 'stale', brew_name: 'Stale Beer' })];
       vi.mocked(getCachedTaplist).mockResolvedValue({
         store_id: '13885',
         response_json: JSON.stringify(cachedBeers),
@@ -1594,7 +1610,7 @@ describe('handleBeerList', () => {
       });
 
       const cachedAt = Date.now() - 600_000; // 10 min ago (stale)
-      const cachedBeers = [createBeer({ id: '1', brew_name: 'Stale Beer' })];
+      const cachedBeers = [createCachedBeer({ id: '1', brew_name: 'Stale Beer' })];
 
       // First call returns stale row (for cache check), second call also returns it (for fallback)
       vi.mocked(getCachedTaplist).mockResolvedValue({
@@ -1626,7 +1642,7 @@ describe('handleBeerList', () => {
       vi.clearAllMocks();
       globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
 
-      const cachedBeers = [createBeer({ id: '1' })];
+      const cachedBeers = [createCachedBeer({ id: '1' })];
       vi.mocked(getCachedTaplist).mockResolvedValue({
         store_id: '13885',
         response_json: JSON.stringify(cachedBeers),
@@ -1670,7 +1686,7 @@ describe('handleBeerList', () => {
         status: 502,
       });
 
-      const cachedBeers = [createBeer({ id: '1' })];
+      const cachedBeers = [createCachedBeer({ id: '1' })];
       vi.mocked(getCachedTaplist).mockResolvedValue({
         store_id: '13885',
         response_json: JSON.stringify(cachedBeers),

@@ -98,28 +98,28 @@ describe('errorResponse', () => {
   it('returns response body with success: false', async () => {
     const options = getErrorResponseOptions();
     const result = errorResponse('Bad request', 'BAD_REQUEST', options);
-    const body = await result.json();
+    const body = await result.json() as { success: boolean };
     expect(body.success).toBe(false);
   });
 
   it('returns response body with error.message equal to the provided message', async () => {
     const options = getErrorResponseOptions();
     const result = errorResponse('Invalid store ID', 'INVALID_STORE', options);
-    const body = await result.json();
+    const body = await result.json() as { error: { message: string } };
     expect(body.error.message).toBe('Invalid store ID');
   });
 
   it('returns response body with error.code equal to the provided code', async () => {
     const options = getErrorResponseOptions();
     const result = errorResponse('Not found', 'NOT_FOUND', options);
-    const body = await result.json();
+    const body = await result.json() as { error: { code: string } };
     expect(body.error.code).toBe('NOT_FOUND');
   });
 
   it('returns response body with requestId from options', async () => {
     const options = getErrorResponseOptions({ requestId: 'req-unique-789' });
     const result = errorResponse('Error', 'ERR', options);
-    const body = await result.json();
+    const body = await result.json() as { requestId: string };
     expect(body.requestId).toBe('req-unique-789');
   });
 
@@ -140,7 +140,7 @@ describe('errorResponse', () => {
       extra: { retryAfter: 60, limit: 100 },
     });
     const result = errorResponse('Rate limited', 'RATE_LIMITED', options);
-    const body = await result.json();
+    const body = await result.json() as { retryAfter: number; limit: number };
     expect(body.retryAfter).toBe(60);
     expect(body.limit).toBe(100);
   });

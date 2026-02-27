@@ -333,7 +333,7 @@ describe('handleDlqReplay', () => {
       { runResult: { meta: { changes: 1 } } },
     ]);
     const env = getMockEnv(db);
-    (env.ENRICHMENT_QUEUE as { send: ReturnType<typeof vi.fn> }).send = vi.fn().mockRejectedValue(new Error('Queue send failed'));
+    (env.ENRICHMENT_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send = vi.fn().mockRejectedValue(new Error('Queue send failed'));
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
       body: JSON.stringify({ ids: [1] }),

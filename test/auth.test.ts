@@ -5,7 +5,6 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { timingSafeEqual as nodeTimingSafeEqual } from 'node:crypto';
 import type { Env, RequestContext } from '../src/types';
 import {
   timingSafeCompare,
@@ -26,10 +25,14 @@ if (typeof crypto.subtle.timingSafeEqual !== 'function') {
     a: ArrayBuffer | ArrayBufferView,
     b: ArrayBuffer | ArrayBufferView,
   ): boolean => {
-    const bufA = ArrayBuffer.isView(a) ? Buffer.from(a.buffer, a.byteOffset, a.byteLength) : Buffer.from(a);
-    const bufB = ArrayBuffer.isView(b) ? Buffer.from(b.buffer, b.byteOffset, b.byteLength) : Buffer.from(b);
-    if (bufA.length !== bufB.length) return false;
-    return nodeTimingSafeEqual(bufA, bufB);
+    const bytesA = new Uint8Array(ArrayBuffer.isView(a) ? a.buffer.slice(a.byteOffset, a.byteOffset + a.byteLength) : a);
+    const bytesB = new Uint8Array(ArrayBuffer.isView(b) ? b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) : b);
+    if (bytesA.length !== bytesB.length) return false;
+    let result = 0;
+    for (let i = 0; i < bytesA.length; i++) {
+      result |= bytesA[i]! ^ bytesB[i]!;
+    }
+    return result === 0;
   };
 }
 
