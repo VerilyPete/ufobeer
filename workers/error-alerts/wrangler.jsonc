@@ -5,7 +5,7 @@
 	"send_email": [
 		{
 			"name": "SEND_EMAIL",
-			"destination_address": "pete@verily.org"
+			"destination_address": "alerts-to@ufobeer.app"
 		}
 	]
 }
