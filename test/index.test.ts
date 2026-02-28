@@ -175,14 +175,30 @@ describe('fetch handler top-level error boundary', () => {
     expect(text).not.toContain('SQLite');
   });
 
-  it('sets CORS header from ALLOWED_ORIGIN when an error is thrown', async () => {
+  it('sets CORS header when Origin matches ALLOWED_ORIGIN and an error is thrown', async () => {
     const env = createMockEnv({ allowedOrigin: 'https://ufobeer.app' });
     const ctx = createMockCtx();
-    const request = createGetRequest('/beers?sid=13879');
+    const request = new Request('https://api.ufobeer.app/beers?sid=13879', {
+      method: 'GET',
+      headers: { 'X-API-Key': 'test-api-key', 'Origin': 'https://ufobeer.app' },
+    });
 
     const response = await worker.fetch(request, env, ctx);
 
     expect(response.headers.get('Access-Control-Allow-Origin')).toBe('https://ufobeer.app');
+  });
+
+  it('omits CORS header when Origin does not match ALLOWED_ORIGIN and an error is thrown', async () => {
+    const env = createMockEnv({ allowedOrigin: 'https://ufobeer.app' });
+    const ctx = createMockCtx();
+    const request = new Request('https://api.ufobeer.app/beers?sid=13879', {
+      method: 'GET',
+      headers: { 'X-API-Key': 'test-api-key', 'Origin': 'https://evil.com' },
+    });
+
+    const response = await worker.fetch(request, env, ctx);
+
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
   });
 
   it('omits CORS header when ALLOWED_ORIGIN is not configured and an error is thrown', async () => {

@@ -241,13 +241,13 @@ describe('handleHealthCheck', () => {
     expect(body.database).toBe('disconnected');
   });
 
-  it('response body has error containing the error message on DB failure', async () => {
+  it('response body has generic error message on DB failure', async () => {
     const db = getMockDb({ selectOneThrows: true });
     const env = getMockEnv({ DB: db as unknown as D1Database });
     const response = await handleHealthCheck(env);
     const body = await response.json() as { error: string };
 
-    expect(body.error).toBe('DB error');
+    expect(body.error).toBe('Database connection failed');
   });
 
   it('returns 200 with daily used 0 and monthly used 0 when enrichment_limits queries throw (graceful degradation)', async () => {

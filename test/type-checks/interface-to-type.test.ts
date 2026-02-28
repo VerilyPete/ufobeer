@@ -89,7 +89,7 @@ describe('interface-to-type conversion compile checks', () => {
   });
 
   it('readonly prevents mutation of RateLimitResult', () => {
-    const result: RateLimitResult = { allowed: true, remaining: 5, resetAt: 100 };
+    const result: RateLimitResult = { allowed: true, remaining: 5, resetAt: 100, degraded: false };
     // @ts-expect-error — readonly property cannot be assigned
     result.allowed = false;
   });

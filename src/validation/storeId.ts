@@ -3,7 +3,7 @@
  */
 
 // Known valid store IDs from Flying Saucer
-export const VALID_STORE_IDS = new Set([
+export const KNOWN_STORE_IDS = new Set([
   '13885',    // Little Rock
   '13888',    // Charlotte
   '13877',    // Raleigh
@@ -37,7 +37,7 @@ export function isValidStoreId(storeId: string, strictMode = false): boolean {
 
   // Optionally: check against known IDs
   if (strictMode) {
-    return VALID_STORE_IDS.has(storeId);
+    return KNOWN_STORE_IDS.has(storeId);
   }
 
   return true;

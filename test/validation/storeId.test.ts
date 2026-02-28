@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isValidStoreId, VALID_STORE_IDS } from '../../src/validation/storeId';
+import { isValidStoreId, KNOWN_STORE_IDS } from '../../src/validation/storeId';
 
 describe('isValidStoreId', () => {
   it('should accept valid numeric store IDs', () => {
@@ -27,9 +27,9 @@ describe('isValidStoreId', () => {
     expect(isValidStoreId('12345', true)).toBe(false);
   });
 
-  it('should have all known store IDs in VALID_STORE_IDS set', () => {
-    expect(VALID_STORE_IDS.has('13885')).toBe(true); // Little Rock
-    expect(VALID_STORE_IDS.has('18686214')).toBe(true); // Cypress Waters
-    expect(VALID_STORE_IDS.has('18262641')).toBe(true); // DFW Airport
+  it('should have all known store IDs in KNOWN_STORE_IDS set', () => {
+    expect(KNOWN_STORE_IDS.has('13885')).toBe(true); // Little Rock
+    expect(KNOWN_STORE_IDS.has('18686214')).toBe(true); // Cypress Waters
+    expect(KNOWN_STORE_IDS.has('18262641')).toBe(true); // DFW Airport
   });
 });

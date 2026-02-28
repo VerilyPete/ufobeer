@@ -523,13 +523,15 @@ export async function syncBeersWithBatchHandling(
         succeeded++;
       } else {
         failed++;
-        errors.push(`Statement ${i} failed: ${result.error || 'Unknown error'}`);
+        console.error(`Sync statement ${i} failed:`, result.error);
+        errors.push(`Statement ${i} failed`);
       }
     }
   } catch (error) {
     // Total batch failure - all statements failed
     failed = statements.length;
-    errors.push(`Batch failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error('Sync batch failed:', error);
+    errors.push('Database write failed for batch');
   }
 
   return { succeeded, failed, errors };

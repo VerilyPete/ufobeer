@@ -195,7 +195,7 @@ describe('validateApiKey', () => {
     warnSpy.mockRestore();
   });
 
-  it('logs a warning with first 4 chars of submitted key when key is wrong', async () => {
+  it('logs a warning with first 2 chars of submitted key when key is wrong', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const request = createRequest({ 'X-API-Key': 'bad-key-value' });
     await validateApiKey(request, createMockEnv() as Env, createMockReqCtx());
@@ -203,7 +203,7 @@ describe('validateApiKey', () => {
     const logged = JSON.parse(warnSpy.mock.calls[0][0] as string);
     expect(logged.event).toBe('auth_failed');
     expect(logged.reason).toBe('invalid_api_key');
-    expect(logged.apiKeyPrefix).toBe('bad-...');
+    expect(logged.apiKeyPrefix).toBe('ba...');
     warnSpy.mockRestore();
   });
 
@@ -318,41 +318,43 @@ describe('getClientIp', () => {
 // ============================================================================
 
 describe('getClientIdentifier', () => {
-  it('returns X-Client-ID header value when present', () => {
-    const request = createRequest({ 'X-Client-ID': 'my-client-id' });
-    expect(getClientIdentifier(request)).toBe('my-client-id');
+  it('ignores X-Client-ID header and uses IP', () => {
+    const request = createRequest({
+      'X-Client-ID': 'spoofed-value',
+      'CF-Connecting-IP': '10.0.0.1',
+    });
+    expect(getClientIdentifier(request)).toBe('10.0.0.1');
   });
 
-  it('returns client IP when X-Client-ID is absent but CF-Connecting-IP is present', () => {
+  it('returns client IP when CF-Connecting-IP is present', () => {
     const request = createRequest({ 'CF-Connecting-IP': '10.0.0.1' });
     expect(getClientIdentifier(request)).toBe('10.0.0.1');
   });
 
-  it('returns "unknown" when neither X-Client-ID nor IP headers are present', () => {
+  it('returns "unknown" when no IP headers are present', () => {
     const request = createRequest();
     expect(getClientIdentifier(request)).toBe('unknown');
   });
 
-  it('truncates result to exactly 64 characters when input exceeds 64 characters', () => {
-    const longId = 'x'.repeat(100);
-    const request = createRequest({ 'X-Client-ID': longId });
+  it('truncates result to exactly 64 characters when IP exceeds 64 characters', () => {
+    const longIp = '1'.repeat(100);
+    const request = createRequest({ 'CF-Connecting-IP': longIp });
     const result = getClientIdentifier(request);
     expect(result).toHaveLength(64);
-    expect(result).toBe('x'.repeat(64));
+    expect(result).toBe('1'.repeat(64));
   });
 
-  it('does not truncate when input is exactly 64 characters', () => {
-    const exactId = 'y'.repeat(64);
-    const request = createRequest({ 'X-Client-ID': exactId });
-    expect(getClientIdentifier(request)).toBe(exactId);
+  it('does not truncate when IP is exactly 64 characters', () => {
+    const exactIp = '1'.repeat(64);
+    const request = createRequest({ 'CF-Connecting-IP': exactIp });
+    expect(getClientIdentifier(request)).toBe(exactIp);
     expect(getClientIdentifier(request)).toHaveLength(64);
   });
 
-  it('does not truncate when input is less than 64 characters', () => {
-    const shortId = 'z'.repeat(30);
-    const request = createRequest({ 'X-Client-ID': shortId });
-    expect(getClientIdentifier(request)).toBe(shortId);
-    expect(getClientIdentifier(request)).toHaveLength(30);
+  it('does not truncate when IP is less than 64 characters', () => {
+    const request = createRequest({ 'CF-Connecting-IP': '192.168.1.1' });
+    expect(getClientIdentifier(request)).toBe('192.168.1.1');
+    expect(getClientIdentifier(request)).toHaveLength(11);
   });
 });
 

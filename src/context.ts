@@ -19,17 +19,19 @@ import { trackRequest } from './analytics';
 // ============================================================================
 
 /**
- * Get CORS headers. Fails explicitly if ALLOWED_ORIGIN is not configured.
+ * Get CORS headers. Returns null when ALLOWED_ORIGIN is not configured,
+ * or when the request Origin does not match ALLOWED_ORIGIN.
+ *
+ * Non-browser clients (curl, mobile apps) don't send Origin headers —
+ * returning null for those requests is correct; CORS headers are meaningless
+ * without a browser enforcing the same-origin policy.
  */
-export function getCorsHeaders(env: Env): Record<string, string> | null {
-  if (!env.ALLOWED_ORIGIN) {
-    console.error('ALLOWED_ORIGIN not configured - CORS will be blocked');
-    return null;
-  }
+export function getCorsHeaders(env: Env, requestOrigin?: string | null): Record<string, string> | null {
+  if (!env.ALLOWED_ORIGIN || requestOrigin !== env.ALLOWED_ORIGIN) return null;
   return {
     'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, X-Client-ID',
+    'Access-Control-Allow-Headers': 'Content-Type, X-API-Key',
     'Access-Control-Max-Age': '86400',
   };
 }

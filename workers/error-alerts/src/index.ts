@@ -1,6 +1,6 @@
 import { EmailMessage } from 'cloudflare:email';
 import { filterErrorTraces } from './filter';
-import { buildSubject, buildBody, buildRawEmail, FROM_ADDRESS, TO_ADDRESS } from './format';
+import { buildSubject, buildBody, buildRawEmail, FROM_ADDRESS } from './format';
 import { shouldSendAlert, getSuppressedCount } from './cooldown';
 import type { Env } from './types';
 
@@ -11,7 +11,7 @@ function cooldownKey(trace: TraceItem): string {
 }
 
 async function sendEmail(env: Env, raw: string): Promise<void> {
-	const message = new EmailMessage(FROM_ADDRESS, TO_ADDRESS, raw);
+	const message = new EmailMessage(FROM_ADDRESS, env.TO_ADDRESS, raw);
 	await env.SEND_EMAIL.send(message);
 }
 
@@ -28,7 +28,7 @@ export default {
 			const suppressedCount = getSuppressedCount(key);
 			const subject = buildSubject(firstError);
 			const body = buildBody(errors, suppressedCount);
-			const raw = buildRawEmail(subject, body);
+			const raw = buildRawEmail(subject, body, env.TO_ADDRESS);
 			try {
 				await sendEmail(env, raw);
 			} catch (err) {
@@ -39,7 +39,7 @@ export default {
 			try {
 				const subject = `[UFO Beer] Tail worker failed to process ${traces.length} trace(s)`;
 				const body = `The tail worker encountered an error while processing traces.\n\nTrace count: ${traces.length}`;
-				const raw = buildRawEmail(subject, body);
+				const raw = buildRawEmail(subject, body, env.TO_ADDRESS);
 				await sendEmail(env, raw);
 			} catch (fallbackErr) {
 				console.error('Fallback email also failed', fallbackErr);

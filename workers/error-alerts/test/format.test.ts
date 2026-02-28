@@ -5,7 +5,6 @@ import {
   buildRawEmail,
   MAX_TRACES_PER_EMAIL,
   FROM_ADDRESS,
-  TO_ADDRESS,
 } from '../src/format';
 
 // ---------------------------------------------------------------------------
@@ -269,7 +268,7 @@ describe('buildBody', () => {
 
 describe('buildRawEmail', () => {
   it('uses CRLF line endings throughout', () => {
-    const raw = buildRawEmail('Test Subject', 'Hello body');
+    const raw = buildRawEmail('Test Subject', 'Hello body', 'dest@example.com');
 
     // Should not contain bare LF (only \r\n pairs)
     const withoutCRLF = raw.replace(/\r\n/g, '');
@@ -277,7 +276,7 @@ describe('buildRawEmail', () => {
   });
 
   it('separates headers from body with CRLF+CRLF', () => {
-    const raw = buildRawEmail('Test Subject', 'Hello body');
+    const raw = buildRawEmail('Test Subject', 'Hello body', 'dest@example.com');
 
     expect(raw).toContain('\r\n\r\n');
     const [headers, ...bodyParts] = raw.split('\r\n\r\n');
@@ -286,10 +285,10 @@ describe('buildRawEmail', () => {
   });
 
   it('includes required headers: From, To, Date, Subject, MIME-Version, Content-Type', () => {
-    const raw = buildRawEmail('Alert Subject', 'body text');
+    const raw = buildRawEmail('Alert Subject', 'body text', 'dest@example.com');
 
     expect(raw).toContain(`From: ${FROM_ADDRESS}`);
-    expect(raw).toContain(`To: ${TO_ADDRESS}`);
+    expect(raw).toContain('To: dest@example.com');
     expect(raw).toContain('Subject: Alert Subject');
     expect(raw).toContain('MIME-Version: 1.0');
     expect(raw).toContain('Content-Type: text/plain; charset=utf-8');
@@ -297,8 +296,13 @@ describe('buildRawEmail', () => {
     expect(raw).toMatch(/^Date: /m);
   });
 
+  it('uses the provided toAddress in To header', () => {
+    const raw = buildRawEmail('Test', 'body', 'dest@example.com');
+    expect(raw).toContain('To: dest@example.com');
+  });
+
   it('includes Message-ID header with ufobeer.app domain', () => {
-    const raw = buildRawEmail('Test', 'body');
+    const raw = buildRawEmail('Test', 'body', 'dest@example.com');
 
     expect(raw).toMatch(/^Message-ID: <.+@ufobeer\.app>/m);
   });

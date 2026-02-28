@@ -323,6 +323,24 @@ describe('checkRateLimit', () => {
       expect(result.allowed).toBe(true);
     });
 
+    it('returns degraded: true on database error', async () => {
+      const mockDb = createMockDb();
+      mockDb.first.mockRejectedValueOnce(new Error('DB connection failed'));
+
+      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
+
+      expect(result.degraded).toBe(true);
+    });
+
+    it('returns degraded: false on successful check', async () => {
+      const mockDb = createMockDb();
+      mockDb.first.mockResolvedValueOnce({ request_count: 5 });
+
+      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
+
+      expect(result.degraded).toBe(false);
+    });
+
     it('should return full remaining count on database error', async () => {
       const mockDb = createMockDb();
       mockDb.first.mockRejectedValueOnce(new Error('DB timeout'));

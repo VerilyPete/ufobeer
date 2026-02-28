@@ -82,7 +82,7 @@ export async function validateApiKey(
     requestId: reqCtx.requestId,
     clientIp: reqCtx.clientIp,
     userAgent: reqCtx.userAgent,
-    apiKeyPrefix: apiKey.substring(0, 4) + '...', // First 4 chars for debugging
+    apiKeyPrefix: apiKey.substring(0, 2) + '...', // First 2 chars for debugging
   }));
 
   return { valid: false, apiKeyHash: null };
@@ -148,18 +148,21 @@ export function getClientIp(request: Request): string | null {
 }
 
 /**
- * Extract or generate client identifier for rate limiting.
+ * Extract client identifier for rate limiting.
  *
- * Uses X-Client-ID header if provided by client, otherwise falls back
- * to client IP address. Truncates to 64 characters for database storage.
+ * Uses client IP address only. X-Client-ID is intentionally ignored —
+ * it is client-supplied and spoofable, which would allow rate limit bypass.
+ * Truncates to 64 characters for database storage.
+ *
+ * After authentication, callers should override this with apiKeyHash
+ * (see index.ts authedContext) for more stable per-client tracking.
  *
  * @param request - The incoming HTTP request
  * @returns Client identifier string (max 64 chars)
  */
 export function getClientIdentifier(request: Request): string {
   const clientIp = getClientIp(request);
-  const clientId = request.headers.get('X-Client-ID') || clientIp || 'unknown';
-  return clientId.substring(0, 64); // Truncate for DB storage
+  return (clientIp || 'unknown').substring(0, 64);
 }
 
 /**

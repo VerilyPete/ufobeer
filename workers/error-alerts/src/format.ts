@@ -1,6 +1,5 @@
 export const MAX_TRACES_PER_EMAIL = 10;
 export const FROM_ADDRESS = 'alerts@ufobeer.app';
-export const TO_ADDRESS = 'pete@verily.org';
 
 // ---------------------------------------------------------------------------
 // Type narrowing helpers
@@ -127,12 +126,12 @@ export function buildBody(traces: readonly TraceItem[], suppressedCount?: number
   return parts.join('\n');
 }
 
-export function buildRawEmail(subject: string, body: string): string {
+export function buildRawEmail(subject: string, body: string, toAddress: string): string {
   const date = new Date().toUTCString();
   const messageId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@ufobeer.app>`;
   const headers = [
     `From: ${FROM_ADDRESS}`,
-    `To: ${TO_ADDRESS}`,
+    `To: ${toAddress}`,
     `Date: ${date}`,
     `Subject: ${subject}`,
     `Message-ID: ${messageId}`,

@@ -40,6 +40,8 @@ export type RateLimitResult = {
   readonly remaining: number;
   /** Timestamp (ms) when the rate limit window resets */
   readonly resetAt: number;
+  /** Whether rate limiting is operating in degraded mode (DB error, fails open) */
+  readonly degraded: boolean;
 };
 
 /**
@@ -103,7 +105,7 @@ export async function checkRateLimit(
     const count = result?.request_count || 1;
 
     if (count > limitPerMinute) {
-      return { allowed: false, remaining: 0, resetAt };
+      return { allowed: false, remaining: 0, resetAt, degraded: false };
     }
 
     // Occasional cleanup (1% of requests)
@@ -112,10 +114,10 @@ export async function checkRateLimit(
         .bind(minuteBucket - 60).run();
     }
 
-    return { allowed: true, remaining: Math.max(0, limitPerMinute - count), resetAt };
+    return { allowed: true, remaining: Math.max(0, limitPerMinute - count), resetAt, degraded: false };
   } catch (error) {
     // On error, allow request but log
     console.error('Rate limit check failed:', error);
-    return { allowed: true, remaining: limitPerMinute, resetAt };
+    return { allowed: true, remaining: limitPerMinute, resetAt, degraded: true };
   }
 }

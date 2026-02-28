@@ -168,8 +168,8 @@ describe('handleBeerSync', () => {
       expect(result.succeeded).toBe(2);
       expect(result.failed).toBe(1);
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0]).toContain('Statement 1 failed');
-      expect(result.errors[0]).toContain('Constraint violation');
+      expect(result.errors[0]).toBe('Statement 1 failed');
+      expect(result.errors[0]).not.toContain('Constraint violation');
     });
 
     it('should handle multiple partial failures', async () => {
@@ -205,8 +205,8 @@ describe('handleBeerSync', () => {
       expect(result.succeeded).toBe(0);
       expect(result.failed).toBe(3);
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0]).toContain('Batch failed');
-      expect(result.errors[0]).toContain('D1 unavailable');
+      expect(result.errors[0]).toBe('Database write failed for batch');
+      expect(result.errors[0]).not.toContain('D1 unavailable');
     });
 
     it('should handle empty statement array', async () => {
@@ -236,7 +236,7 @@ describe('handleBeerSync', () => {
 
       expect(result.succeeded).toBe(2);
       expect(result.failed).toBe(1);
-      expect(result.errors[0]).toContain('Unknown error');
+      expect(result.errors[0]).toBe('Statement 1 failed');
     });
 
     it('should handle non-Error rejection', async () => {
@@ -249,8 +249,8 @@ describe('handleBeerSync', () => {
 
       expect(result.succeeded).toBe(0);
       expect(result.failed).toBe(2);
-      expect(result.errors[0]).toContain('Batch failed');
-      expect(result.errors[0]).toContain('String error');
+      expect(result.errors[0]).toBe('Database write failed for batch');
+      expect(result.errors[0]).not.toContain('String error');
     });
   });
 });

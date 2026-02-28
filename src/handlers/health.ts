@@ -74,12 +74,9 @@ export async function handleHealthCheck(env: Env): Promise<Response> {
       },
     });
   } catch (error) {
+    console.error('Health check DB error:', error);
     return Response.json(
-      {
-        status: 'error',
-        database: 'disconnected',
-        error: error instanceof Error ? error.message : 'Unknown error',
-      },
+      { status: 'error', database: 'disconnected', error: 'Database connection failed' },
       { status: 503 }
     );
   }

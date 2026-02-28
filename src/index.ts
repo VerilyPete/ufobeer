@@ -31,7 +31,7 @@ import {
   createRequestContext,
 } from './auth';
 import type { Env, EnrichmentMessage, CleanupMessage } from './types';
-import { VALID_STORE_IDS } from './config';
+import { ENABLED_STORE_IDS } from './config';
 import { getCorsHeaders } from './context';
 import { checkRateLimit, getEndpointRateLimitKey } from './rate-limit';
 import { writeAuditLog, writeAdminAuditLog } from './audit';
@@ -81,7 +81,7 @@ async function parseResponseAnalytics(
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const corsHeaders = getCorsHeaders(env);
+    const corsHeaders = getCorsHeaders(env, request.headers.get('Origin'));
     const requestContext = createRequestContext(request);
 
     // Track metrics for analytics
@@ -129,17 +129,23 @@ export default {
     }
 
     // Require CORS config for all other routes
-    if (!corsHeaders) {
+    if (!env.ALLOWED_ORIGIN) {
       return respond({ error: 'Server misconfigured: ALLOWED_ORIGIN not set' }, 500, {});
     }
 
     // Authenticate
     const authResult = await validateApiKey(request, env, requestContext);
     if (!authResult.valid) {
-      return respond({ error: 'Unauthorized' }, 401, corsHeaders, 'Invalid API key');
+      return respond({ error: 'Unauthorized' }, 401, corsHeaders ?? {}, 'Invalid API key');
     }
-    // Create new context with the authenticated API key hash (RequestContext is readonly)
-    const authedContext = { ...requestContext, apiKeyHash: authResult.apiKeyHash };
+    // Create new context with the authenticated API key hash (RequestContext is readonly).
+    // Override clientIdentifier with apiKeyHash for stable per-key rate limiting —
+    // apiKeyHash is not spoofable (unlike IP-based identifiers in dev/test environments).
+    const authedContext = {
+      ...requestContext,
+      apiKeyHash: authResult.apiKeyHash,
+      clientIdentifier: authResult.apiKeyHash ?? requestContext.clientIdentifier,
+    };
 
     // Rate limit
     const rateLimit = parseInt(env.RATE_LIMIT_RPM, 10) || 60;
@@ -151,7 +157,7 @@ export default {
         { error: 'Rate limit exceeded', requestId: authedContext.requestId },
         429,
         {
-          ...corsHeaders,
+          ...(corsHeaders ?? {}),
           'X-RateLimit-Limit': String(rateLimit),
           'X-RateLimit-Remaining': '0',
           'X-RateLimit-Reset': String(Math.floor(rateLimitResult.resetAt / 1000)),
@@ -177,21 +183,21 @@ export default {
         return respond(
           { error: 'Missing required parameter: sid', requestId: authedContext.requestId },
           400,
-          { ...corsHeaders, ...rateLimitHeaders }
+          { ...(corsHeaders ?? {}), ...rateLimitHeaders }
         );
       }
 
-      if (!VALID_STORE_IDS.has(storeId)) {
+      if (!ENABLED_STORE_IDS.has(storeId)) {
         return respond(
           { error: 'Invalid store ID', requestId: authedContext.requestId },
           400,
-          { ...corsHeaders, ...rateLimitHeaders }
+          { ...(corsHeaders ?? {}), ...rateLimitHeaders }
         );
       }
 
       storeIdForAnalytics = storeId;
       const freshRequested = url.searchParams.get('fresh') === 'true';
-      const result = await handleBeerList(env, ctx, { ...corsHeaders, ...rateLimitHeaders }, authedContext, storeId, freshRequested);
+      const result = await handleBeerList(env, ctx, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext, storeId, freshRequested);
       beersReturnedCount = result.beersReturned;
       upstreamLatency = result.upstreamLatencyMs;
 
@@ -213,7 +219,7 @@ export default {
 
     // Route: POST /beers/batch
     if (url.pathname === '/beers/batch' && request.method === 'POST') {
-      const result = await handleBatchLookup(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
+      const result = await handleBatchLookup(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
       trackRequest(env.ANALYTICS, {
         endpoint: url.pathname,
         method: request.method,
@@ -241,7 +247,7 @@ export default {
           },
           429,
           {
-            ...corsHeaders,
+            ...(corsHeaders ?? {}),
             'X-RateLimit-Limit': String(SYNC_CONSTANTS.RATE_LIMIT_RPM),
             'X-RateLimit-Remaining': '0',
             'X-RateLimit-Reset': String(Math.floor(syncRateLimitResult.resetAt / 1000)),
@@ -252,7 +258,7 @@ export default {
       }
 
       const result = await handleBeerSync(request, env, {
-        ...corsHeaders,
+        ...(corsHeaders ?? {}),
         ...rateLimitHeaders,
         // Override rate limit headers with sync-specific values
         'X-RateLimit-Limit': String(SYNC_CONSTANTS.RATE_LIMIT_RPM),
@@ -279,7 +285,7 @@ export default {
         return respond(
           { error: adminAuth.error || 'Unauthorized', requestId: authedContext.requestId },
           403,
-          { ...corsHeaders, ...rateLimitHeaders },
+          { ...(corsHeaders ?? {}), ...rateLimitHeaders },
           'Admin auth failed'
         );
       }
@@ -289,7 +295,7 @@ export default {
       // Route: GET /admin/dlq
       if (url.pathname === '/admin/dlq' && request.method === 'GET') {
         const operationStart = Date.now();
-        const result = await handleDlqList(env, { ...corsHeaders, ...rateLimitHeaders }, authedContext, url.searchParams);
+        const result = await handleDlqList(env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext, url.searchParams);
         let messageCount = 0;
         try {
           const analytics = await parseResponseAnalytics(result);
@@ -305,7 +311,7 @@ export default {
       // Route: GET /admin/dlq/stats
       if (url.pathname === '/admin/dlq/stats' && request.method === 'GET') {
         const operationStart = Date.now();
-        const result = await handleDlqStats(env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
+        const result = await handleDlqStats(env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_stats', success: result.status === 200, messageCount: 0, durationMs: Date.now() - operationStart });
         ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_stats', {}, adminSecretHash));
         return result;
@@ -314,7 +320,7 @@ export default {
       // Route: POST /admin/dlq/replay
       if (url.pathname === '/admin/dlq/replay' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleDlqReplay(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
+        const result = await handleDlqReplay(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
         let replayedCount = 0;
         try {
           const analytics = await parseResponseAnalytics(result);
@@ -329,7 +335,7 @@ export default {
       // Route: POST /admin/dlq/acknowledge
       if (url.pathname === '/admin/dlq/acknowledge' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleDlqAcknowledge(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
+        const result = await handleDlqAcknowledge(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
         let acknowledgedCount = 0;
         try {
           const analytics = await parseResponseAnalytics(result);
@@ -344,7 +350,7 @@ export default {
       // Route: POST /admin/enrich/trigger
       if (url.pathname === '/admin/enrich/trigger' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleEnrichmentTrigger(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
+        const result = await handleEnrichmentTrigger(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
         let beersQueued = 0;
         let skipReason: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers' | undefined;
         let dailyRemaining = 0;
@@ -369,7 +375,7 @@ export default {
       // Route: POST /admin/cleanup/trigger
       if (url.pathname === '/admin/cleanup/trigger' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleCleanupTrigger(request, env, { ...corsHeaders, ...rateLimitHeaders }, authedContext);
+        const result = await handleCleanupTrigger(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
 
         // Extract response data for logging and analytics
         let beersQueued = 0;
@@ -420,14 +426,14 @@ export default {
       return respond(
         { error: 'Admin endpoint not found', requestId: authedContext.requestId },
         404,
-        { ...corsHeaders, ...rateLimitHeaders }
+        { ...(corsHeaders ?? {}), ...rateLimitHeaders }
       );
     }
 
     return respond(
       { error: 'Not Found', requestId: authedContext.requestId },
       404,
-      { ...corsHeaders, ...rateLimitHeaders }
+      { ...(corsHeaders ?? {}), ...rateLimitHeaders }
     );
 
     } catch (error) {
@@ -439,10 +445,11 @@ export default {
       // Compute CORS headers directly from env rather than using the `corsHeaders`
       // variable: the error may have occurred before getCorsHeaders() ran, or
       // getCorsHeaders() itself may have thrown.
-      const errorHeaders: Record<string, string> = {};
-      if (env.ALLOWED_ORIGIN) {
-        errorHeaders['Access-Control-Allow-Origin'] = env.ALLOWED_ORIGIN;
-      }
+      const origin = request.headers.get('Origin');
+      const allowed = env.ALLOWED_ORIGIN;
+      const errorHeaders: Record<string, string> = origin === allowed && allowed
+        ? { 'Access-Control-Allow-Origin': allowed }
+        : {};
       return Response.json(
         { error: 'Internal Server Error', requestId: requestContext.requestId },
         { status: 500, headers: errorHeaders }

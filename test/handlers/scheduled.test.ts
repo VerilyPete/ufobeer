@@ -139,7 +139,7 @@ describe('handleScheduledEnrichment', () => {
   // Taplist refresh phase
   // ============================================================================
 
-  it('calls refreshTaplistForStore for each store in VALID_STORE_IDS', async () => {
+  it('calls refreshTaplistForStore for each store in ENABLED_STORE_IDS', async () => {
     const env = createScheduledEnv();
 
     await handleScheduledEnrichment(env, createMockCtx());

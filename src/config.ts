@@ -13,10 +13,10 @@
 // ============================================================================
 
 /**
- * Valid Flying Saucer store IDs
+ * Enabled Flying Saucer store IDs
  * Starting with Sugar Land only - add more locations as needed
  */
-export const VALID_STORE_IDS = new Set([
+export const ENABLED_STORE_IDS = new Set([
   '13879',    // Sugar Land
 ]);
 

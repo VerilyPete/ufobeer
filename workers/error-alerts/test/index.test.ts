@@ -7,7 +7,7 @@ vi.mock('cloudflare:email', () => {
 
 import { EmailMessage } from 'cloudflare:email';
 import { resetForTesting } from '../src/cooldown';
-import { FROM_ADDRESS, TO_ADDRESS } from '../src/format';
+import { FROM_ADDRESS } from '../src/format';
 
 function makeTrace(overrides: Partial<TraceItem> = {}): TraceItem {
 	return {
@@ -26,9 +26,12 @@ function makeTrace(overrides: Partial<TraceItem> = {}): TraceItem {
 	} as TraceItem;
 }
 
-function makeEnv(): { SEND_EMAIL: { send: ReturnType<typeof vi.fn> } } {
+const TEST_TO_ADDRESS = 'test-alerts@example.com';
+
+function makeEnv(): { SEND_EMAIL: { send: ReturnType<typeof vi.fn> }; TO_ADDRESS: string } {
 	return {
 		SEND_EMAIL: { send: vi.fn().mockResolvedValue(undefined) },
+		TO_ADDRESS: TEST_TO_ADDRESS,
 	};
 }
 
@@ -67,7 +70,7 @@ describe('tail handler', () => {
 
 		expect(EmailMessage).toHaveBeenCalledWith(
 			FROM_ADDRESS,
-			TO_ADDRESS,
+			TEST_TO_ADDRESS,
 			expect.any(String),
 		);
 	});

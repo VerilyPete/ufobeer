@@ -17,7 +17,7 @@
 
 import type { Env } from '../types';
 import { trackCron } from '../analytics';
-import { shouldSkipEnrichment, VALID_STORE_IDS } from '../config';
+import { shouldSkipEnrichment, ENABLED_STORE_IDS } from '../config';
 import { cleanupOldDlqMessages } from './dlq';
 import { getToday } from '../utils/date';
 import { refreshTaplistForStore } from './beers';
@@ -60,7 +60,7 @@ export async function handleScheduledEnrichment(
   }
 
   // Phase 1: Refresh taplist for all active stores
-  for (const storeId of VALID_STORE_IDS) {
+  for (const storeId of ENABLED_STORE_IDS) {
     try {
       const result = await refreshTaplistForStore(env, ctx, storeId, cronRequestId);
       console.log(`[cron] Store ${storeId}: ${result.beersRefreshed} beers refreshed`);
