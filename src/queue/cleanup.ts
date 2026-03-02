@@ -18,6 +18,7 @@
 import type { Env, CleanupMessage, EnrichmentMessage } from '../types';
 import pLimit from 'p-limit';
 import { extractABV } from '../db/helpers';
+import { shouldSkipEnrichment } from '../config';
 import {
   MIN_CLEANUP_LENGTH_RATIO,
   MAX_CLEANUP_LENGTH_RATIO,
@@ -573,7 +574,9 @@ function buildBatchOperations(
             c.beerId
           )
         );
-        perplexityMessages.push({ beerId: c.beerId, beerName: c.beerName, brewer: c.brewer });
+        if (!shouldSkipEnrichment(c.beerName)) {
+          perplexityMessages.push({ beerId: c.beerId, beerName: c.beerName, brewer: c.brewer });
+        }
         ackMessages.push(c.message);
         break;
 
@@ -609,7 +612,9 @@ function buildBatchOperations(
             WHERE id = ?
           `).bind(c.brewDescription, now, c.beerId)
         );
-        perplexityMessages.push({ beerId: c.beerId, beerName: c.beerName, brewer: c.brewer });
+        if (!shouldSkipEnrichment(c.beerName)) {
+          perplexityMessages.push({ beerId: c.beerId, beerName: c.beerName, brewer: c.brewer });
+        }
         ackMessages.push(c.message);
         break;
 
@@ -725,7 +730,7 @@ export async function handleFallbackBatch(
         `).bind(brewDescription, now, source, abv, beerId)
       );
     } else {
-      // No ABV found - store original and queue for Perplexity enrichment
+      // No ABV found - store original and queue for Perplexity enrichment (if not blocklisted)
       dbStatements.push(
         env.DB.prepare(`
           UPDATE enriched_beers SET
@@ -735,7 +740,9 @@ export async function handleFallbackBatch(
           WHERE id = ?
         `).bind(brewDescription, now, source, beerId)
       );
-      perplexityMessages.push({ beerId, beerName, brewer });
+      if (!shouldSkipEnrichment(beerName)) {
+        perplexityMessages.push({ beerId, beerName, brewer });
+      }
     }
   }
 

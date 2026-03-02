@@ -415,7 +415,6 @@ export type CleanupTriggerMetrics = {
   readonly action: string;
   readonly mode: string;
   readonly beersQueued: number;
-  readonly beersSkipped: number;
   readonly beersReset: number;
   readonly durationMs: number;
   readonly dryRun: boolean;
@@ -438,7 +437,7 @@ export function trackCleanupTrigger(
     ],
     doubles: [
       metrics.beersQueued,          // double1: beers_queued
-      metrics.beersSkipped,         // double2: beers_skipped
+      0,                            // double2: (reserved, formerly beers_skipped)
       metrics.beersReset,           // double3: beers_reset
       metrics.durationMs,           // double4: duration_ms
     ],

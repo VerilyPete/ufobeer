@@ -294,6 +294,82 @@ describe('handleCleanupBatch integration', () => {
   });
 
   // --------------------------------------------------------------------------
+  // Blocklist Guard Tests (Perplexity forwarding)
+  // --------------------------------------------------------------------------
+
+  describe('blocklist guard on Perplexity forwarding', () => {
+    function createNamedBatch(
+      beerName: string,
+      description: string
+    ): MessageBatch<CleanupMessage> {
+      const msg = {
+        id: 'msg-0',
+        timestamp: new Date(),
+        body: {
+          beerId: 'beer-0',
+          beerName,
+          brewer: 'Test Brewer',
+          brewDescription: description,
+        },
+        ack: vi.fn(),
+        retry: vi.fn(),
+      } as unknown as Message<CleanupMessage>;
+      return {
+        messages: [msg],
+        queue: 'description-cleanup',
+        retryAll: vi.fn(),
+        ackAll: vi.fn(),
+      } as unknown as MessageBatch<CleanupMessage>;
+    }
+
+    it('does not forward blocklisted beer to Perplexity after AI cleanup finds no ABV', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
+      const batch = createNamedBatch('Sour Flight', 'A curated selection of sour beers');
+
+      mockEnv.AI.run = vi.fn().mockResolvedValue({
+        response: 'A curated selection of sour beers',
+      });
+
+      await handleCleanupBatch(batch as unknown as MessageBatch<CleanupMessage>, mockEnv as unknown as Env);
+
+      expectAllAcked(batch);
+      expect(mockEnv.ENRICHMENT_QUEUE.sendBatch).not.toHaveBeenCalled();
+    });
+
+    it('forwards non-blocklisted beer to Perplexity after AI cleanup finds no ABV', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
+      const batch = createNamedBatch('Hazy IPA', 'A tropical hazy IPA');
+
+      mockEnv.AI.run = vi.fn().mockResolvedValue({
+        response: 'A tropical hazy IPA',
+      });
+
+      await handleCleanupBatch(batch as unknown as MessageBatch<CleanupMessage>, mockEnv as unknown as Env);
+
+      expectAllAcked(batch);
+      expect(mockEnv.ENRICHMENT_QUEUE.sendBatch).toHaveBeenCalled();
+    });
+
+    it('does not forward blocklisted beer via fallback path (circuit breaker)', async () => {
+      defaultCircuitBreaker.reset();
+      const mockEnv = createFullMockEnv();
+
+      for (let i = 0; i < SLOW_CALL_LIMIT; i++) {
+        defaultCircuitBreaker.recordLatency(SLOW_THRESHOLD_MS + 1000, i, 10, `beer-${i}`);
+      }
+
+      const batch = createNamedBatch('Root Beer Float', 'A classic root beer float');
+
+      await handleCleanupBatch(batch as unknown as MessageBatch<CleanupMessage>, mockEnv as unknown as Env);
+
+      expectAllAcked(batch);
+      expect(mockEnv.ENRICHMENT_QUEUE.sendBatch).not.toHaveBeenCalled();
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // Quota Handling Tests
   // --------------------------------------------------------------------------
 

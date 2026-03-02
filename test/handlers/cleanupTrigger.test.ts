@@ -16,19 +16,10 @@ import type { Env, RequestContext } from '../../src/types';
 
 // Mock the queue module
 vi.mock('../../src/queue', () => ({
-  queueBeersForCleanup: vi.fn().mockResolvedValue({ queued: 1, skipped: 0 }),
-}));
-
-// Mock the config module
-vi.mock('../../src/config', () => ({
-  shouldSkipEnrichment: vi.fn().mockImplementation((name: string) => {
-    // Simulate blocklist filtering for 'Flight' in name
-    return name.toLowerCase().includes('flight');
-  }),
+  queueBeersForCleanup: vi.fn().mockResolvedValue({ queued: 1 }),
 }));
 
 import { queueBeersForCleanup } from '../../src/queue';
-import { shouldSkipEnrichment } from '../../src/config';
 
 // ============================================================================
 // Test Helpers
@@ -177,10 +168,7 @@ const headers = { 'Content-Type': 'application/json' };
  */
 function resetMocks() {
   vi.clearAllMocks();
-  vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 1, skipped: 0 });
-  vi.mocked(shouldSkipEnrichment).mockImplementation((name: string) => {
-    return name.toLowerCase().includes('flight');
-  });
+  vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 1 });
 }
 
 describe('handleCleanupTrigger', () => {
@@ -676,11 +664,11 @@ describe('handleCleanupTrigger', () => {
   });
 
   // --------------------------------------------------------------------------
-  // Blocklist Tests
+  // Blocklist Tests (blocklist no longer applies to cleanup)
   // --------------------------------------------------------------------------
 
-  describe('blocklist filtering', () => {
-    it('skips blocklisted beers (flights)', async () => {
+  describe('blocklist does not filter cleanup', () => {
+    it('queues blocklisted beers for cleanup (flights)', async () => {
       resetMocks();
       const env = createMockEnv({
         beers: [
@@ -692,14 +680,13 @@ describe('handleCleanupTrigger', () => {
       const ctx = createMockContext();
 
       const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { beers_queued: number; beers_skipped: number } };
+      const body = await response.json() as { data: { beers_queued: number } };
 
-      // 'Flight Paddle' contains 'flight' so it should be skipped
-      expect(body.data.beers_queued).toBe(1);
-      expect(body.data.beers_skipped).toBe(1);
+      expect(body.data.beers_queued).toBe(2);
+      expect(body.data).not.toHaveProperty('beers_skipped');
     });
 
-    it('returns no_eligible_beers when all beers are blocklisted', async () => {
+    it('queues all beers even if all would have been blocklisted', async () => {
       resetMocks();
       const env = createMockEnv({
         beers: [
@@ -711,11 +698,10 @@ describe('handleCleanupTrigger', () => {
       const ctx = createMockContext();
 
       const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { beers_queued: number; beers_skipped: number; skip_reason?: string } };
+      const body = await response.json() as { data: { beers_queued: number } };
 
-      expect(body.data.beers_queued).toBe(0);
-      expect(body.data.beers_skipped).toBe(2);
-      expect(body.data.skip_reason).toBe('no_eligible_beers');
+      expect(body.data.beers_queued).toBe(2);
+      expect(body.data).not.toHaveProperty('beers_skipped');
     });
   });
 

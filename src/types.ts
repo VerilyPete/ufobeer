@@ -358,8 +358,6 @@ export type TriggerCleanupRequest = {
 export type CleanupPreview = {
   /** Number of beers that would have cleanup fields reset */
   readonly beers_would_reset: number;
-  /** Number of beers that would be skipped (blocklisted) */
-  readonly beers_would_skip: number;
   /** Total beers matching criteria */
   readonly beers_total: number;
 };
@@ -372,8 +370,6 @@ export type TriggerCleanupData = {
   readonly operation_id: string;
   /** Beers sent to queue */
   readonly beers_queued: number;
-  /** Beers skipped (blocklisted) */
-  readonly beers_skipped: number;
   /** Beers reset (only present for mode: 'all') */
   readonly beers_reset?: number | undefined;
   /** Beers matching but not processed (due to limit) */

@@ -258,6 +258,77 @@ describe('handleFallbackBatch', () => {
 });
 
 // ============================================================================
+// Blocklist guard: blocklisted beers get cleanup but NOT Perplexity forwarding
+// ============================================================================
+
+describe('handleFallbackBatch blocklist guard', () => {
+  function createNamedMessage(
+    index: number,
+    beerName: string,
+    description: string
+  ): Message<CleanupMessage> {
+    return {
+      id: `msg-${index}`,
+      timestamp: new Date(),
+      body: {
+        beerId: `beer-${index}`,
+        beerName,
+        brewer: `Brewer ${index}`,
+        brewDescription: description,
+      },
+      ack: vi.fn(),
+      retry: vi.fn(),
+    } as unknown as Message<CleanupMessage>;
+  }
+
+  it('does not forward blocklisted beer without ABV to Perplexity', async () => {
+    const { mockEnv, batchStatements, queuedMessages } = createFallbackMockEnv();
+    const flightMsg = createNamedMessage(0, 'Sour Flight', 'A curated selection of sour beers');
+
+    await handleFallbackBatch(mockEnv, [flightMsg], 'fallback-quota-exceeded');
+
+    expect(batchStatements).toHaveLength(1);
+    expect(batchStatements[0].args).toContain('A curated selection of sour beers');
+    expect(queuedMessages).toHaveLength(0);
+  });
+
+  it('still stores description for blocklisted beer with ABV', async () => {
+    const { mockEnv, batchStatements } = createFallbackMockEnv();
+    const flightMsg = createNamedMessage(0, 'Fall Favorites Flight', 'Flight of IPAs 6.5% ABV');
+
+    await handleFallbackBatch(mockEnv, [flightMsg], 'fallback-quota-exceeded');
+
+    expect(batchStatements).toHaveLength(1);
+    expect(batchStatements[0].args).toContain(6.5);
+  });
+
+  it('forwards non-blocklisted beer without ABV to Perplexity', async () => {
+    const { mockEnv, queuedMessages } = createFallbackMockEnv();
+    const regularMsg = createNamedMessage(0, 'Hazy IPA', 'A tropical hazy IPA');
+
+    await handleFallbackBatch(mockEnv, [regularMsg], 'fallback-quota-exceeded');
+
+    expect(queuedMessages).toHaveLength(1);
+    expect((queuedMessages[0].body as { beerName: string }).beerName).toBe('Hazy IPA');
+  });
+
+  it('filters only blocklisted beers from Perplexity in mixed batch', async () => {
+    const { mockEnv, batchStatements, queuedMessages } = createFallbackMockEnv();
+    const messages = [
+      createNamedMessage(0, 'Sour Flight', 'A curated sour selection'),
+      createNamedMessage(1, 'Hazy IPA', 'A tropical hazy IPA'),
+      createNamedMessage(2, 'Root Beer Float', 'Classic root beer'),
+    ];
+
+    await handleFallbackBatch(mockEnv, messages, 'fallback-quota-exceeded');
+
+    expect(batchStatements).toHaveLength(3);
+    expect(queuedMessages).toHaveLength(1);
+    expect((queuedMessages[0].body as { beerName: string }).beerName).toBe('Hazy IPA');
+  });
+});
+
+// ============================================================================
 // extractABV Integration Tests
 // ============================================================================
 

@@ -17,7 +17,6 @@ import type {
   CleanupTriggerValidationResult,
 } from '../types';
 import { CLEANUP_TRIGGER_CONSTANTS } from '../types';
-import { shouldSkipEnrichment } from '../config';
 import { errorResponse } from '../context';
 import { queueBeersForCleanup } from '../queue';
 import { hashDescription } from '../utils/hash';
@@ -127,8 +126,6 @@ async function updateCooldown(db: D1Database): Promise<void> {
  * Get preview counts for mode: 'all' without confirm.
  */
 async function getPreviewCounts(db: D1Database): Promise<CleanupPreview> {
-  // Note: beers_would_skip is an estimate (0) - actual skip count determined at execution time
-  // This avoids loading thousands of beer names just for preview
   const result = await db.prepare(`
     SELECT COUNT(*) as count FROM enriched_beers
     WHERE brew_description_original IS NOT NULL
@@ -138,8 +135,7 @@ async function getPreviewCounts(db: D1Database): Promise<CleanupPreview> {
   const total = result?.count ?? 0;
 
   return {
-    beers_would_reset: total,  // Upper bound - actual may be lower due to blocklist
-    beers_would_skip: 0,       // Estimate - blocklisted beers determined at execution time
+    beers_would_reset: total,
     beers_total: total,
   };
 }
@@ -357,7 +353,6 @@ export async function handleCleanupTrigger(
       const data: TriggerCleanupData = {
         operation_id: operationId,
         beers_queued: 0,
-        beers_skipped: 0,
         ...(mode === 'all' ? { beers_reset: 0 } : {}),
         beers_remaining: 0,
         mode,
@@ -375,38 +370,13 @@ export async function handleCleanupTrigger(
       return Response.json({ success: true, data, requestId: reqCtx.requestId }, { headers });
     }
 
-    // 7. Filter blocklisted items
-    const eligibleBeers = beers.filter(b => !shouldSkipEnrichment(b.brew_name));
-    const skippedCount = beers.length - eligibleBeers.length;
     const remainingCount = Math.max(0, totalCount - beers.length);
 
-    if (eligibleBeers.length === 0) {
-      const data: TriggerCleanupData = {
-        operation_id: operationId,
-        beers_queued: 0,
-        beers_skipped: skippedCount,
-        ...(mode === 'all' ? { beers_reset: 0 } : {}),
-        beers_remaining: remainingCount,
-        mode,
-        dry_run: dryRun,
-        skip_reason: 'no_eligible_beers',
-        quota: {
-          daily: {
-            used: quotaUsed,
-            limit: dailyLimit,
-            remaining: Math.max(0, dailyLimit - quotaUsed),
-            projected_after: quotaUsed,
-          },
-        },
-      };
-      return Response.json({ success: true, data, requestId: reqCtx.requestId }, { headers });
-    }
-
-    // 8. Check quota before processing (skip for dry run - allows preview)
-    const projectedAfter = quotaUsed + eligibleBeers.length;
+    // 7. Check quota before processing (skip for dry run - allows preview)
+    const projectedAfter = quotaUsed + beers.length;
     if (!dryRun && projectedAfter > dailyLimit) {
       return errorResponse(
-        `Operation would exceed daily quota. Limit: ${dailyLimit}, Current: ${quotaUsed}, Requested: ${eligibleBeers.length}`,
+        `Operation would exceed daily quota. Limit: ${dailyLimit}, Current: ${quotaUsed}, Requested: ${beers.length}`,
         'QUOTA_EXCEEDED',
         { requestId: reqCtx.requestId, headers, status: 429, extra: {
           quota: {
@@ -414,20 +384,19 @@ export async function handleCleanupTrigger(
               used: quotaUsed,
               limit: dailyLimit,
               remaining: Math.max(0, dailyLimit - quotaUsed),
-              requested: eligibleBeers.length,
+              requested: beers.length,
             },
           },
         }}
       );
     }
 
-    // 9. Dry run - return what would happen without making changes
+    // 8. Dry run - return what would happen without making changes
     if (dryRun) {
       const data: TriggerCleanupData = {
         operation_id: operationId,
-        beers_queued: eligibleBeers.length,
-        beers_skipped: skippedCount,
-        ...(mode === 'all' ? { beers_reset: eligibleBeers.length } : {}),
+        beers_queued: beers.length,
+        ...(mode === 'all' ? { beers_reset: beers.length } : {}),
         beers_remaining: remainingCount,
         mode,
         dry_run: true,
@@ -443,16 +412,16 @@ export async function handleCleanupTrigger(
       return Response.json({ success: true, data, requestId: reqCtx.requestId }, { headers });
     }
 
-    // 10. Compute hashes for all eligible beers
+    // 9. Compute hashes for all beers
     const beersWithHashes: BeerWithHash[] = await Promise.all(
-      eligibleBeers.map(async (beer) => ({
+      beers.map(async (beer) => ({
         id: beer.id,
         brew_description_original: beer.brew_description_original,
         descriptionHash: await hashDescription(beer.brew_description_original),
       }))
     );
 
-    // 11. Build and execute batch database updates
+    // 10. Build and execute batch database updates
     const now = Date.now();
     let statements: D1PreparedStatement[];
 
@@ -477,11 +446,11 @@ export async function handleCleanupTrigger(
       );
     }
 
-    // 12. Update cooldown timestamp
+    // 11. Update cooldown timestamp
     await updateCooldown(env.DB);
 
-    // 13. Queue beers for cleanup
-    const beersToQueue = eligibleBeers.map(beer => ({
+    // 12. Queue beers for cleanup
+    const beersToQueue = beers.map(beer => ({
       id: beer.id,
       brew_name: beer.brew_name,
       brewer: beer.brewer || '',
@@ -490,12 +459,11 @@ export async function handleCleanupTrigger(
 
     const queueResult = await queueBeersForCleanup(env, beersToQueue, reqCtx.requestId);
 
-    // 14. Build and return response
+    // 13. Build and return response
     const projectedAfterQueued = quotaUsed + queueResult.queued;
     const data: TriggerCleanupData = {
       operation_id: operationId,
       beers_queued: queueResult.queued,
-      beers_skipped: skippedCount + queueResult.skipped,
       ...(mode === 'all' ? { beers_reset: queueResult.queued } : {}),
       beers_remaining: remainingCount,
       mode,
@@ -515,7 +483,6 @@ export async function handleCleanupTrigger(
       operation_id: operationId,
       mode,
       beers_queued: queueResult.queued,
-      beers_skipped: skippedCount + queueResult.skipped,
       beers_reset: mode === 'all' ? queueResult.queued : 0,
       request_id: reqCtx.requestId,
     }));

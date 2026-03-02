@@ -91,7 +91,6 @@ const getCleanupTriggerMetrics = (overrides?: Partial<CleanupTriggerMetrics>): C
   action: 'cleanup_trigger',
   mode: 'missing',
   beersQueued: 10,
-  beersSkipped: 2,
   beersReset: 0,
   durationMs: 150,
   dryRun: false,
@@ -878,11 +877,11 @@ describe('trackCleanupTrigger', () => {
     expect(doubles[0]).toBe(99);
   });
 
-  it('sets double2 to the beersSkipped value', () => {
+  it('sets double2 to 0 (reserved, formerly beers_skipped)', () => {
     const analytics = getMockAnalytics();
-    trackCleanupTrigger(analytics, getCleanupTriggerMetrics({ beersSkipped: 5 }));
+    trackCleanupTrigger(analytics, getCleanupTriggerMetrics());
     const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[1]).toBe(5);
+    expect(doubles[1]).toBe(0);
   });
 
   it('sets double3 to the beersReset value', () => {

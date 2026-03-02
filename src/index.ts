@@ -379,7 +379,6 @@ export default {
 
         // Extract response data for logging and analytics
         let beersQueued = 0;
-        let beersSkipped = 0;
         let beersReset = 0;
         let mode = 'unknown';
         let dryRun = false;
@@ -387,7 +386,6 @@ export default {
           const analytics = await parseResponseAnalytics(result);
           const data = analytics['data'] as Record<string, unknown> | undefined;
           beersQueued = (data?.['beers_queued'] as number | undefined) ?? 0;
-          beersSkipped = (data?.['beers_skipped'] as number | undefined) ?? 0;
           beersReset = (data?.['beers_reset'] as number | undefined) ?? 0;
           mode = (data?.['mode'] as string | undefined) ?? 'unknown';
           dryRun = (data?.['dry_run'] as boolean | undefined) ?? false;
@@ -400,7 +398,6 @@ export default {
               action: 'cleanup_trigger',
               mode,
               beersQueued,
-              beersSkipped,
               beersReset,
               durationMs: Date.now() - operationStart,
               dryRun,

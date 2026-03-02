@@ -85,35 +85,33 @@ export async function queueBeersForEnrichment(
 /**
  * Queue beers for description cleanup.
  *
- * Similar to queueBeersForEnrichment but for the cleanup queue.
- * Filters out blocklisted items and batches messages in chunks of 100.
+ * Batches messages in chunks of 100 (Cloudflare Queues sendBatch limit).
+ * No blocklist filtering — all beers are queued for cleanup. Blocklist
+ * filtering for Perplexity forwarding happens downstream in the cleanup
+ * queue consumer (buildBatchOperations / handleFallbackBatch).
  *
  * @param env - Cloudflare Worker environment bindings
  * @param beers - Array of beers needing cleanup (includes brew_description)
  * @param requestId - Request ID for logging correlation
- * @returns Object with queued and skipped counts
+ * @returns Object with queued count
  */
 export async function queueBeersForCleanup(
   env: Env,
   beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string; readonly brew_description: string }>,
   requestId: string
-): Promise<{ queued: number; skipped: number }> {
-  const eligible = beers.filter(b => !shouldSkipEnrichment(b.brew_name));
-  const skipped = beers.length - eligible.length;
-
-  if (eligible.length === 0) {
+): Promise<{ queued: number }> {
+  if (beers.length === 0) {
     console.log(JSON.stringify({
       event: 'queue_cleanup_skip',
       requestId,
-      reason: 'no_eligible_beers',
-      skipped,
+      reason: 'no_beers',
     }));
-    return { queued: 0, skipped };
+    return { queued: 0 };
   }
 
   let queued = 0;
-  for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
-    const chunk = eligible.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < beers.length; i += BATCH_SIZE) {
+    const chunk = beers.slice(i, i + BATCH_SIZE);
     const messages = chunk.map(beer => ({
       body: {
         beerId: beer.id,
@@ -134,7 +132,6 @@ export async function queueBeersForCleanup(
         batchSize: chunk.length,
         error: error instanceof Error ? error.message : String(error),
       }));
-      // Continue with next batch - partial success acceptable
     }
   }
 
@@ -142,9 +139,8 @@ export async function queueBeersForCleanup(
     event: 'queue_cleanup_complete',
     requestId,
     queued,
-    skipped,
     totalBeers: beers.length,
   }));
 
-  return { queued, skipped };
+  return { queued };
 }
