@@ -90,3 +90,31 @@ export const D1_MAX_STATEMENTS_PER_BATCH = 100;
  * upstream fetch. Pull-to-refresh bypasses this via fresh=true.
  */
 export const CACHE_TTL_MS = 300_000; // 5 minutes
+
+// =============================================================================
+// Cron Schedule Constants
+// =============================================================================
+
+/**
+ * Base interval between enrichment cron runs (2 hours).
+ */
+export const CRON_INTERVAL_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Maximum jitter applied to cron interval (±20 minutes).
+ * Actual next-run = now + CRON_INTERVAL_MS + random(-CRON_JITTER_MS, +CRON_JITTER_MS)
+ */
+export const CRON_JITTER_MS = 20 * 60 * 1000;
+
+/**
+ * system_state key for storing the next scheduled cron run time.
+ */
+export const CRON_SCHEDULE_KEY = 'next_enrichment_cron_at';
+
+/**
+ * Operating hours for cron enrichment (Central Time).
+ * Cron skips execution outside these hours since the bar is closed
+ * and taplist data won't change.
+ */
+export const CRON_OPERATING_HOUR_START = 12; // noon CT
+export const CRON_OPERATING_HOUR_END = 23;   // 11pm CT (last poll ~10:40pm)

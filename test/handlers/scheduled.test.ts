@@ -61,8 +61,16 @@ function buildSequencedDb(configs: readonly DbCallConfig[]) {
   };
 }
 
+// Schedule check configs: first query returns null (first run = due),
+// second query is the INSERT to advance the schedule.
+const SCHEDULE_DUE_CONFIGS: readonly DbCallConfig[] = [
+  { firstResult: null },
+  {},
+];
+
 function createScheduledEnv(overrides?: Partial<Env>): Env {
   const defaultDb = buildSequencedDb([
+    ...SCHEDULE_DUE_CONFIGS,
     { firstResult: { total: 0 } },
     { firstResult: { request_count: 0 } },
     { allResults: [] },
@@ -96,6 +104,7 @@ function createMockCtx(): ExecutionContext {
 describe('handleScheduledEnrichment', () => {
   it('queries enriched_beers WHERE enrichment_status = pending', async () => {
     const db = buildSequencedDb([
+      ...SCHEDULE_DUE_CONFIGS,
       { firstResult: { total: 0 } },
       { firstResult: { request_count: 0 } },
       { allResults: [] },
@@ -115,6 +124,7 @@ describe('handleScheduledEnrichment', () => {
 
   it('batch-updates blocklisted beers to enrichment_status = skipped', async () => {
     const db = buildSequencedDb([
+      ...SCHEDULE_DUE_CONFIGS,
       { firstResult: { total: 0 } },
       { firstResult: { request_count: 0 } },
       { allResults: [
@@ -155,6 +165,7 @@ describe('handleScheduledEnrichment', () => {
   it('continues enrichment sweep even when taplist refresh fails', async () => {
     vi.mocked(refreshTaplistForStore).mockRejectedValueOnce(new Error('FS down'));
     const db = buildSequencedDb([
+      ...SCHEDULE_DUE_CONFIGS,
       { firstResult: { total: 0 } },
       { firstResult: { request_count: 0 } },
       { allResults: [
@@ -177,5 +188,24 @@ describe('handleScheduledEnrichment', () => {
     await handleScheduledEnrichment(env, createMockCtx());
 
     expect(refreshTaplistForStore).not.toHaveBeenCalled();
+  });
+
+  // ============================================================================
+  // Schedule gating
+  // ============================================================================
+
+  it('skips entirely when cron is not yet due', async () => {
+    const futureTime = Date.now() + 3_600_000;
+    const db = buildSequencedDb([
+      { firstResult: { next_run: futureTime } },
+    ]);
+    const env = createScheduledEnv({ DB: db as unknown as D1Database });
+    const analytics = env.ANALYTICS as { writeDataPoint: ReturnType<typeof vi.fn> };
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(refreshTaplistForStore).not.toHaveBeenCalled();
+    const dataPoint = analytics.writeDataPoint.mock.calls[0]?.[0];
+    expect(dataPoint?.blobs?.[4]).toBe('skip:not_scheduled');
   });
 });

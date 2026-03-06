@@ -214,13 +214,18 @@ When quota is exhausted:
 
 ### Automatic (Cron)
 ```
-0 */12 * * *  # Every 12 hours
+*/20 * * * *  # Polls every 20 min; runs every ~2h (±20 min jitter), noon–11pm CT only
 ```
 
-Cron triggers `handleScheduledEnrichment()` which:
-1. Finds beers missing ABV (not recently processed)
-2. Queues them for enrichment
-3. Respects daily limits
+Cron fires every 20 minutes but is gated by two checks:
+1. **Operating hours** — skips outside noon–11pm Central Time (DST-aware)
+2. **Schedule jitter** — `checkAndAdvanceCronSchedule()` gates execution
+   to ~4 hours with ±20 minutes of randomization (stored in `system_state`)
+
+When due, triggers `handleScheduledEnrichment()` which:
+1. Refreshes taplist for all enabled stores
+2. Finds beers with pending enrichment status
+3. Queues them for enrichment (respecting daily/monthly limits)
 
 ### Manual (Admin)
 ```bash

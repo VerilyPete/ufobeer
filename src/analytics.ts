@@ -82,7 +82,7 @@ export type CronMetrics = {
   readonly durationMs: number;
   readonly success: boolean;
   /** Reason for skipping enrichment (non-error early exit) */
-  readonly skipReason?: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_beers' | undefined;
+  readonly skipReason?: 'kill_switch' | 'outside_hours' | 'not_scheduled' | 'daily_limit' | 'monthly_limit' | 'no_beers' | undefined;
   /** Error type for actual failures */
   readonly errorType?: string | undefined;
 };

@@ -135,7 +135,7 @@ See [.claude/queue-processing.md](.claude/queue-processing.md) for detailed queu
 | `*-dlq` | Dead letter storage | 10 | - |
 
 ### Cron
-- `0 */12 * * *` - Scheduled enrichment every 12 hours
+- `*/20 * * * *` - Polls every 20 min; enrichment runs every ~2h (±20 min jitter), noon–11pm CT only
 
 ## Environment Bindings
 

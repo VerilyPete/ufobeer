@@ -57,7 +57,7 @@ function makeQueueEvent(queue = 'beer-enrichment', batchSize = 5): TraceItemQueu
   return { queue, batchSize };
 }
 
-function makeScheduledEvent(cron = '0 */12 * * *', scheduledTime = 1700000000000): TraceItemScheduledEventInfo {
+function makeScheduledEvent(cron = '*/20 * * * *', scheduledTime = 1700000000000): TraceItemScheduledEventInfo {
   return { cron, scheduledTime };
 }
 

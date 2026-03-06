@@ -18,9 +18,68 @@
 import type { Env } from '../types';
 import { trackCron } from '../analytics';
 import { shouldSkipEnrichment, ENABLED_STORE_IDS } from '../config';
+import {
+  CRON_INTERVAL_MS,
+  CRON_JITTER_MS,
+  CRON_SCHEDULE_KEY,
+  CRON_OPERATING_HOUR_START,
+  CRON_OPERATING_HOUR_END,
+} from '../constants';
 import { cleanupOldDlqMessages } from './dlq';
 import { getToday } from '../utils/date';
 import { refreshTaplistForStore } from './beers';
+
+// ============================================================================
+// Cron Schedule
+// ============================================================================
+
+export function isWithinOperatingHours(hourCT: number): boolean {
+  return hourCT >= CRON_OPERATING_HOUR_START && hourCT < CRON_OPERATING_HOUR_END;
+}
+
+export function getCurrentHourCT(): number {
+  return parseInt(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      hour: 'numeric',
+      hour12: false,
+    }).format(new Date()),
+  );
+}
+
+export function computeNextCronTime(
+  now: number,
+  random: () => number = Math.random,
+): number {
+  const jitter = (random() * 2 - 1) * CRON_JITTER_MS;
+  return now + CRON_INTERVAL_MS + jitter;
+}
+
+export async function checkAndAdvanceCronSchedule(
+  db: D1Database,
+  random: () => number = Math.random,
+): Promise<boolean> {
+  const now = Date.now();
+
+  const entry = await db.prepare(
+    'SELECT CAST(value AS INTEGER) as next_run FROM system_state WHERE key = ?'
+  ).bind(CRON_SCHEDULE_KEY).first<{ next_run: number }>();
+
+  if (entry && entry.next_run > now) {
+    return false;
+  }
+
+  const nextRun = computeNextCronTime(now, random);
+  await db.prepare(`
+    INSERT INTO system_state (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = excluded.updated_at
+  `).bind(CRON_SCHEDULE_KEY, String(nextRun), now).run();
+
+  return true;
+}
 
 // ============================================================================
 // Scheduled Enrichment Handler
@@ -55,6 +114,35 @@ export async function handleScheduledEnrichment(
       durationMs: Date.now() - cronStartTime,
       success: true,
       skipReason: 'kill_switch',
+    });
+    return;
+  }
+
+  // Operating hours gate: skip when the bar is closed (before noon / after 11pm CT)
+  if (!isWithinOperatingHours(getCurrentHourCT())) {
+    console.log('[cron] Outside operating hours, skipping');
+    trackCron(env.ANALYTICS, {
+      beersQueued: 0,
+      dailyRemaining: 0,
+      monthlyRemaining: 0,
+      durationMs: Date.now() - cronStartTime,
+      success: true,
+      skipReason: 'outside_hours',
+    });
+    return;
+  }
+
+  // Schedule gate: only run when the jittered 4-hour interval has elapsed
+  const isDue = await checkAndAdvanceCronSchedule(env.DB);
+  if (!isDue) {
+    console.log('[cron] Not scheduled yet, skipping');
+    trackCron(env.ANALYTICS, {
+      beersQueued: 0,
+      dailyRemaining: 0,
+      monthlyRemaining: 0,
+      durationMs: Date.now() - cronStartTime,
+      success: true,
+      skipReason: 'not_scheduled',
     });
     return;
   }
@@ -206,7 +294,7 @@ export async function handleScheduledEnrichment(
     });
 
     // Cleanup old enrichment_limits entries (older than 90 days)
-    // Runs every cron execution since cron only runs twice daily
+    // Runs each enrichment execution (~every 2 hours during operating hours)
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
     const cutoffDate = getToday(ninetyDaysAgo);
