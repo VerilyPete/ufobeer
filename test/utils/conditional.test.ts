@@ -88,4 +88,32 @@ describe('checkConditionalRequest', () => {
 
     expect(result.body).toBeNull();
   });
+
+  it('returns 304 when client sends weak ETag matching strong server ETag', () => {
+    const request = createRequest({ 'If-None-Match': `W/${currentETag}` });
+
+    const result = checkConditionalRequest(request, currentETag);
+
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe(304);
+  });
+
+  it('returns 304 when weak ETag is in comma-separated list', () => {
+    const request = createRequest({
+      'If-None-Match': `"other_etag_0000000000000000000", W/${currentETag}`,
+    });
+
+    const result = checkConditionalRequest(request, currentETag);
+
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe(304);
+  });
+
+  it('returns null when weak ETag does NOT match', () => {
+    const request = createRequest({ 'If-None-Match': 'W/"different_etag_value_here_00000"' });
+
+    const result = checkConditionalRequest(request, currentETag);
+
+    expect(result).toBeNull();
+  });
 });

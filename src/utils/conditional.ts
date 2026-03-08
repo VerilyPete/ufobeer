@@ -18,9 +18,13 @@ export function checkConditionalRequest(request: Request, currentETag: string): 
   const ifNoneMatch = request.headers.get('If-None-Match');
   if (!ifNoneMatch) return null;
 
-  const clientETags = ifNoneMatch === '*' ? ['*'] : ifNoneMatch.split(',').map(e => e.trim());
+  const clientETags = ifNoneMatch === '*'
+    ? ['*']
+    : ifNoneMatch.split(',').map(e => e.trim().replace(/^W\//, ''));
 
-  if (clientETags.includes('*') || clientETags.includes(currentETag)) {
+  const strongETag = currentETag.replace(/^W\//, '');
+
+  if (clientETags.includes('*') || clientETags.includes(strongETag)) {
     return new Response(null, {
       status: 304,
       headers: {
