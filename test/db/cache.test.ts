@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getCachedTaplist, setCachedTaplist, parseCachedBeers } from '../../src/db/cache';
+import { getCachedTaplist, setCachedTaplist, updateCacheTimestamp, parseCachedBeers } from '../../src/db/cache';
 import { CachedBeersArraySchema } from '../../src/schemas/cache';
 
 // ============================================================================
@@ -35,18 +35,29 @@ function createMockDb(rows: readonly Record<string, unknown>[] = []) {
 function createMapBackedDb() {
   const storage = new Map<string, Record<string, unknown>>();
   const db = {
-    prepare: () => ({
+    prepare: (sql: string) => ({
       bind: (...args: unknown[]) => ({
         first: () => {
           const row = storage.get(args[0] as string);
           return Promise.resolve(row ?? null);
         },
         run: () => {
-          storage.set(args[0] as string, {
-            store_id: args[0],
-            response_json: args[1],
-            cached_at: args[2],
-          });
+          if (sql.startsWith('INSERT')) {
+            storage.set(args[0] as string, {
+              store_id: args[0],
+              response_json: args[1],
+              cached_at: args[2],
+              content_hash: args[3] ?? null,
+            });
+          } else if (sql.startsWith('UPDATE')) {
+            const existing = storage.get(args[1] as string);
+            if (existing) {
+              storage.set(args[1] as string, {
+                ...existing,
+                cached_at: args[0],
+              });
+            }
+          }
           return Promise.resolve({ success: true });
         },
       }),
@@ -95,7 +106,7 @@ describe('setCachedTaplist', () => {
     const beers = [createEnrichedBeer()];
     const db = createMapBackedDb();
 
-    await setCachedTaplist(db, '13879', beers);
+    await setCachedTaplist(db, '13879', beers, 'abc123hash');
     const result = await getCachedTaplist(db, '13879');
 
     expect(result).not.toBeNull();
@@ -109,11 +120,76 @@ describe('setCachedTaplist', () => {
     const oldBeers = [createEnrichedBeer({ brew_name: 'Old Beer' })];
     const newBeers = [createEnrichedBeer({ brew_name: 'New Beer' })];
 
-    await setCachedTaplist(db, '13879', oldBeers);
-    await setCachedTaplist(db, '13879', newBeers);
+    await setCachedTaplist(db, '13879', oldBeers, 'hash1');
+    await setCachedTaplist(db, '13879', newBeers, 'hash2');
     const result = await getCachedTaplist(db, '13879');
 
     expect(JSON.parse(result!.response_json)).toEqual(newBeers);
+  });
+
+  it('writes content_hash alongside response_json', async () => {
+    const db = createMapBackedDb();
+    const beers = [createEnrichedBeer()];
+
+    await setCachedTaplist(db, '13879', beers, 'myhash123');
+    const result = await getCachedTaplist(db, '13879');
+
+    expect(result!.content_hash).toBe('myhash123');
+  });
+});
+
+// ============================================================================
+// getCachedTaplist — content_hash
+// ============================================================================
+
+describe('getCachedTaplist — content_hash', () => {
+  it('returns content_hash when present', async () => {
+    const cachedAt = Date.now();
+    const db = createMockDb([{
+      store_id: '13879',
+      response_json: JSON.stringify([createEnrichedBeer()]),
+      cached_at: cachedAt,
+      content_hash: 'somehash',
+    }]);
+
+    const result = await getCachedTaplist(db, '13879');
+
+    expect(result!.content_hash).toBe('somehash');
+  });
+
+  it('returns null content_hash for pre-migration rows', async () => {
+    const cachedAt = Date.now();
+    const db = createMockDb([{
+      store_id: '13879',
+      response_json: JSON.stringify([createEnrichedBeer()]),
+      cached_at: cachedAt,
+      content_hash: null,
+    }]);
+
+    const result = await getCachedTaplist(db, '13879');
+
+    expect(result!.content_hash).toBeNull();
+  });
+});
+
+// ============================================================================
+// updateCacheTimestamp
+// ============================================================================
+
+describe('updateCacheTimestamp', () => {
+  it('updates only cached_at without changing response_json or content_hash', async () => {
+    const db = createMapBackedDb();
+    const beers = [createEnrichedBeer()];
+
+    await setCachedTaplist(db, '13879', beers, 'originalhash');
+    const before = await getCachedTaplist(db, '13879');
+
+    await updateCacheTimestamp(db, '13879');
+    const after = await getCachedTaplist(db, '13879');
+
+    expect(after!.content_hash).toBe('originalhash');
+    expect(after!.response_json).toBe(before!.response_json);
+    expect(after!.cached_at).toBeGreaterThanOrEqual(before!.cached_at);
   });
 });
 

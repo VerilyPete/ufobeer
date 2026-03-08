@@ -222,7 +222,7 @@ export type EnrichmentQuotaStatus = {
 
 export type TaplistSource = 'live' | 'cache' | 'stale';
 
-export type CacheOutcome = 'hit' | 'miss' | 'stale' | 'bypass';
+export type CacheOutcome = 'hit' | 'miss' | 'stale' | 'bypass' | 'conditional';
 
 // ============================================================================
 // Response Helper Types

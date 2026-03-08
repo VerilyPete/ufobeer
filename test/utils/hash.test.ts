@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { hashDescription } from '../../src/utils/hash';
+import { hashDescription, generateETag } from '../../src/utils/hash';
 
 describe('hashDescription', () => {
   it('returns a string of exactly 32 characters', async () => {
@@ -56,5 +56,35 @@ describe('hashDescription', () => {
     const hashA = await hashDescription('hello world');
     const hashB = await hashDescription('hello worle');
     expect(hashA).not.toBe(hashB);
+  });
+});
+
+describe('generateETag', () => {
+  it('produces a quoted 32-char hex output', async () => {
+    const etag = await generateETag('test body');
+    expect(etag).toMatch(/^"[0-9a-f]{32}"$/);
+  });
+
+  it('produces different outputs for different inputs', async () => {
+    const etagA = await generateETag('body A');
+    const etagB = await generateETag('body B');
+    expect(etagA).not.toBe(etagB);
+  });
+
+  it('output is always wrapped in double quotes', async () => {
+    const etag = await generateETag('anything');
+    expect(etag.startsWith('"')).toBe(true);
+    expect(etag.endsWith('"')).toBe(true);
+  });
+
+  it('handles empty string and returns valid format', async () => {
+    const etag = await generateETag('');
+    expect(etag).toMatch(/^"[0-9a-f]{32}"$/);
+  });
+
+  it('wraps the same hash that hashDescription produces', async () => {
+    const hash = await hashDescription('consistent');
+    const etag = await generateETag('consistent');
+    expect(etag).toBe(`"${hash}"`);
   });
 });

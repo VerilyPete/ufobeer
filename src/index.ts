@@ -197,7 +197,7 @@ export default {
 
       storeIdForAnalytics = storeId;
       const freshRequested = url.searchParams.get('fresh') === 'true';
-      const result = await handleBeerList(env, ctx, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext, storeId, freshRequested);
+      const result = await handleBeerList(request, env, ctx, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext, storeId, freshRequested);
       beersReturnedCount = result.beersReturned;
       upstreamLatency = result.upstreamLatencyMs;
 

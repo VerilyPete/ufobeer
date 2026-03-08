@@ -18,10 +18,12 @@ import type {
 import { isValidBeer, hasBeerStock, SYNC_CONSTANTS } from '../types';
 import { insertPlaceholders, getEnrichmentForBeerIds } from '../db';
 import { queueBeersForEnrichment, queueBeersForCleanup } from '../queue';
-import { getCachedTaplist, setCachedTaplist, parseCachedBeers } from '../db/cache';
+import { getCachedTaplist, setCachedTaplist, updateCacheTimestamp, parseCachedBeers } from '../db/cache';
 import type { CachedTaplistRow } from '../db/cache';
 import type { CachedBeer } from '../schemas/cache';
 import { hashDescription } from '../utils/hash';
+import { checkConditionalRequest } from '../utils/conditional';
+import { shouldUpdateContent } from '../utils/cache-helpers';
 import { isValidStoreId } from '../validation/storeId';
 import { logError, logWithContext } from '../utils/log';
 import { CACHE_TTL_MS } from '../constants';
@@ -85,6 +87,7 @@ async function resolveStaleRow(
 }
 
 function serveStaleFallback(
+  request: Request | null,
   fallbackRow: CachedTaplistRow,
   staleBeers: readonly CachedBeer[],
   storeId: string,
@@ -92,6 +95,28 @@ function serveStaleFallback(
   headers: Record<string, string>,
   upstreamLatencyMs: number,
 ): GetBeersResult {
+  const responseHeaders = { ...headers };
+  if (fallbackRow.content_hash) {
+    const etag = `"${fallbackRow.content_hash}"`;
+    responseHeaders['ETag'] = etag;
+    responseHeaders['Cache-Control'] = 'private, max-age=300';
+
+    if (request) {
+      const conditionalResponse = checkConditionalRequest(request, etag);
+      if (conditionalResponse) {
+        for (const [key, value] of Object.entries(responseHeaders)) {
+          conditionalResponse.headers.set(key, value);
+        }
+        return {
+          response: conditionalResponse,
+          beersReturned: 0,
+          upstreamLatencyMs,
+          cacheOutcome: 'conditional',
+        };
+      }
+    }
+  }
+
   return {
     response: Response.json({
       beers: staleBeers,
@@ -99,7 +124,7 @@ function serveStaleFallback(
       requestId: reqCtx.requestId,
       source: 'stale',
       cached_at: new Date(fallbackRow.cached_at).toISOString(),
-    }, { headers }),
+    }, { headers: responseHeaders }),
     beersReturned: staleBeers.length,
     upstreamLatencyMs,
     cacheOutcome: 'stale',
@@ -143,6 +168,8 @@ export async function refreshTaplistForStore(
     }
 
     const fsData: unknown = await fsResp.json();
+    const rawResponseBody = JSON.stringify(fsData);
+    const rawHash = await hashDescription(rawResponseBody);
 
     let rawBeersUnvalidated: unknown[] = [];
     if (Array.isArray(fsData)) {
@@ -169,11 +196,28 @@ export async function refreshTaplistForStore(
       };
     });
 
-    ctx.waitUntil(
-      setCachedTaplist(env.DB, storeId, enrichedBeers).catch((err) => {
-        logError('cache.write.failed', err, { requestId, storeId });
-      })
-    );
+    let cachedRow: CachedTaplistRow | null = null;
+    try {
+      cachedRow = await getCachedTaplist(env.DB, storeId);
+    } catch {
+      // If we can't read cached row, treat as content changed
+    }
+
+    const contentChanged = shouldUpdateContent(rawHash, cachedRow?.content_hash ?? null);
+
+    if (contentChanged) {
+      ctx.waitUntil(
+        setCachedTaplist(env.DB, storeId, enrichedBeers, rawHash).catch((err) => {
+          logError('cache.write.failed', err, { requestId, storeId });
+        })
+      );
+    } else {
+      ctx.waitUntil(
+        updateCacheTimestamp(env.DB, storeId).catch((err) => {
+          logError('cache.write.failed', err, { requestId, storeId });
+        })
+      );
+    }
 
     const beersForPlaceholders = rawBeers.map(beer => ({
       id: beer.id,
@@ -205,6 +249,7 @@ export async function refreshTaplistForStore(
  * - upstreamLatencyMs: Flying Saucer API latency for analytics
  */
 export async function handleBeerList(
+  request: Request,
   env: Env,
   ctx: ExecutionContext,
   headers: Record<string, string>,
@@ -242,8 +287,30 @@ export async function handleBeerList(
       logError('cache.read.failed', err, { requestId: reqCtx.requestId, storeId });
     }
     if (cachedRow && Date.now() - cachedRow.cached_at < CACHE_TTL_MS) {
+      // Check conditional request if we have a content hash
+      if (cachedRow.content_hash) {
+        const etag = `"${cachedRow.content_hash}"`;
+        const conditionalResponse = checkConditionalRequest(request, etag);
+        if (conditionalResponse) {
+          for (const [key, value] of Object.entries(headers)) {
+            conditionalResponse.headers.set(key, value);
+          }
+          return {
+            response: conditionalResponse,
+            beersReturned: 0,
+            upstreamLatencyMs: 0,
+            cacheOutcome: 'conditional',
+          };
+        }
+      }
+
       const cachedBeers = parseCachedBeers(cachedRow.response_json);
       if (cachedBeers) {
+        const responseHeaders = { ...headers };
+        if (cachedRow.content_hash) {
+          responseHeaders['ETag'] = `"${cachedRow.content_hash}"`;
+          responseHeaders['Cache-Control'] = 'private, max-age=300';
+        }
         return {
           response: Response.json({
             beers: cachedBeers,
@@ -251,7 +318,7 @@ export async function handleBeerList(
             requestId: reqCtx.requestId,
             source: 'cache',
             cached_at: new Date(cachedRow.cached_at).toISOString(),
-          }, { headers }),
+          }, { headers: responseHeaders }),
           beersReturned: cachedBeers.length,
           upstreamLatencyMs: 0,
           cacheOutcome: 'hit',
@@ -280,7 +347,7 @@ export async function handleBeerList(
       const fallbackRow = await resolveStaleRow(env.DB, cachedRow, cacheReadSucceeded, storeId);
       if (fallbackRow) {
         const staleBeers = parseCachedBeers(fallbackRow.response_json);
-        if (staleBeers) return serveStaleFallback(fallbackRow, staleBeers, storeId, reqCtx, headers, upstreamLatencyMs);
+        if (staleBeers) return serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, upstreamLatencyMs);
       }
 
       return {
@@ -295,6 +362,8 @@ export async function handleBeerList(
     }
 
     const fsData: unknown = await fsResp.json();
+    const rawResponseBody = JSON.stringify(fsData);
+    const rawHash = await hashDescription(rawResponseBody);
 
     // 2. Parse response with type guards
     // Flying Saucer API returns: [{...}, {brewInStock: [...]}]
@@ -311,7 +380,6 @@ export async function handleBeerList(
     const rawBeers = rawBeersUnvalidated.filter(isValidBeer);
 
     // 3. Fetch enrichment data from D1 (bounded query with chunking)
-    // This replaces the previous unbounded SELECT that loaded the entire table
     const beerIds = rawBeers.map(b => b.id);
     const enrichmentMap = await getEnrichmentForBeerIds(env.DB, beerIds, reqCtx.requestId);
 
@@ -322,7 +390,6 @@ export async function handleBeerList(
       if (enrichment?.brew_description_cleaned) cleanedCount++;
       return {
         ...beer,
-        // Use cleaned description if available, otherwise keep original from Flying Saucer
         brew_description: enrichment?.brew_description_cleaned ?? beer.brew_description,
         enriched_abv: enrichment?.abv ?? null,
         enrichment_confidence: enrichment?.confidence ?? null,
@@ -338,18 +405,24 @@ export async function handleBeerList(
       storeId,
     });
 
-    // 5. Write cache (non-blocking)
-    ctx.waitUntil(
-      setCachedTaplist(env.DB, storeId, enrichedBeers).catch((err) => {
-        logError('cache.write.failed', err, { requestId: reqCtx.requestId, storeId });
-      })
-    );
+    // 5. Write cache — compare hash to decide full write vs timestamp-only
+    const contentChanged = shouldUpdateContent(rawHash, cachedRow?.content_hash ?? null);
+
+    if (contentChanged) {
+      ctx.waitUntil(
+        setCachedTaplist(env.DB, storeId, enrichedBeers, rawHash).catch((err) => {
+          logError('cache.write.failed', err, { requestId: reqCtx.requestId, storeId });
+        })
+      );
+    } else {
+      ctx.waitUntil(
+        updateCacheTimestamp(env.DB, storeId).catch((err) => {
+          logError('cache.write.failed', err, { requestId: reqCtx.requestId, storeId });
+        })
+      );
+    }
 
     // 6. Sync beers to enriched_beers table (background task)
-    // This populates the table so cron/trigger can find beers to enrich.
-    // Pipeline: Description cleanup (LLM) -> ABV extraction -> Perplexity fallback
-    // - If description changed: Queue for cleanup (LLM will clean and extract ABV)
-    // - If description unchanged AND ABV missing: Queue for Perplexity
     const beersForPlaceholders = rawBeers.map(beer => ({
       id: beer.id,
       brew_name: beer.brew_name,
@@ -360,6 +433,21 @@ export async function handleBeerList(
       processBackgroundEnrichment(env, beersForPlaceholders, reqCtx.requestId)
     );
 
+    // 7. Check conditional request against raw hash
+    const etag = `"${rawHash}"`;
+    const conditionalResponse = checkConditionalRequest(request, etag);
+    if (conditionalResponse) {
+      for (const [key, value] of Object.entries(headers)) {
+        conditionalResponse.headers.set(key, value);
+      }
+      return {
+        response: conditionalResponse,
+        beersReturned: 0,
+        upstreamLatencyMs,
+        cacheOutcome: 'conditional',
+      };
+    }
+
     return {
       response: Response.json({
         beers: enrichedBeers,
@@ -367,7 +455,7 @@ export async function handleBeerList(
         requestId: reqCtx.requestId,
         source: 'live',
         cached_at: new Date().toISOString(),
-      }, { headers }),
+      }, { headers: { ...headers, 'ETag': etag, 'Cache-Control': 'private, max-age=300' } }),
       beersReturned: enrichedBeers.length,
       upstreamLatencyMs,
       cacheOutcome: freshRequested ? 'bypass' : 'miss',
@@ -380,7 +468,7 @@ export async function handleBeerList(
     const fallbackRow = await resolveStaleRow(env.DB, cachedRow, cacheReadSucceeded, storeId);
     if (fallbackRow) {
       const staleBeers = parseCachedBeers(fallbackRow.response_json);
-      if (staleBeers) return serveStaleFallback(fallbackRow, staleBeers, storeId, reqCtx, headers, Date.now() - upstreamStartTime);
+      if (staleBeers) return serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, Date.now() - upstreamStartTime);
     }
 
     return {

@@ -42,16 +42,29 @@ vi.mock('../../src/utils/hash', () => ({
   hashDescription: vi.fn().mockResolvedValue('mock-hash'),
 }));
 
+// Mock conditional request utility
+vi.mock('../../src/utils/conditional', () => ({
+  checkConditionalRequest: vi.fn().mockReturnValue(null),
+}));
+
+// Mock cache helpers
+vi.mock('../../src/utils/cache-helpers', () => ({
+  shouldUpdateContent: vi.fn().mockReturnValue(true),
+}));
+
 // Mock the cache module
 vi.mock('../../src/db/cache', () => ({
   getCachedTaplist: vi.fn().mockResolvedValue(null),
   setCachedTaplist: vi.fn().mockResolvedValue(undefined),
+  updateCacheTimestamp: vi.fn().mockResolvedValue(undefined),
   parseCachedBeers: vi.fn().mockReturnValue(null),
 }));
 
 import { insertPlaceholders, getEnrichmentForBeerIds } from '../../src/db';
 import { queueBeersForEnrichment, queueBeersForCleanup } from '../../src/queue';
-import { getCachedTaplist, parseCachedBeers, setCachedTaplist } from '../../src/db/cache';
+import { getCachedTaplist, parseCachedBeers, setCachedTaplist, updateCacheTimestamp } from '../../src/db/cache';
+import { checkConditionalRequest } from '../../src/utils/conditional';
+import { shouldUpdateContent } from '../../src/utils/cache-helpers';
 
 // ============================================================================
 // Test Helpers
@@ -157,6 +170,12 @@ function createMockReqCtx(): RequestContext {
 
 const mockHeaders = { 'Content-Type': 'application/json' };
 
+function createMockRequest(headers: Record<string, string> = {}): Request {
+  return new Request('https://ufobeer.app/beers?sid=13885', { headers });
+}
+
+const mockRequest = createMockRequest();
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -179,7 +198,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(502);
       expect(result.beersReturned).toBe(0);
@@ -199,7 +218,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '99999');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '99999');
 
       expect(result.response.status).toBe(502);
       const body = await result.response.json() as { error: string };
@@ -214,7 +233,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(500);
       expect(result.beersReturned).toBe(0);
@@ -231,7 +250,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(500);
       const body = await result.response.json() as { error: string };
@@ -249,7 +268,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(mockFetch).toHaveBeenCalledWith(
         'https://fsbs.beerknurd.com/bk-store-json.php?sid=13885',
@@ -281,7 +300,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(200);
       expect(result.beersReturned).toBe(3);
@@ -300,7 +319,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(200);
       expect(result.beersReturned).toBe(0);
@@ -325,7 +344,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.beersReturned).toBe(2);
     });
@@ -346,7 +365,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.beersReturned).toBe(2);
     });
@@ -368,7 +387,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.beersReturned).toBe(2);
     });
@@ -389,7 +408,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.beersReturned).toBe(2);
     });
@@ -404,7 +423,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       // Should return success with empty beers since no brewInStock found
       expect(result.response.status).toBe(200);
@@ -424,7 +443,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(200);
       expect(result.beersReturned).toBe(0);
@@ -448,7 +467,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       // Should still find brewInStock via .find()
       expect(result.beersReturned).toBe(1);
@@ -486,7 +505,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as {
         beers: Array<{
@@ -527,7 +546,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as {
         beers: Array<{ brew_description: string }>;
@@ -564,7 +583,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as {
         beers: Array<{ brew_description: string }>;
@@ -589,7 +608,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as { beers: Array<{ brew_description: string }> };
       expect(body.beers[0].brew_description).toBe('');
@@ -613,7 +632,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as {
         beers: Array<{
@@ -666,7 +685,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as {
         beers: Array<{
@@ -714,7 +733,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as {
         beers: Array<{ is_description_cleaned: boolean }>;
@@ -748,7 +767,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as {
         beers: Array<{ is_description_cleaned: boolean }>;
@@ -773,7 +792,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(getEnrichmentForBeerIds).toHaveBeenCalledWith(
         env.DB,
@@ -814,7 +833,7 @@ describe('handleBeerList', () => {
       const { ctx, waitUntilPromises } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       // Wait for background tasks to complete
       await Promise.all(waitUntilPromises);
@@ -852,7 +871,7 @@ describe('handleBeerList', () => {
       const { ctx, waitUntilPromises } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       // Wait for background tasks to complete
       await Promise.all(waitUntilPromises);
@@ -879,7 +898,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       // waitUntil called twice: cache write + background enrichment
       expect(ctx.waitUntil).toHaveBeenCalledTimes(2);
@@ -907,7 +926,7 @@ describe('handleBeerList', () => {
       const reqCtx = createMockReqCtx();
 
       const startTime = Date.now();
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
       const elapsed = Date.now() - startTime;
 
       // Response should return quickly, not wait for background task
@@ -943,7 +962,7 @@ describe('handleBeerList', () => {
       const { ctx, waitUntilPromises } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
       await Promise.all(waitUntilPromises);
 
       expect(queueBeersForCleanup).toHaveBeenCalled();
@@ -973,7 +992,7 @@ describe('handleBeerList', () => {
       const { ctx, waitUntilPromises } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
       await Promise.all(waitUntilPromises);
 
       expect(queueBeersForCleanup).not.toHaveBeenCalled();
@@ -998,7 +1017,7 @@ describe('handleBeerList', () => {
       const { ctx, waitUntilPromises } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       // Response should still be successful
       expect(result.response.status).toBe(200);
@@ -1023,7 +1042,7 @@ describe('handleBeerList', () => {
       const { ctx, waitUntilPromises } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
       await Promise.all(waitUntilPromises);
 
       expect(insertPlaceholders).toHaveBeenCalledWith(
@@ -1052,7 +1071,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as { storeId: string };
       expect(body.storeId).toBe('13885');
@@ -1068,7 +1087,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as { requestId: string };
       expect(body.requestId).toBe('test-request-id');
@@ -1084,7 +1103,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.upstreamLatencyMs).toBeGreaterThanOrEqual(0);
     });
@@ -1103,7 +1122,7 @@ describe('handleBeerList', () => {
         'X-Custom-Header': 'test-value',
       };
 
-      const result = await handleBeerList(env, ctx, customHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, customHeaders, reqCtx, '13885');
 
       // For successful responses, headers should include custom headers
       expect(result.response.status).toBe(200);
@@ -1131,7 +1150,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(200);
       const body = await result.response.json() as {
@@ -1158,7 +1177,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as { requestId: string };
       expect(body.requestId).toBe('test-request-id');
@@ -1178,7 +1197,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as { storeId: string };
       expect(body.storeId).toBe('13885');
@@ -1201,7 +1220,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(mockFetch).not.toHaveBeenCalled();
     });
@@ -1220,7 +1239,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(ctx.waitUntil).not.toHaveBeenCalled();
       expect(insertPlaceholders).not.toHaveBeenCalled();
@@ -1240,7 +1259,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.upstreamLatencyMs).toBe(0);
       expect(result.cacheOutcome).toBe('hit');
@@ -1266,7 +1285,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(200);
       const body = await result.response.json() as { source: string; beers: Array<{ id: string }> };
@@ -1295,7 +1314,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(200);
       const body = await result.response.json() as { source: string; cached_at: string };
@@ -1322,7 +1341,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(200);
       const body = await result.response.json() as { source: string; beers: Array<{ id: string }> };
@@ -1344,13 +1363,14 @@ describe('handleBeerList', () => {
       const { ctx, waitUntilPromises } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
       await Promise.all(waitUntilPromises);
 
       expect(setCachedTaplist).toHaveBeenCalledWith(
         env.DB,
         '13885',
         expect.arrayContaining([expect.objectContaining({ id: '1' })]),
+        'mock-hash',
       );
     });
 
@@ -1369,7 +1389,7 @@ describe('handleBeerList', () => {
       const { ctx, waitUntilPromises } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(200);
       const body = await result.response.json() as { beers: unknown[] };
@@ -1392,14 +1412,14 @@ describe('handleBeerList', () => {
       const { ctx, waitUntilPromises } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
       await Promise.all(waitUntilPromises);
 
       expect(result.response.status).toBe(200);
       const body = await result.response.json() as { beers: unknown[]; source: string };
       expect(body.beers).toHaveLength(0);
       expect(body.source).toBe('live');
-      expect(setCachedTaplist).toHaveBeenCalledWith(env.DB, '13885', []);
+      expect(setCachedTaplist).toHaveBeenCalledWith(env.DB, '13885', [], 'mock-hash');
     });
 
     it('triggers background enrichment on live fetch', async () => {
@@ -1416,7 +1436,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       // waitUntil called for both cache write and background enrichment
       expect(ctx.waitUntil).toHaveBeenCalled();
@@ -1435,7 +1455,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.cacheOutcome).toBe('miss');
     });
@@ -1467,7 +1487,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885', true);
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885', true);
 
       expect(mockFetch).toHaveBeenCalled();
     });
@@ -1491,7 +1511,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885', true);
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885', true);
 
       const body = await result.response.json() as { source: string; cached_at: string };
       expect(body.source).toBe('live');
@@ -1517,13 +1537,14 @@ describe('handleBeerList', () => {
       const { ctx, waitUntilPromises } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885', true);
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885', true);
       await Promise.all(waitUntilPromises);
 
       expect(setCachedTaplist).toHaveBeenCalledWith(
         env.DB,
         '13885',
         expect.arrayContaining([expect.objectContaining({ id: 'new' })]),
+        'mock-hash',
       );
     });
 
@@ -1540,7 +1561,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885', true);
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885', true);
 
       // waitUntil called for cache write + background enrichment
       expect(ctx.waitUntil).toHaveBeenCalledTimes(2);
@@ -1563,7 +1584,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885', false);
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885', false);
 
       expect(mockFetch).not.toHaveBeenCalled();
     });
@@ -1587,7 +1608,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885', true);
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885', true);
 
       expect(result.response.status).toBe(200);
       const body = await result.response.json() as { source: string; beers: unknown[] };
@@ -1624,7 +1645,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(200);
       const body = await result.response.json() as {
@@ -1654,7 +1675,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(200);
       const body = await result.response.json() as { source: string };
@@ -1674,7 +1695,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(502);
     });
@@ -1698,7 +1719,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       const body = await result.response.json() as { requestId: string };
       expect(body.requestId).toBe('test-request-id');
@@ -1719,7 +1740,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(502);
       expect(result.cacheOutcome).toBe('miss');
@@ -1740,7 +1761,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(500);
       expect(result.cacheOutcome).toBe('miss');
@@ -1766,7 +1787,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(200);
       const body = await result.response.json() as { source: string; beers: Array<{ id: string }> };
@@ -1787,7 +1808,7 @@ describe('handleBeerList', () => {
       const { ctx } = createMockExecutionContext();
       const reqCtx = createMockReqCtx();
 
-      const result = await handleBeerList(env, ctx, mockHeaders, reqCtx, '13885');
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(result.response.status).toBe(502);
       // getCachedTaplist must NOT be called again as a stale fallback since the table is broken.
@@ -1850,5 +1871,208 @@ describe('refreshTaplistForStore', () => {
 
     expect(result.success).toBe(false);
     expect(result.beersRefreshed).toBe(0);
+  });
+
+  it('calls updateCacheTimestamp when content hash is unchanged', async () => {
+    vi.clearAllMocks();
+    vi.mocked(shouldUpdateContent).mockReturnValue(false);
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13879',
+      response_json: '[]',
+      cached_at: Date.now() - 600_000,
+      content_hash: 'existing-hash',
+    });
+
+    const beers = [createBeer({ id: '1' })];
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValueOnce(new Map());
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      Response.json(createFlyingSaucerResponse(beers))
+    );
+
+    const env = createMockEnv();
+    const { ctx, waitUntilPromises } = createMockExecutionContext();
+
+    await refreshTaplistForStore(env, ctx, '13879', 'test-req');
+    await Promise.all(waitUntilPromises);
+
+    expect(updateCacheTimestamp).toHaveBeenCalledWith(env.DB, '13879');
+    expect(setCachedTaplist).not.toHaveBeenCalled();
+  });
+
+  it('calls setCachedTaplist with hash when content changed', async () => {
+    vi.clearAllMocks();
+    vi.mocked(shouldUpdateContent).mockReturnValue(true);
+    vi.mocked(getCachedTaplist).mockResolvedValue(null);
+
+    const beers = [createBeer({ id: '1' })];
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValueOnce(new Map());
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      Response.json(createFlyingSaucerResponse(beers))
+    );
+
+    const env = createMockEnv();
+    const { ctx, waitUntilPromises } = createMockExecutionContext();
+
+    await refreshTaplistForStore(env, ctx, '13879', 'test-req');
+    await Promise.all(waitUntilPromises);
+
+    expect(setCachedTaplist).toHaveBeenCalledWith(
+      env.DB,
+      '13879',
+      expect.arrayContaining([expect.objectContaining({ id: '1' })]),
+      'mock-hash',
+    );
+  });
+});
+
+// ============================================================================
+// ETag / Conditional Request Tests
+// ============================================================================
+
+describe('handleBeerList — ETag support', () => {
+  it('returns 304 when cache is fresh and If-None-Match matches', async () => {
+    vi.clearAllMocks();
+    const cachedBeers = [createCachedBeer({ id: '1' })];
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13885',
+      response_json: JSON.stringify(cachedBeers),
+      cached_at: Date.now(),
+      content_hash: 'abc123',
+    });
+    vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+    vi.mocked(checkConditionalRequest).mockReturnValue(
+      new Response(null, { status: 304, headers: { ETag: '"abc123"', 'Cache-Control': 'private, max-age=300' } })
+    );
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+    const request = createMockRequest({ 'If-None-Match': '"abc123"' });
+
+    const result = await handleBeerList(request, env, ctx, mockHeaders, reqCtx, '13885');
+
+    expect(result.response.status).toBe(304);
+    expect(result.cacheOutcome).toBe('conditional');
+    expect(result.beersReturned).toBe(0);
+  });
+
+  it('returns 200 with ETag when cache is fresh but no If-None-Match', async () => {
+    vi.clearAllMocks();
+    const cachedBeers = [createCachedBeer({ id: '1' })];
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13885',
+      response_json: JSON.stringify(cachedBeers),
+      cached_at: Date.now(),
+      content_hash: 'abc123',
+    });
+    vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+    vi.mocked(checkConditionalRequest).mockReturnValue(null);
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get('ETag')).toBe('"abc123"');
+    expect(result.cacheOutcome).toBe('hit');
+  });
+
+  it('returns 200 without ETag when content_hash is null (pre-migration)', async () => {
+    vi.clearAllMocks();
+    const cachedBeers = [createCachedBeer({ id: '1' })];
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13885',
+      response_json: JSON.stringify(cachedBeers),
+      cached_at: Date.now(),
+      content_hash: null,
+    });
+    vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get('ETag')).toBeNull();
+    expect(result.cacheOutcome).toBe('hit');
+  });
+
+  it('304 response includes CORS and X-Request-ID headers', async () => {
+    vi.clearAllMocks();
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13885',
+      response_json: JSON.stringify([createCachedBeer()]),
+      cached_at: Date.now(),
+      content_hash: 'abc123',
+    });
+    vi.mocked(parseCachedBeers).mockReturnValue([createCachedBeer()]);
+    vi.mocked(checkConditionalRequest).mockReturnValue(
+      new Response(null, { status: 304, headers: { ETag: '"abc123"' } })
+    );
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+    const headersWithCors = { 'Access-Control-Allow-Origin': '*', 'X-Request-ID': 'req-123' };
+
+    const result = await handleBeerList(mockRequest, env, ctx, headersWithCors, reqCtx, '13885');
+
+    expect(result.response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(result.response.headers.get('X-Request-ID')).toBe('req-123');
+  });
+
+  it('returns ETag on 200 from live fetch', async () => {
+    vi.clearAllMocks();
+    vi.mocked(getCachedTaplist).mockResolvedValue(null);
+    vi.mocked(checkConditionalRequest).mockReturnValue(null);
+    vi.mocked(shouldUpdateContent).mockReturnValue(true);
+
+    const beers = [createBeer({ id: '1' })];
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+    });
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get('ETag')).toBe('"mock-hash"');
+    expect(result.response.headers.get('Cache-Control')).toBe('private, max-age=300');
+  });
+
+  it('calls updateCacheTimestamp when upstream hash matches stored hash', async () => {
+    vi.clearAllMocks();
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13885',
+      response_json: '[]',
+      cached_at: Date.now() - 600_000, // stale cache
+      content_hash: 'existing-hash',
+    });
+    vi.mocked(shouldUpdateContent).mockReturnValue(false);
+    vi.mocked(checkConditionalRequest).mockReturnValue(null);
+
+    const beers = [createBeer({ id: '1' })];
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+    });
+
+    const env = createMockEnv();
+    const { ctx, waitUntilPromises } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+    await Promise.all(waitUntilPromises);
+
+    expect(updateCacheTimestamp).toHaveBeenCalledWith(env.DB, '13885');
+    expect(setCachedTaplist).not.toHaveBeenCalled();
   });
 });

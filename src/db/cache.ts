@@ -5,6 +5,7 @@ export type CachedTaplistRow = {
   readonly store_id: string;
   readonly response_json: string;
   readonly cached_at: number;
+  readonly content_hash: string | null;
 };
 
 export async function getCachedTaplist(
@@ -12,7 +13,7 @@ export async function getCachedTaplist(
   storeId: string,
 ): Promise<CachedTaplistRow | null> {
   return db
-    .prepare('SELECT store_id, response_json, cached_at FROM store_taplist_cache WHERE store_id = ?')
+    .prepare('SELECT store_id, response_json, cached_at, content_hash FROM store_taplist_cache WHERE store_id = ?')
     .bind(storeId)
     .first<CachedTaplistRow>();
 }
@@ -21,12 +22,23 @@ export async function setCachedTaplist(
   db: D1Database,
   storeId: string,
   beers: readonly Record<string, unknown>[],
+  contentHash: string,
 ): Promise<void> {
   await db
     .prepare(
-      'INSERT INTO store_taplist_cache (store_id, response_json, cached_at) VALUES (?, ?, ?) ON CONFLICT(store_id) DO UPDATE SET response_json = excluded.response_json, cached_at = excluded.cached_at'
+      'INSERT INTO store_taplist_cache (store_id, response_json, cached_at, content_hash) VALUES (?, ?, ?, ?) ON CONFLICT(store_id) DO UPDATE SET response_json = excluded.response_json, cached_at = excluded.cached_at, content_hash = excluded.content_hash'
     )
-    .bind(storeId, JSON.stringify(beers), Date.now())
+    .bind(storeId, JSON.stringify(beers), Date.now(), contentHash)
+    .run();
+}
+
+export async function updateCacheTimestamp(
+  db: D1Database,
+  storeId: string,
+): Promise<void> {
+  await db
+    .prepare('UPDATE store_taplist_cache SET cached_at = ? WHERE store_id = ?')
+    .bind(Date.now(), storeId)
     .run();
 }
 

@@ -33,3 +33,15 @@ export async function hashDescription(text: string): Promise<string> {
   // Take first 16 bytes (32 hex chars) for storage efficiency
   return hashArray.slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join('');
 }
+
+/**
+ * Generate an RFC 7232 compliant ETag from a response body.
+ * Wraps the 32-char SHA-256 prefix in double quotes.
+ *
+ * @param body - The raw response body string to hash
+ * @returns Quoted ETag string, e.g. "5eb63bbbe01eeed093cb22bb8f5acdc3"
+ */
+export async function generateETag(body: string): Promise<string> {
+  const hash = await hashDescription(body);
+  return `"${hash}"`;
+}
