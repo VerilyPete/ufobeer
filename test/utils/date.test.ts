@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { getToday, getMonthStart, getMonthEnd } from '../../src/utils/date';
+import { getToday, getMonthStart, getMonthEnd, getCurrentHourCT, isWithinOperatingHours } from '../../src/utils/date';
 
 describe('DateUtils', () => {
   describe('getToday', () => {
@@ -208,6 +208,58 @@ describe('DateUtils', () => {
           expect(result).toBe(expectedResult);
         }
       });
+    });
+  });
+
+  describe('isWithinOperatingHours', () => {
+    it('returns true for noon (start of operating hours)', () => {
+      expect(isWithinOperatingHours(12)).toBe(true);
+    });
+
+    it('returns true for 2pm (mid-afternoon)', () => {
+      expect(isWithinOperatingHours(14)).toBe(true);
+    });
+
+    it('returns true for 10pm (last full hour before close)', () => {
+      expect(isWithinOperatingHours(22)).toBe(true);
+    });
+
+    it('returns false for 11pm (end of operating hours)', () => {
+      expect(isWithinOperatingHours(23)).toBe(false);
+    });
+
+    it('returns false for 3am', () => {
+      expect(isWithinOperatingHours(3)).toBe(false);
+    });
+
+    it('returns false for 11am (just before opening)', () => {
+      expect(isWithinOperatingHours(11)).toBe(false);
+    });
+
+    it('returns false for midnight', () => {
+      expect(isWithinOperatingHours(0)).toBe(false);
+    });
+  });
+
+  describe('getCurrentHourCT', () => {
+    it('returns a number between 0 and 23', () => {
+      const hour = getCurrentHourCT();
+      expect(hour).toBeGreaterThanOrEqual(0);
+      expect(hour).toBeLessThanOrEqual(23);
+    });
+
+    it('returns the correct CT hour for a known UTC timestamp', () => {
+      // 2025-06-15T18:00:00Z = 1pm CDT (UTC-5 during daylight saving)
+      const knownDate = new Date('2025-06-15T18:00:00Z');
+      const hour = getCurrentHourCT(knownDate);
+      expect(hour).toBe(13);
+    });
+
+    it('returns the correct CT hour during standard time', () => {
+      // 2025-01-15T18:00:00Z = 12pm CST (UTC-6 during standard time)
+      const knownDate = new Date('2025-01-15T18:00:00Z');
+      const hour = getCurrentHourCT(knownDate);
+      expect(hour).toBe(12);
     });
   });
 

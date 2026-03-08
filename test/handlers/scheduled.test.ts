@@ -11,7 +11,17 @@ vi.mock('../../src/handlers/beers', () => ({
   }),
 }));
 
+// Mock getCurrentHourCT to always return within operating hours (2pm CT)
+vi.mock('../../src/utils/date', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/utils/date')>();
+  return {
+    ...actual,
+    getCurrentHourCT: vi.fn().mockReturnValue(14),
+  };
+});
+
 import { refreshTaplistForStore } from '../../src/handlers/beers';
+import { getCurrentHourCT } from '../../src/utils/date';
 
 // ============================================================================
 // Factories
@@ -207,5 +217,17 @@ describe('handleScheduledEnrichment', () => {
     expect(refreshTaplistForStore).not.toHaveBeenCalled();
     const dataPoint = analytics.writeDataPoint.mock.calls[0]?.[0];
     expect(dataPoint?.blobs?.[4]).toBe('skip:not_scheduled');
+  });
+
+  it('skips when outside operating hours', async () => {
+    vi.mocked(getCurrentHourCT).mockReturnValueOnce(3); // 3am CT
+    const env = createScheduledEnv();
+    const analytics = env.ANALYTICS as { writeDataPoint: ReturnType<typeof vi.fn> };
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(refreshTaplistForStore).not.toHaveBeenCalled();
+    const dataPoint = analytics.writeDataPoint.mock.calls[0]?.[0];
+    expect(dataPoint?.blobs?.[4]).toBe('skip:outside_hours');
   });
 });

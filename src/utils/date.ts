@@ -7,6 +7,8 @@
  * @module utils/date
  */
 
+import { CRON_OPERATING_HOUR_START, CRON_OPERATING_HOUR_END } from '../constants';
+
 /**
  * Get today's date in YYYY-MM-DD format.
  * @param date - Date object (defaults to current date)
@@ -44,4 +46,31 @@ export function getMonthEnd(date: Date = new Date()): string {
   const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
   const monthStr = String(month + 1).padStart(2, '0');
   return `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}`;
+}
+
+/**
+ * Check if a given hour (Central Time) is within operating hours.
+ * Operating hours: noon (12) to 11pm (23), exclusive of end.
+ *
+ * @param hourCT - Hour in Central Time (0-23)
+ * @returns true if within operating hours
+ */
+export function isWithinOperatingHours(hourCT: number): boolean {
+  return hourCT >= CRON_OPERATING_HOUR_START && hourCT < CRON_OPERATING_HOUR_END;
+}
+
+/**
+ * Get the current hour in Central Time.
+ * Uses Intl.DateTimeFormat for timezone-aware hour extraction.
+ *
+ * @returns Current hour (0-23) in America/Chicago timezone
+ */
+export function getCurrentHourCT(date: Date = new Date()): number {
+  return parseInt(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      hour: 'numeric',
+      hour12: false,
+    }).format(date),
+  );
 }

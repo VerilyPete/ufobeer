@@ -22,30 +22,10 @@ import {
   CRON_INTERVAL_MS,
   CRON_JITTER_MS,
   CRON_SCHEDULE_KEY,
-  CRON_OPERATING_HOUR_START,
-  CRON_OPERATING_HOUR_END,
 } from '../constants';
 import { cleanupOldDlqMessages } from './dlq';
-import { getToday } from '../utils/date';
+import { getToday, getCurrentHourCT, isWithinOperatingHours } from '../utils/date';
 import { refreshTaplistForStore } from './beers';
-
-// ============================================================================
-// Cron Schedule
-// ============================================================================
-
-export function isWithinOperatingHours(hourCT: number): boolean {
-  return hourCT >= CRON_OPERATING_HOUR_START && hourCT < CRON_OPERATING_HOUR_END;
-}
-
-export function getCurrentHourCT(): number {
-  return parseInt(
-    new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/Chicago',
-      hour: 'numeric',
-      hour12: false,
-    }).format(new Date()),
-  );
-}
 
 export function computeNextCronTime(
   now: number,

@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   computeNextCronTime,
   checkAndAdvanceCronSchedule,
-  isWithinOperatingHours,
 } from '../../src/handlers/scheduled';
 import { CRON_INTERVAL_MS, CRON_JITTER_MS, CRON_SCHEDULE_KEY } from '../../src/constants';
 
@@ -110,35 +109,5 @@ describe('checkAndAdvanceCronSchedule', () => {
       c.sql.includes('INSERT INTO system_state'),
     );
     expect(writeCall).toBeUndefined();
-  });
-});
-
-// ============================================================================
-// isWithinOperatingHours
-// ============================================================================
-
-describe('isWithinOperatingHours', () => {
-  it('returns true at noon CT', () => {
-    expect(isWithinOperatingHours(12)).toBe(true);
-  });
-
-  it('returns true at 10pm CT', () => {
-    expect(isWithinOperatingHours(22)).toBe(true);
-  });
-
-  it('returns false at 11pm CT', () => {
-    expect(isWithinOperatingHours(23)).toBe(false);
-  });
-
-  it('returns false at 11am CT', () => {
-    expect(isWithinOperatingHours(11)).toBe(false);
-  });
-
-  it('returns false at midnight CT', () => {
-    expect(isWithinOperatingHours(0)).toBe(false);
-  });
-
-  it('returns false at 6am CT', () => {
-    expect(isWithinOperatingHours(6)).toBe(false);
   });
 });
