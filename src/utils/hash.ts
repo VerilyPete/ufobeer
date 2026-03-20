@@ -45,3 +45,26 @@ export async function generateETag(body: string): Promise<string> {
   const hash = await hashDescription(body);
   return `"${hash}"`;
 }
+
+/**
+ * Build an RFC 7232 compliant ETag combining content and enrichment hashes.
+ *
+ * When enrichmentHash is null (enrichment fetch failed), returns the content hash
+ * alone wrapped in quotes. When both hashes are present, returns a new hash of
+ * their concatenation — ensuring the ETag changes when either content or
+ * enrichment data changes.
+ *
+ * @param contentHash - 32-char hex hash of taplist content
+ * @param enrichmentHash - 32-char hex hash of enrichment data, or null if unavailable
+ * @returns Quoted ETag string
+ */
+export async function buildCombinedEtag(
+  contentHash: string,
+  enrichmentHash: string | null,
+): Promise<string> {
+  if (enrichmentHash === null) {
+    return `"${contentHash}"`;
+  }
+  const combined = await hashDescription(contentHash + enrichmentHash);
+  return `"${combined}"`;
+}

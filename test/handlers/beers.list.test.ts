@@ -40,6 +40,7 @@ vi.mock('../../src/queue', () => ({
 // Mock hash utility
 vi.mock('../../src/utils/hash', () => ({
   hashDescription: vi.fn().mockResolvedValue('mock-hash'),
+  buildCombinedEtag: vi.fn().mockResolvedValue('"mock-combined-etag"'),
 }));
 
 // Mock conditional request utility
@@ -60,11 +61,18 @@ vi.mock('../../src/db/cache', () => ({
   parseCachedBeers: vi.fn().mockReturnValue(null),
 }));
 
+// Mock enrichment hash utility
+vi.mock('../../src/utils/enrichment-hash', () => ({
+  computeEnrichmentHash: vi.fn().mockResolvedValue('mock-enrichment-hash'),
+}));
+
 import { insertPlaceholders, getEnrichmentForBeerIds } from '../../src/db';
 import { queueBeersForEnrichment, queueBeersForCleanup } from '../../src/queue';
 import { getCachedTaplist, parseCachedBeers, setCachedTaplist, updateCacheTimestamp } from '../../src/db/cache';
 import { checkConditionalRequest } from '../../src/utils/conditional';
 import { shouldUpdateContent } from '../../src/utils/cache-helpers';
+import { buildCombinedEtag } from '../../src/utils/hash';
+import { computeEnrichmentHash } from '../../src/utils/enrichment-hash';
 
 // ============================================================================
 // Test Helpers
@@ -1371,6 +1379,7 @@ describe('handleBeerList', () => {
         '13885',
         expect.arrayContaining([expect.objectContaining({ id: '1' })]),
         'mock-hash',
+        expect.anything(),
       );
     });
 
@@ -1419,7 +1428,7 @@ describe('handleBeerList', () => {
       const body = await result.response.json() as { beers: unknown[]; source: string };
       expect(body.beers).toHaveLength(0);
       expect(body.source).toBe('live');
-      expect(setCachedTaplist).toHaveBeenCalledWith(env.DB, '13885', [], 'mock-hash');
+      expect(setCachedTaplist).toHaveBeenCalledWith(env.DB, '13885', [], 'mock-hash', expect.anything());
     });
 
     it('triggers background enrichment on live fetch', async () => {
@@ -1545,6 +1554,7 @@ describe('handleBeerList', () => {
         '13885',
         expect.arrayContaining([expect.objectContaining({ id: 'new' })]),
         'mock-hash',
+        expect.anything(),
       );
     });
 
@@ -1874,13 +1884,15 @@ describe('refreshTaplistForStore', () => {
   });
 
   it('calls updateCacheTimestamp when content hash is unchanged', async () => {
-    vi.clearAllMocks();
     vi.mocked(shouldUpdateContent).mockReturnValue(false);
+    vi.mocked(setCachedTaplist).mockClear();
+    vi.mocked(updateCacheTimestamp).mockClear();
     vi.mocked(getCachedTaplist).mockResolvedValue({
       store_id: '13879',
       response_json: '[]',
       cached_at: Date.now() - 600_000,
       content_hash: 'existing-hash',
+      enrichment_hash: null,
     });
 
     const beers = [createBeer({ id: '1' })];
@@ -1900,8 +1912,8 @@ describe('refreshTaplistForStore', () => {
   });
 
   it('calls setCachedTaplist with hash when content changed', async () => {
-    vi.clearAllMocks();
     vi.mocked(shouldUpdateContent).mockReturnValue(true);
+    vi.mocked(setCachedTaplist).mockClear();
     vi.mocked(getCachedTaplist).mockResolvedValue(null);
 
     const beers = [createBeer({ id: '1' })];
@@ -1921,6 +1933,7 @@ describe('refreshTaplistForStore', () => {
       '13879',
       expect.arrayContaining([expect.objectContaining({ id: '1' })]),
       'mock-hash',
+      undefined,
     );
   });
 });
@@ -1938,16 +1951,17 @@ describe('handleBeerList — ETag support', () => {
       response_json: JSON.stringify(cachedBeers),
       cached_at: Date.now(),
       content_hash: 'abc123',
+      enrichment_hash: null,
     });
     vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
     vi.mocked(checkConditionalRequest).mockReturnValue(
-      new Response(null, { status: 304, headers: { ETag: '"abc123"', 'Cache-Control': 'private, max-age=300' } })
+      new Response(null, { status: 304, headers: { ETag: '"mock-combined-etag"', 'Cache-Control': 'private, max-age=300' } })
     );
 
     const env = createMockEnv();
     const { ctx } = createMockExecutionContext();
     const reqCtx = createMockReqCtx();
-    const request = createMockRequest({ 'If-None-Match': '"abc123"' });
+    const request = createMockRequest({ 'If-None-Match': '"mock-combined-etag"' });
 
     const result = await handleBeerList(request, env, ctx, mockHeaders, reqCtx, '13885');
 
@@ -1964,6 +1978,7 @@ describe('handleBeerList — ETag support', () => {
       response_json: JSON.stringify(cachedBeers),
       cached_at: Date.now(),
       content_hash: 'abc123',
+      enrichment_hash: null,
     });
     vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
     vi.mocked(checkConditionalRequest).mockReturnValue(null);
@@ -1975,7 +1990,7 @@ describe('handleBeerList — ETag support', () => {
     const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
     expect(result.response.status).toBe(200);
-    expect(result.response.headers.get('ETag')).toBe('"abc123"');
+    expect(result.response.headers.get('ETag')).toBe('"mock-combined-etag"');
     expect(result.cacheOutcome).toBe('hit');
   });
 
@@ -2008,10 +2023,11 @@ describe('handleBeerList — ETag support', () => {
       response_json: JSON.stringify([createCachedBeer()]),
       cached_at: Date.now(),
       content_hash: 'abc123',
+      enrichment_hash: null,
     });
     vi.mocked(parseCachedBeers).mockReturnValue([createCachedBeer()]);
     vi.mocked(checkConditionalRequest).mockReturnValue(
-      new Response(null, { status: 304, headers: { ETag: '"abc123"' } })
+      new Response(null, { status: 304, headers: { ETag: '"mock-combined-etag"' } })
     );
 
     const env = createMockEnv();
@@ -2044,7 +2060,7 @@ describe('handleBeerList — ETag support', () => {
     const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
     expect(result.response.status).toBe(200);
-    expect(result.response.headers.get('ETag')).toBe('"mock-hash"');
+    expect(result.response.headers.get('ETag')).toBe('"mock-combined-etag"');
     expect(result.response.headers.get('Cache-Control')).toBe('private, max-age=300');
   });
 
@@ -2055,6 +2071,7 @@ describe('handleBeerList — ETag support', () => {
       response_json: '[]',
       cached_at: Date.now() - 600_000, // stale cache
       content_hash: 'existing-hash',
+      enrichment_hash: null,
     });
     vi.mocked(shouldUpdateContent).mockReturnValue(false);
     vi.mocked(checkConditionalRequest).mockReturnValue(null);
@@ -2074,5 +2091,375 @@ describe('handleBeerList — ETag support', () => {
 
     expect(updateCacheTimestamp).toHaveBeenCalledWith(env.DB, '13885');
     expect(setCachedTaplist).not.toHaveBeenCalled();
+  });
+
+  // --------------------------------------------------------------------------
+  // Increment 3: enrichment hash in ETag (cache-hit path)
+  // --------------------------------------------------------------------------
+
+  it('ETag on cache-hit uses combined content + enrichment hash', async () => {
+    const cachedBeers = [createCachedBeer({ id: '1' })];
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13885',
+      response_json: JSON.stringify(cachedBeers),
+      cached_at: Date.now(),
+      content_hash: 'abc123',
+      enrichment_hash: 'enrich456',
+    });
+    vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+    vi.mocked(checkConditionalRequest).mockReturnValue(null);
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+    expect(buildCombinedEtag).toHaveBeenCalledWith('abc123', 'enrich456');
+    expect(result.response.headers.get('ETag')).toBe('"mock-combined-etag"');
+    expect(result.cacheOutcome).toBe('hit');
+  });
+
+  it('cache-hit returns 200 when client ETag matches old content-only hash but enrichment changed', async () => {
+    vi.mocked(buildCombinedEtag).mockResolvedValueOnce('"combined-new-etag"');
+
+    const cachedBeers = [createCachedBeer({ id: '1' })];
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13885',
+      response_json: JSON.stringify(cachedBeers),
+      cached_at: Date.now(),
+      content_hash: 'abc123',
+      enrichment_hash: 'enrich456',
+    });
+    vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+    vi.mocked(checkConditionalRequest).mockReturnValue(null);
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+    const request = createMockRequest({ 'If-None-Match': '"abc123"' });
+
+    const result = await handleBeerList(request, env, ctx, mockHeaders, reqCtx, '13885');
+
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get('ETag')).toBe('"combined-new-etag"');
+  });
+
+  it('cache-hit ETag falls back to content_hash alone when enrichment_hash is null', async () => {
+    const cachedBeers = [createCachedBeer({ id: '1' })];
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13885',
+      response_json: JSON.stringify(cachedBeers),
+      cached_at: Date.now(),
+      content_hash: 'abc123',
+      enrichment_hash: null,
+    });
+    vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+    vi.mocked(checkConditionalRequest).mockReturnValue(null);
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+    expect(buildCombinedEtag).toHaveBeenCalledWith('abc123', null);
+  });
+
+  it('ETag uses combined content + enrichment hash on live fetch', async () => {
+    vi.mocked(getCachedTaplist).mockResolvedValue(null);
+    vi.mocked(checkConditionalRequest).mockReturnValue(null);
+    vi.mocked(shouldUpdateContent).mockReturnValue(true);
+
+    const beers = [createBeer({ id: '1' })];
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+    });
+
+    const enrichmentMap = new Map([['1', { abv: 5.5, confidence: 0.9, source: 'ai', brew_description_cleaned: null }]]);
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValue(enrichmentMap);
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+    expect(buildCombinedEtag).toHaveBeenCalled();
+    expect(result.response.headers.get('ETag')).toBe('"mock-combined-etag"');
+  });
+
+  it('live fetch response includes updated enriched_abv when enrichment data is present', async () => {
+    vi.mocked(getCachedTaplist).mockResolvedValue(null);
+    vi.mocked(checkConditionalRequest).mockReturnValue(null);
+    vi.mocked(shouldUpdateContent).mockReturnValue(true);
+
+    const beers = [createBeer({ id: '42', brew_name: 'Enriched IPA' })];
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+    });
+
+    const enrichmentMap = new Map([['42', { abv: 7.2, confidence: 0.95, source: 'ai', brew_description_cleaned: null }]]);
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValue(enrichmentMap);
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+    const body = await result.response.json() as { beers: Array<{ id: string; enriched_abv: number | null }> };
+    const beer = body.beers.find(b => b.id === '42');
+    expect(beer?.enriched_abv).toBe(7.2);
+  });
+
+  it('persists enriched data to cache when enrichment changes', async () => {
+    vi.mocked(getCachedTaplist).mockResolvedValue(null);
+    vi.mocked(checkConditionalRequest).mockReturnValue(null);
+    vi.mocked(shouldUpdateContent).mockReturnValue(true);
+
+    const beers = [createBeer({ id: '42', brew_name: 'Enriched IPA' })];
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+    });
+
+    const enrichmentMap = new Map([['42', { abv: 7.2, confidence: 0.95, source: 'ai', brew_description_cleaned: null }]]);
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValue(enrichmentMap);
+
+    const env = createMockEnv();
+    const { ctx, waitUntilPromises } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+    await Promise.all(waitUntilPromises);
+
+    expect(setCachedTaplist).toHaveBeenCalledWith(
+      env.DB,
+      '13885',
+      expect.arrayContaining([expect.objectContaining({ id: '42', enriched_abv: 7.2 })]),
+      'mock-hash',
+      expect.anything(),
+    );
+  });
+
+  it('passes enrichment hash to setCachedTaplist on live fetch', async () => {
+    vi.mocked(getCachedTaplist).mockResolvedValue(null);
+    vi.mocked(checkConditionalRequest).mockReturnValue(null);
+    vi.mocked(shouldUpdateContent).mockReturnValue(true);
+    vi.mocked(computeEnrichmentHash).mockResolvedValue('computed-enrich-hash');
+
+    const beers = [createBeer({ id: '1' })];
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+    });
+
+    const enrichmentMap = new Map([['1', { abv: 5.0, confidence: 0.8, source: 'ai', brew_description_cleaned: null }]]);
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValue(enrichmentMap);
+
+    const env = createMockEnv();
+    const { ctx, waitUntilPromises } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+    await Promise.all(waitUntilPromises);
+
+    expect(setCachedTaplist).toHaveBeenCalledWith(
+      env.DB,
+      '13885',
+      expect.any(Array),
+      'mock-hash',
+      'computed-enrich-hash',
+    );
+  });
+
+  it('passes null enrichment hash to shouldUpdateContent when enrichment map is empty but beers exist', async () => {
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13885',
+      response_json: '[]',
+      cached_at: Date.now() - 600_000,
+      content_hash: 'old-hash',
+      enrichment_hash: 'old-enrich',
+    });
+    vi.mocked(checkConditionalRequest).mockReturnValue(null);
+
+    const beers = [createBeer({ id: '1' })];
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+    });
+
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValue(new Map());
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+    expect(shouldUpdateContent).toHaveBeenCalledWith(
+      'mock-hash',
+      'old-hash',
+      null,
+      'old-enrich',
+    );
+  });
+});
+
+// ============================================================================
+// Increment 3: enrichment hash for refreshTaplistForStore
+// ============================================================================
+
+describe('refreshTaplistForStore — enrichment hash', () => {
+  it('rewrites cache when enrichment data changes (shouldUpdateContent returns true)', async () => {
+    vi.mocked(shouldUpdateContent).mockReturnValue(true);
+    vi.mocked(setCachedTaplist).mockClear();
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13879',
+      response_json: '[]',
+      cached_at: Date.now() - 600_000,
+      content_hash: 'same-hash',
+      enrichment_hash: 'old-enrich',
+    });
+
+    const beers = [createBeer({ id: '99', brew_name: 'Enrich Changed Beer' })];
+    const enrichmentMap = new Map([['99', { abv: 6.0, confidence: 0.9, source: 'ai', brew_description_cleaned: null }]]);
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValue(enrichmentMap);
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      Response.json(createFlyingSaucerResponse(beers))
+    );
+
+    const env = createMockEnv();
+    const { ctx, waitUntilPromises } = createMockExecutionContext();
+
+    await refreshTaplistForStore(env, ctx, '13879', 'test-req');
+    await Promise.all(waitUntilPromises);
+
+    expect(setCachedTaplist).toHaveBeenCalledWith(
+      env.DB,
+      '13879',
+      expect.arrayContaining([expect.objectContaining({ id: '99', enriched_abv: 6.0 })]),
+      'mock-hash',
+      expect.anything(),
+    );
+  });
+
+  it('passes enrichment hash as 5th arg to setCachedTaplist', async () => {
+    vi.mocked(shouldUpdateContent).mockReturnValue(true);
+    vi.mocked(setCachedTaplist).mockClear();
+    vi.mocked(computeEnrichmentHash).mockResolvedValue('refresh-enrich-hash');
+    vi.mocked(getCachedTaplist).mockResolvedValue(null);
+
+    const beers = [createBeer({ id: '1' })];
+    const enrichmentMap = new Map([['1', { abv: 5.0, confidence: 0.8, source: 'ai', brew_description_cleaned: null }]]);
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValue(enrichmentMap);
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      Response.json(createFlyingSaucerResponse(beers))
+    );
+
+    const env = createMockEnv();
+    const { ctx, waitUntilPromises } = createMockExecutionContext();
+
+    await refreshTaplistForStore(env, ctx, '13879', 'test-req');
+    await Promise.all(waitUntilPromises);
+
+    expect(setCachedTaplist).toHaveBeenCalledWith(
+      env.DB,
+      '13879',
+      expect.any(Array),
+      'mock-hash',
+      'refresh-enrich-hash',
+    );
+  });
+
+  it('passes null as newEnrichmentHash to shouldUpdateContent when enrichment map is empty but beers exist', async () => {
+    vi.mocked(shouldUpdateContent).mockReturnValue(true);
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13879',
+      response_json: '[]',
+      cached_at: Date.now() - 600_000,
+      content_hash: 'old-hash',
+      enrichment_hash: 'old-enrich',
+    });
+
+    const beers = [createBeer({ id: '1' })];
+    vi.mocked(getEnrichmentForBeerIds).mockResolvedValue(new Map());
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      Response.json(createFlyingSaucerResponse(beers))
+    );
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+
+    await refreshTaplistForStore(env, ctx, '13879', 'test-req');
+
+    expect(shouldUpdateContent).toHaveBeenCalledWith(
+      'mock-hash',
+      'old-hash',
+      null,
+      'old-enrich',
+    );
+  });
+});
+
+// ============================================================================
+// Increment 3: enrichment hash for stale fallback path
+// ============================================================================
+
+describe('handleBeerList — stale fallback ETag with enrichment hash', () => {
+  it('stale fallback ETag uses combined hash when enrichment_hash is present', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+    });
+
+    const cachedBeers = [createCachedBeer({ id: '1' })];
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13885',
+      response_json: JSON.stringify(cachedBeers),
+      cached_at: Date.now() - 600_000,
+      content_hash: 'stale-content-hash',
+      enrichment_hash: 'stale-enrich-hash',
+    });
+    vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+    expect(buildCombinedEtag).toHaveBeenCalledWith('stale-content-hash', 'stale-enrich-hash');
+    expect(result.response.headers.get('ETag')).toBe('"mock-combined-etag"');
+    expect(result.cacheOutcome).toBe('stale');
+  });
+
+  it('stale fallback ETag falls back to content_hash alone when enrichment_hash is null', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+    });
+
+    const cachedBeers = [createCachedBeer({ id: '1' })];
+    vi.mocked(getCachedTaplist).mockResolvedValue({
+      store_id: '13885',
+      response_json: JSON.stringify(cachedBeers),
+      cached_at: Date.now() - 600_000,
+      content_hash: 'stale-content-hash',
+      enrichment_hash: null,
+    });
+    vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+
+    const env = createMockEnv();
+    const { ctx } = createMockExecutionContext();
+    const reqCtx = createMockReqCtx();
+
+    const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+    expect(buildCombinedEtag).toHaveBeenCalledWith('stale-content-hash', null);
+    expect(result.response.headers.get('ETag')).toBe('"mock-combined-etag"');
   });
 });

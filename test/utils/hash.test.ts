@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { hashDescription, generateETag } from '../../src/utils/hash';
+import { hashDescription, generateETag, buildCombinedEtag } from '../../src/utils/hash';
 
 describe('hashDescription', () => {
   it('returns a string of exactly 32 characters', async () => {
@@ -86,5 +86,36 @@ describe('generateETag', () => {
     const hash = await hashDescription('consistent');
     const etag = await generateETag('consistent');
     expect(etag).toBe(`"${hash}"`);
+  });
+});
+
+describe('buildCombinedEtag', () => {
+  it('returns content hash alone (quoted) when enrichment hash is null', async () => {
+    const result = await buildCombinedEtag('abc123', null);
+    expect(result).toBe('"abc123"');
+  });
+
+  it('returns combined hash (quoted) when both hashes are present', async () => {
+    const result = await buildCombinedEtag('abc123', 'def456');
+    expect(result).toMatch(/^"[0-9a-f]{32}"$/);
+  });
+
+  it('combined hash differs from content hash alone', async () => {
+    const contentOnly = await buildCombinedEtag('abc123', null);
+    const combined = await buildCombinedEtag('abc123', 'def456');
+    expect(combined).not.toBe(contentOnly);
+  });
+
+  it('output is valid ETag format (matches "..." pattern)', async () => {
+    const result = await buildCombinedEtag('somehash', 'enrichhash');
+    expect(result.startsWith('"')).toBe(true);
+    expect(result.endsWith('"')).toBe(true);
+    expect(result.length).toBeGreaterThan(2);
+  });
+
+  it('is deterministic for same inputs', async () => {
+    const first = await buildCombinedEtag('abc123', 'def456');
+    const second = await buildCombinedEtag('abc123', 'def456');
+    expect(first).toBe(second);
   });
 });

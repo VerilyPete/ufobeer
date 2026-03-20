@@ -48,6 +48,7 @@ function createMapBackedDb() {
               response_json: args[1],
               cached_at: args[2],
               content_hash: args[3] ?? null,
+              enrichment_hash: args[4] ?? null,
             });
           } else if (sql.startsWith('UPDATE')) {
             const existing = storage.get(args[1] as string);
@@ -275,6 +276,80 @@ describe('CachedBeersArraySchema — is_description_cleaned', () => {
     if (result.success) {
       expect(result.data[0].is_description_cleaned).toBe(false);
     }
+  });
+});
+
+// ============================================================================
+// getCachedTaplist — enrichment_hash
+// ============================================================================
+
+describe('getCachedTaplist — enrichment_hash', () => {
+  it('returns enrichment_hash when present', async () => {
+    const cachedAt = Date.now();
+    const db = createMockDb([{
+      store_id: '13879',
+      response_json: JSON.stringify([createEnrichedBeer()]),
+      cached_at: cachedAt,
+      content_hash: 'somehash',
+      enrichment_hash: 'enrich123',
+    }]);
+
+    const result = await getCachedTaplist(db, '13879');
+
+    expect(result!.enrichment_hash).toBe('enrich123');
+  });
+
+  it('returns null enrichment_hash for pre-migration rows', async () => {
+    const cachedAt = Date.now();
+    const db = createMockDb([{
+      store_id: '13879',
+      response_json: JSON.stringify([createEnrichedBeer()]),
+      cached_at: cachedAt,
+      content_hash: 'somehash',
+      enrichment_hash: null,
+    }]);
+
+    const result = await getCachedTaplist(db, '13879');
+
+    expect(result!.enrichment_hash).toBeNull();
+  });
+});
+
+// ============================================================================
+// setCachedTaplist — enrichment_hash
+// ============================================================================
+
+describe('setCachedTaplist — enrichment_hash', () => {
+  it('writes and persists enrichment_hash', async () => {
+    const db = createMapBackedDb();
+    const beers = [createEnrichedBeer()];
+
+    await setCachedTaplist(db, '13879', beers, 'abc123hash', 'enrich456');
+    const result = await getCachedTaplist(db, '13879');
+
+    expect(result!.enrichment_hash).toBe('enrich456');
+  });
+});
+
+// ============================================================================
+// updateCacheTimestamp — enrichment_hash preservation
+// ============================================================================
+
+describe('updateCacheTimestamp — enrichment_hash preservation', () => {
+  it('preserves enrichment_hash alongside content_hash and response_json', async () => {
+    const db = createMapBackedDb();
+    const beers = [createEnrichedBeer()];
+
+    await setCachedTaplist(db, '13879', beers, 'originalhash', 'enrichhash');
+    const before = await getCachedTaplist(db, '13879');
+
+    await updateCacheTimestamp(db, '13879');
+    const after = await getCachedTaplist(db, '13879');
+
+    expect(after!.enrichment_hash).toBe('enrichhash');
+    expect(after!.content_hash).toBe('originalhash');
+    expect(after!.response_json).toBe(before!.response_json);
+    expect(after!.cached_at).toBeGreaterThanOrEqual(before!.cached_at);
   });
 });
 

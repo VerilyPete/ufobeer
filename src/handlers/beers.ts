@@ -21,9 +21,10 @@ import { queueBeersForEnrichment, queueBeersForCleanup } from '../queue';
 import { getCachedTaplist, setCachedTaplist, updateCacheTimestamp, parseCachedBeers } from '../db/cache';
 import type { CachedTaplistRow } from '../db/cache';
 import type { CachedBeer } from '../schemas/cache';
-import { hashDescription } from '../utils/hash';
+import { hashDescription, buildCombinedEtag } from '../utils/hash';
 import { checkConditionalRequest } from '../utils/conditional';
 import { shouldUpdateContent } from '../utils/cache-helpers';
+import { computeEnrichmentHash } from '../utils/enrichment-hash';
 import { isValidStoreId } from '../validation/storeId';
 import { logError, logWithContext } from '../utils/log';
 import { CACHE_TTL_MS } from '../constants';
@@ -86,7 +87,7 @@ async function resolveStaleRow(
   }
 }
 
-function serveStaleFallback(
+async function serveStaleFallback(
   request: Request | null,
   fallbackRow: CachedTaplistRow,
   staleBeers: readonly CachedBeer[],
@@ -94,10 +95,10 @@ function serveStaleFallback(
   reqCtx: RequestContext,
   headers: Record<string, string>,
   upstreamLatencyMs: number,
-): GetBeersResult {
+): Promise<GetBeersResult> {
   const responseHeaders = { ...headers };
   if (fallbackRow.content_hash) {
-    const etag = `"${fallbackRow.content_hash}"`;
+    const etag = await buildCombinedEtag(fallbackRow.content_hash, fallbackRow.enrichment_hash);
     responseHeaders['ETag'] = etag;
     responseHeaders['Cache-Control'] = 'private, max-age=300';
 
@@ -196,6 +197,10 @@ export async function refreshTaplistForStore(
       };
     });
 
+    const enrichmentHash = enrichmentMap.size === 0 && beerIds.length > 0
+      ? null
+      : await computeEnrichmentHash(enrichmentMap);
+
     let cachedRow: CachedTaplistRow | null = null;
     try {
       cachedRow = await getCachedTaplist(env.DB, storeId);
@@ -203,11 +208,11 @@ export async function refreshTaplistForStore(
       // If we can't read cached row, treat as content changed
     }
 
-    const contentChanged = shouldUpdateContent(rawHash, cachedRow?.content_hash ?? null);
+    const contentChanged = shouldUpdateContent(rawHash, cachedRow?.content_hash ?? null, enrichmentHash, cachedRow?.enrichment_hash ?? null);
 
     if (contentChanged) {
       ctx.waitUntil(
-        setCachedTaplist(env.DB, storeId, enrichedBeers, rawHash).catch((err) => {
+        setCachedTaplist(env.DB, storeId, enrichedBeers, rawHash, enrichmentHash ?? undefined).catch((err) => {
           logError('cache.write.failed', err, { requestId, storeId });
         })
       );
@@ -288,9 +293,10 @@ export async function handleBeerList(
     }
     if (cachedRow && Date.now() - cachedRow.cached_at < CACHE_TTL_MS) {
       // Check conditional request if we have a content hash
+      let cachedEtag: string | null = null;
       if (cachedRow.content_hash) {
-        const etag = `"${cachedRow.content_hash}"`;
-        const conditionalResponse = checkConditionalRequest(request, etag);
+        cachedEtag = await buildCombinedEtag(cachedRow.content_hash, cachedRow.enrichment_hash);
+        const conditionalResponse = checkConditionalRequest(request, cachedEtag);
         if (conditionalResponse) {
           for (const [key, value] of Object.entries(headers)) {
             conditionalResponse.headers.set(key, value);
@@ -307,8 +313,8 @@ export async function handleBeerList(
       const cachedBeers = parseCachedBeers(cachedRow.response_json);
       if (cachedBeers) {
         const responseHeaders = { ...headers };
-        if (cachedRow.content_hash) {
-          responseHeaders['ETag'] = `"${cachedRow.content_hash}"`;
+        if (cachedEtag) {
+          responseHeaders['ETag'] = cachedEtag;
           responseHeaders['Cache-Control'] = 'private, max-age=300';
         }
         return {
@@ -347,7 +353,7 @@ export async function handleBeerList(
       const fallbackRow = await resolveStaleRow(env.DB, cachedRow, cacheReadSucceeded, storeId);
       if (fallbackRow) {
         const staleBeers = parseCachedBeers(fallbackRow.response_json);
-        if (staleBeers) return serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, upstreamLatencyMs);
+        if (staleBeers) return await serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, upstreamLatencyMs);
       }
 
       return {
@@ -405,12 +411,16 @@ export async function handleBeerList(
       storeId,
     });
 
+    const enrichmentHash = enrichmentMap.size === 0 && beerIds.length > 0
+      ? null
+      : await computeEnrichmentHash(enrichmentMap);
+
     // 5. Write cache — compare hash to decide full write vs timestamp-only
-    const contentChanged = shouldUpdateContent(rawHash, cachedRow?.content_hash ?? null);
+    const contentChanged = shouldUpdateContent(rawHash, cachedRow?.content_hash ?? null, enrichmentHash, cachedRow?.enrichment_hash ?? null);
 
     if (contentChanged) {
       ctx.waitUntil(
-        setCachedTaplist(env.DB, storeId, enrichedBeers, rawHash).catch((err) => {
+        setCachedTaplist(env.DB, storeId, enrichedBeers, rawHash, enrichmentHash ?? undefined).catch((err) => {
           logError('cache.write.failed', err, { requestId: reqCtx.requestId, storeId });
         })
       );
@@ -434,7 +444,7 @@ export async function handleBeerList(
     );
 
     // 7. Check conditional request against raw hash
-    const etag = `"${rawHash}"`;
+    const etag = await buildCombinedEtag(rawHash, enrichmentHash);
     const conditionalResponse = checkConditionalRequest(request, etag);
     if (conditionalResponse) {
       for (const [key, value] of Object.entries(headers)) {
@@ -468,7 +478,7 @@ export async function handleBeerList(
     const fallbackRow = await resolveStaleRow(env.DB, cachedRow, cacheReadSucceeded, storeId);
     if (fallbackRow) {
       const staleBeers = parseCachedBeers(fallbackRow.response_json);
-      if (staleBeers) return serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, Date.now() - upstreamStartTime);
+      if (staleBeers) return await serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, Date.now() - upstreamStartTime);
     }
 
     return {
