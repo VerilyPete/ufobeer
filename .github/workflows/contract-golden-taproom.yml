@@ -1,0 +1,60 @@
+name: Contract — Golden Taproom
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: golden-taproom-contract-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  golden-taproom-contract:
+    name: Golden Taproom Contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout API
+        uses: actions/checkout@v4
+        with:
+          path: ufobeer
+          persist-credentials: false
+
+      - name: Checkout mobile app
+        uses: actions/checkout@v4
+        with:
+          repository: VerilyPete/BeerSelector
+          ref: main
+          path: BeerSelector
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.1'
+          cache: npm
+          cache-dependency-path: |
+            BeerSelector/package-lock.json
+            ufobeer/package-lock.json
+
+      - name: Install mobile app dependencies
+        run: npm ci --prefix BeerSelector
+
+      - name: Install API dependencies
+        run: npm ci --prefix ufobeer
+
+      - name: Type check API
+        run: npm run typecheck --prefix ufobeer
+
+      - name: Type check API tests
+        run: npm run typecheck:test --prefix ufobeer
+
+      - name: Type check contract
+        run: npm run typecheck:contract --prefix ufobeer
+
+      - name: Run contract tests
+        run: npm run test:contract --prefix ufobeer

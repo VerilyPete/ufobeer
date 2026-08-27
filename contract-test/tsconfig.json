@@ -1,0 +1,18 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/vitest-pool-workers"],
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noUncheckedIndexedAccess": true,
+    // This special cross-repository compilation includes the mobile adapter,
+    // whose compiler semantics intentionally leave this option disabled.
+    // Ordinary API type-checking remains strict through the root config.
+    "exactOptionalPropertyTypes": false,
+    "paths": {
+      "@/*": ["../../BeerSelector/*"]
+    }
+  },
+  "include": ["./**/*.ts", "../worker-configuration.d.ts", "../../BeerSelector/src/contracts/enrichment.ts", "../../BeerSelector/src/contracts/enrichmentAdapter.ts", "../../BeerSelector/src/types/beer.ts"],
+  "exclude": []
+}
