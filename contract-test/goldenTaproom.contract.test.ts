@@ -86,13 +86,16 @@ async function seedGoldenEnrichment(): Promise<void> {
     `INSERT INTO enriched_beers
       (id, brew_name, brewer, abv, confidence, enrichment_source,
        brew_description_original, brew_description_cleaned)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?),
+            (?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       'golden-complete', 'Contract IPA', 'Schema Brewing', 6.5, 0.95, 'manual',
       'Original description', 'Cleaned contract description',
       'golden-nullable', 'Null Island Lager', 'Schema Brewing', null, null, null,
       null, null,
+      'golden-fallback', 'Fallback Pale Ale', 'Schema Brewing', 5.5, 0.8,
+      'description-fallback', 'Description-derived ABV', null,
     )
     .run();
 }
@@ -339,6 +342,7 @@ describe('Golden Taproom contract fixture', () => {
 
     const response = await invokeGoldenRequest(goldenBatchRequest([
       'golden-complete',
+      'golden-fallback',
       'golden-missing',
     ]));
     expect(response.status).toBe(200);
@@ -355,12 +359,20 @@ describe('Golden Taproom contract fixture', () => {
       brew_description: 'Cleaned contract description',
       has_cleaned_description: true,
     });
+    const fallback = parsed.data.enrichments['golden-fallback'];
+    expect(fallback).toMatchObject({
+      enriched_abv: 5.5,
+      enrichment_confidence: 0.8,
+      enrichment_source: 'description',
+    });
     expect(parsed.data.missing).toEqual(['golden-missing']);
 
     const bodyRecord = requireRecord(body, 'batch response');
     const enrichments = requireRecord(bodyRecord['enrichments'], 'batch enrichments');
     const completeBody = enrichments['golden-complete'];
     expect(completeBody).toMatchObject({ is_verified: false });
+    const fallbackBody = enrichments['golden-fallback'];
+    expect(fallbackBody).toMatchObject({ enrichment_source: 'description-fallback' });
   });
 
   it('syncs a mobile-valid request and returns the mobile response shape', async () => {
