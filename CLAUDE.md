@@ -221,6 +221,51 @@ test/
 ### Load Testing
 Artillery configs in `test/load/` for batch, sync, and mixed workloads.
 
+### Golden Taproom Contracts
+
+The API owns the public response shape and the producer-side harness in
+`contract-test/`. The harness invokes `src/index.ts` against isolated D1 and
+checks successful `/beers`, `/beers/batch`, `/beers/sync`, and `/health`
+responses (including `/beers` 304) with the mobile consumer contracts. The
+mobile repository owns those consumer contracts; keep the API harness focused
+on the wire boundary.
+
+Adding unknown or optional response fields is normally compatible. Removing a
+required field, changing a type, adding an unsupported enum value, or changing
+nullability requires coordinated mobile work and a contract update. Keep
+`contract-test/migrations/0001_golden_schema.sql` as a test fixture only; it is
+not a production migration. Beside `contract-test/fixtures.ts`, keep fixtures
+minimal: add the smallest record that exposes a new wire-level distinction,
+not a full production taplist or many equivalent beers.
+
+For local cross-repository runs, check out the siblings in this exact layout:
+
+```text
+<parent>/
+├── BeerSelector/
+└── ufobeer/
+```
+
+From `ufobeer` with `BeerSelector` at the sibling path, run:
+
+```bash
+npm run typecheck:contract
+npm run test:contract
+```
+
+To install both checkouts and run the same gate from the parent directory:
+
+```bash
+npm ci --prefix BeerSelector
+npm ci --prefix ufobeer
+npm run typecheck:contract --prefix ufobeer
+npm run test:contract --prefix ufobeer
+```
+
+For rollout, land the API harness/scripts on `ufobeer` `main` and the mobile
+consumer contracts on `BeerSelector` `main` before expecting the opposite
+repository's `Golden Taproom Contract` workflow to pass.
+
 ## Common Tasks
 
 ### Add a new endpoint
