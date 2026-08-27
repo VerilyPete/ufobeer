@@ -10,12 +10,9 @@ export default defineWorkersConfig({
 	test: {
 		testTimeout: 30000,
 		clearMocks: true,
-		include: isGoldenContract
-			? ['contract-test/**/*.contract.test.ts']
-			: undefined,
-		exclude: isGoldenContract
-			? undefined
-			: [...configDefaults.exclude, 'contract-test/**'],
+		...(isGoldenContract
+			? { include: ['contract-test/**/*.contract.test.ts'] }
+			: { exclude: [...configDefaults.exclude, 'contract-test/**'] }),
 		poolOptions: {
 			workers: {
 				wrangler: { configPath: './wrangler.jsonc' },
