@@ -19,13 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout API
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: ufobeer
           persist-credentials: false
 
       - name: Checkout mobile app
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: VerilyPete/BeerSelector
           ref: main
