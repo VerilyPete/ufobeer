@@ -37,6 +37,12 @@ key); these edge rules are the backstop and cover anything the worker misses.
       use 10 s windows — no per-minute shaping at the edge. That's fine: the
       in-worker pre-auth limiter (`PRE_AUTH_RPM`, 30/min/IP) is the real
       shaper; this rule just flattens floods before they reach D1.
+      Gotcha (hit 2026-08-28): any other field in the expression — even
+      `http.host` — fails with "The available fields do not support rate
+      limiting based on request count". The expression must be path-only;
+      hostname scoping is only possible in Custom rules. If the bare path
+      expression is still rejected, skip this rule — the in-worker limiter
+      is the primary control.
 - [ ] **Custom WAF rule** (free includes 5; this uses 1): reject `/beers*`
       requests lacking `X-API-Key` at the edge, keeping junk off the worker.
       Custom rules (unlike free rate-limiting rules) can use the hostname
