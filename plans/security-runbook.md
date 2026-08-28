@@ -186,6 +186,10 @@ wrangler secret put PERPLEXITY_API_KEY  # external Perplexity key — rotate in 
       clone. The exposed beerknurd session token should be treated as
       compromised — change the Flying Saucer account password if not
       already done.
-- [ ] `auth_cookies` are stored in plaintext SQLite and rendered on the
-      Settings screen (`app/settings.tsx`) — move to SecureStore / redact display.
+- [x] `auth_cookies` no longer stored in plaintext SQLite (2026-08-28):
+      captured login cookies now go to SecureStore
+      (`sessionManager.saveAuthCookies`), a startup migration moves legacy
+      preference rows to SecureStore on next Settings visit
+      (`src/services/authCookieMigration.ts`), and the Settings screen masks
+      values for sensitive-looking preference keys.
 - [ ] No certificate pinning; all traffic relies on standard TLS.
