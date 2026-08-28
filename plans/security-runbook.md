@@ -117,8 +117,9 @@ wrangler secret put ADMIN_SECRET        # admin (X-Admin-Secret)
 wrangler secret put PERPLEXITY_API_KEY  # external Perplexity key — rotate in the Perplexity dashboard too
 ```
 
-- [ ] Verify current `API_KEY` / `ADMIN_SECRET` entropy; rotate immediately if
-      either is human-chosen or short.
+- [x] Verify current `API_KEY` / `ADMIN_SECRET` entropy; rotate immediately if
+      either is human-chosen or short. **Rotated 2026-08-28** (both regenerated
+      with `openssl rand -base64 32` and installed via `wrangler secret put`).
 - [ ] After rotating, confirm: valid key works, old key returns 401, admin
       routes still authorize, audit log shows new `api_key_hash` prefix.
 - [ ] Cadence: annually, or immediately after any machine with `wrangler`
