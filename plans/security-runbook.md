@@ -43,13 +43,13 @@ key); these edge rules are the backstop and cover anything the worker misses.
       hostname scoping is only possible in Custom rules. If the bare path
       expression is still rejected, skip this rule — the in-worker limiter
       is the primary control.
-- [ ] **Custom WAF rule** (free includes 5; this uses 1): reject `/beers*`
+- [x] **Custom WAF rule** (free includes 5; this uses 1): reject `/beers*`
       requests lacking `X-API-Key` at the edge, keeping junk off the worker.
       Custom rules (unlike free rate-limiting rules) can use the hostname
       field, so scope it to the API subdomain:
-      `(http.host eq "api.ufobeer.app" and starts_with(http.request.uri.path, "/beers") and not http.request.headers["x-api-key"])` → Block.
-      Remove this rule once `workers_dev` is disabled and the hostname is
-      guaranteed to only serve the worker (it's harmless to keep regardless).
+      `(http.host eq "api.ufobeer.app" and starts_with(http.request.uri.path, "/beers") and not any(http.request.headers["x-api-key"][*] != ""))` → Block.
+      **Deployed & verified 2026-08-28** — keyless `/beers` → 403 at edge;
+      with key → worker's JSON 401.
 - [ ] **Bot Fight Mode — deliberately left OFF.** On the free tier it is
       zone-wide with no path exclusions, and it challenges "definitely
       automated" traffic — i.e., every API client (the app, curl, monitors).
@@ -133,9 +133,12 @@ wrangler secret put PERPLEXITY_API_KEY  # external Perplexity key — rotate in 
 
 - [ ] Create the R2 bucket `ufobeer-backups` and set a **90-day object
       lifecycle rule** (Dashboard → R2 → bucket → Settings).
-- [ ] Add the `CLOUDFLARE_BACKUP_API_TOKEN` GitHub secret (§3), then run
+- [x] Add the `CLOUDFLARE_BACKUP_API_TOKEN` GitHub secret (§3), then run
       `backup.yml` once via **Run workflow** and confirm an object lands in
-      the bucket.
+      the bucket. **Done & verified 2026-08-28** — export + R2 upload green.
+      (First attempt failed on a paste-corrupted token: a Cyrillic homoglyph
+      in the secret caused a ByteString header error. Copy tokens only via
+      the dashboard Copy button and check `pbpaste` for non-ASCII.)
 - [ ] Restore drill (quarterly, ~10 min): download an export, load it into a
       scratch local DB (`wrangler d1 execute beer-db --local --file=...`
       against a temp database) and sanity-check row counts. Time Travel
