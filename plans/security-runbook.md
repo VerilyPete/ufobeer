@@ -25,9 +25,8 @@ key); these edge rules are the backstop and cover anything the worker misses.
       **Done & verified live 2026-08-28** — `/health` returns 200 with the
       contract payload.
 - [x] **Disable the workers.dev URL**: `"workers_dev": false` is set in
-      `wrangler.jsonc`. Takes effect on the **next deploy** — after that
-      deploy, verify the preview URL no longer answers
-      (`https://ufobeer.<subdomain>.workers.dev/health` → 404/DNS error).
+      `wrangler.jsonc`. **Deployed & verified 2026-08-28** —
+      `ufobeer.pete-147.workers.dev/health` returns 404; custom domain serves.
 - [ ] **WAF rate-limit rule** (free plan includes exactly 1) — spend it on
       `/health`, the only unauthenticated route:
       - Expression: `http.request.uri.path eq "/health"`
