@@ -71,11 +71,14 @@ function buildSequencedDb(configs: readonly DbCallConfig[]) {
   };
 }
 
-// Schedule check configs: first query returns null (first run = due),
-// second query is the INSERT to advance the schedule.
+// Schedule gate configs, one per prepared statement in checkAndAdvanceCronSchedule:
+// 1. fast-path SELECT (null = no row = immediately due),
+// 2. INSERT OR IGNORE epoch seed (only .run() touched),
+// 3. atomic claim UPDATE...RETURNING (must return a row for the claim to succeed).
 const SCHEDULE_DUE_CONFIGS: readonly DbCallConfig[] = [
   { firstResult: null },
   {},
+  { firstResult: { value: 'claimed' } },
 ];
 
 function createScheduledEnv(overrides?: Partial<Env>): Env {

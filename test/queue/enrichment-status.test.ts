@@ -52,7 +52,8 @@ type PrepareCall = {
 
 function createTrackingDb(options: {
   readonly enrichmentStatus?: string | null;
-  readonly reservationResult?: { request_count: number; reserved: number } | null;
+  readonly reservationResult?: { new_count: number } | null;
+  readonly preCount?: number;
   readonly monthlyTotal?: number;
 }) {
   const prepareCalls: PrepareCall[] = [];
@@ -76,8 +77,11 @@ function createTrackingDb(options: {
                 if (sql.includes('enrichment_limits') && sql.includes('SUM')) {
                   return Promise.resolve({ total: options.monthlyTotal ?? 0 });
                 }
-                if (sql.includes('enrichment_limits') && sql.includes('RETURNING')) {
-                  return Promise.resolve(options.reservationResult ?? { request_count: 1, reserved: 1 });
+                if (sql.includes('UPDATE enrichment_limits') && sql.includes('RETURNING')) {
+                  return Promise.resolve(options.reservationResult ?? { new_count: 1 });
+                }
+                if (sql.includes('SELECT request_count') && sql.includes('enrichment_limits')) {
+                  return Promise.resolve({ request_count: options.preCount ?? 0 });
                 }
                 return Promise.resolve(null);
               }),
@@ -147,7 +151,8 @@ describe('handleEnrichmentBatch — enrichment_status', () => {
     vi.mocked(fetchAbvFromPerplexity).mockResolvedValueOnce(6.5);
     const { db, prepareCalls } = createTrackingDb({
       enrichmentStatus: 'pending',
-      reservationResult: { request_count: 1, reserved: 1 },
+      preCount: 0,
+      reservationResult: { new_count: 1 },
     });
     const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery' });
     const batch = createBatch([msg]);
@@ -166,7 +171,8 @@ describe('handleEnrichmentBatch — enrichment_status', () => {
     vi.mocked(fetchAbvFromPerplexity).mockResolvedValueOnce(null);
     const { db, prepareCalls } = createTrackingDb({
       enrichmentStatus: 'pending',
-      reservationResult: { request_count: 1, reserved: 1 },
+      preCount: 0,
+      reservationResult: { new_count: 1 },
     });
     const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery' });
     const batch = createBatch([msg]);
@@ -177,6 +183,43 @@ describe('handleEnrichmentBatch — enrichment_status', () => {
       c => c.sql.includes("enrichment_status = 'not_found'")
     );
     expect(updateCall).toBeDefined();
+    expect(msg.ack).toHaveBeenCalled();
+  });
+
+  it('acks without an API call when the daily limit is reached (counter parked at limit)', async () => {
+    // Pre-count = limit and post-count unchanged → reserved=false.
+    // Regression guard for the original bug where a RETURNING-side
+    // `<= limit` check kept approving reservations at exactly the limit.
+    const { db } = createTrackingDb({
+      enrichmentStatus: 'pending',
+      preCount: 500,
+      reservationResult: { new_count: 500 },
+    });
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery' });
+    const batch = createBatch([msg]);
+
+    await handleEnrichmentBatch(batch, createEnv(db));
+
+    expect(msg.ack).toHaveBeenCalled();
+    expect(fetchAbvFromPerplexity).not.toHaveBeenCalled();
+  });
+
+  it('reserves the limit-th slot when the counter is at limit - 1', async () => {
+    // Pre=499 → post=500: this is the 500th, in-budget call and must proceed.
+    // Regression guard for the over-correction where a `< limit` check
+    // rejected exactly this case.
+    vi.mocked(fetchAbvFromPerplexity).mockResolvedValueOnce(5.5);
+    const { db } = createTrackingDb({
+      enrichmentStatus: 'pending',
+      preCount: 499,
+      reservationResult: { new_count: 500 },
+    });
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery' });
+    const batch = createBatch([msg]);
+
+    await handleEnrichmentBatch(batch, createEnv(db));
+
+    expect(fetchAbvFromPerplexity).toHaveBeenCalled();
     expect(msg.ack).toHaveBeenCalled();
   });
 });

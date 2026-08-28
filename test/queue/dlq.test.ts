@@ -70,7 +70,7 @@ const getMockEnv = (dbOverrides?: Record<string, unknown>): Env => ({
 // ============================================================================
 
 describe('storeDlqMessage', () => {
-  it('stores a failed message in the dead letter queue', async () => {
+  it('stores a failed message in the dead letter queue and parks the beer as failed', async () => {
     const db = getMockDb();
     const message = getMockMessage();
 
@@ -80,9 +80,29 @@ describe('storeDlqMessage', () => {
       'beer-enrichment-dlq'
     );
 
-    expect(db.prepare).toHaveBeenCalledOnce();
-    expect(db.prepare().bind).toHaveBeenCalledOnce();
-    expect(db.prepare().bind().run).toHaveBeenCalledOnce();
+    expect(db.prepare).toHaveBeenCalledTimes(2);
+    const upsertSql = db.prepare.mock.calls[0]?.[0] as string;
+    const parkSql = db.prepare.mock.calls[1]?.[0] as string;
+    expect(upsertSql).toContain('INSERT INTO dlq_messages');
+    expect(parkSql).toContain('UPDATE enriched_beers');
+    expect(parkSql).toContain("enrichment_status = 'failed'");
+    // Guard: redelivery must not clobber a replayed-and-enriched beer
+    expect(parkSql).toContain('abv IS NULL');
+  });
+
+  it('binds the beer ID to the failed-status parking statement', async () => {
+    const db = getMockDb();
+    const message = getMockMessage({ body: { beerId: 'beer-park' } });
+
+    await storeDlqMessage(
+      db as unknown as D1Database,
+      message as unknown as Message<EnrichmentMessage>,
+      'beer-enrichment-dlq'
+    );
+
+    // Second bind call belongs to the parking UPDATE
+    const parkArgs = db.prepare().bind.mock.calls[1] as unknown[];
+    expect(parkArgs).toContain('beer-park');
   });
 
   it('persists the message ID', async () => {
@@ -357,14 +377,18 @@ describe('handleDlqBatch', () => {
     const msg3 = getMockMessage({ id: 'msg-3' });
     const batch = getMockBatch([msg1, msg2, msg3]);
 
-    let callCount = 0;
+    let insertCount = 0;
     const db = {
-      prepare: vi.fn().mockImplementation(() => ({
+      prepare: vi.fn().mockImplementation((sql: string) => ({
         bind: vi.fn().mockImplementation(() => ({
           run: vi.fn().mockImplementation(() => {
-            callCount++;
-            if (callCount === 2) {
-              return Promise.reject(new Error('Second message fails'));
+            // Each message now performs two writes (DLQ upsert + failed-status
+            // parking); fail on the second message's UPSERT specifically
+            if (sql.includes('INSERT INTO dlq_messages')) {
+              insertCount++;
+              if (insertCount === 2) {
+                return Promise.reject(new Error('Second message fails'));
+              }
             }
             return Promise.resolve({});
           }),
@@ -427,6 +451,22 @@ describe('handleCleanupDlqBatch', () => {
     );
 
     expect(msg.ack).toHaveBeenCalledOnce();
+  });
+
+  it('does NOT park beers as failed (cleanup failures are not enrichment failures)', async () => {
+    const msg = getMockCleanupMessage();
+    const batch = getMockBatch([msg], 'description-cleanup-dlq');
+    const db = getMockDb();
+    const env = { ...getMockEnv(), DB: db as unknown as D1Database } as Env;
+
+    await handleCleanupDlqBatch(
+      batch as unknown as MessageBatch<CleanupMessage>,
+      env,
+      'req-456'
+    );
+
+    const sqls = (db.prepare.mock.calls as unknown[][]).map(c => String(c[0]));
+    expect(sqls.some(sql => sql.includes('enriched_beers'))).toBe(false);
   });
 
   it('calls message.retry() on failure', async () => {

@@ -17,7 +17,7 @@
 
 import type { Env } from '../types';
 import { trackCron } from '../analytics';
-import { shouldSkipEnrichment, ENABLED_STORE_IDS } from '../config';
+import { ENABLED_STORE_IDS } from '../config';
 import {
   CRON_INTERVAL_MS,
   CRON_JITTER_MS,
@@ -26,6 +26,7 @@ import {
 import { cleanupOldDlqMessages } from './dlq';
 import { getToday, getCurrentHourCT, isWithinOperatingHours } from '../utils/date';
 import { refreshTaplistForStore } from './beers';
+import { selectAndQueuePendingEnrichment } from './enrichment';
 
 export function computeNextCronTime(
   now: number,
@@ -41,24 +42,34 @@ export async function checkAndAdvanceCronSchedule(
 ): Promise<boolean> {
   const now = Date.now();
 
+  // Fast path: not due → no writes at all (idle crons stay write-free).
   const entry = await db.prepare(
     'SELECT CAST(value AS INTEGER) as next_run FROM system_state WHERE key = ?'
   ).bind(CRON_SCHEDULE_KEY).first<{ next_run: number }>();
-
   if (entry && entry.next_run > now) {
     return false;
   }
 
-  const nextRun = computeNextCronTime(now, random);
-  await db.prepare(`
-    INSERT INTO system_state (key, value, updated_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(key) DO UPDATE SET
-      value = excluded.value,
-      updated_at = excluded.updated_at
-  `).bind(CRON_SCHEDULE_KEY, String(nextRun), now).run();
+  // Seed with epoch 0 — NOT now+interval — so a fresh system is immediately
+  // due, matching the original missing-row-means-due behavior.
+  await db.prepare(
+    'INSERT OR IGNORE INTO system_state (key, value, updated_at) VALUES (?, ?, ?)'
+  ).bind(CRON_SCHEDULE_KEY, '0', now).run();
 
-  return true;
+  // Atomic claim: exactly one concurrent caller can move a due timestamp to
+  // the next run time. The WHERE clause fails for every subsequent caller
+  // (the value is already in the future), whose RETURNING yields no row.
+  // This replaces the previous read-then-write upsert, whose SELECT-to-INSERT
+  // gap admitted overlapping claims.
+  const nextRun = computeNextCronTime(now, random);
+  const claim = await db.prepare(`
+    UPDATE system_state
+    SET value = ?, updated_at = ?
+    WHERE key = ? AND CAST(value AS INTEGER) <= ?
+    RETURNING value
+  `).bind(String(nextRun), now, CRON_SCHEDULE_KEY, now).first<{ value: string }>();
+
+  return claim !== null;
 }
 
 // ============================================================================
@@ -191,16 +202,10 @@ export async function handleScheduledEnrichment(
     // Only queue as many as we can process today (max 100)
     const batchSize = Math.min(100, remainingToday);
 
-    // Query beers with pending enrichment status
-    // Column names match Flying Saucer API / mobile app convention
-    const beersToEnrich = await env.DB.prepare(`
-      SELECT id, brew_name, brewer
-      FROM enriched_beers
-      WHERE enrichment_status = 'pending'
-      LIMIT ?
-    `).bind(batchSize).all<{ id: string; brew_name: string; brewer: string }>();
+    // Select, mark blocklisted, and queue (shared with the admin trigger)
+    const queueResult = await selectAndQueuePendingEnrichment(env, { limit: batchSize });
 
-    if (!beersToEnrich.results || beersToEnrich.results.length === 0) {
+    if (queueResult.noEligibleBeers) {
       console.log('No beers need enrichment');
       trackCron(env.ANALYTICS, {
         beersQueued: 0,
@@ -213,55 +218,11 @@ export async function handleScheduledEnrichment(
       return;
     }
 
-    // Filter out blocklisted items (flights, mixed drinks, etc.)
-    const eligibleBeers = beersToEnrich.results.filter(
-      beer => !shouldSkipEnrichment(beer.brew_name)
-    );
-
-    if (eligibleBeers.length === 0) {
-      console.log(`[cron] All ${beersToEnrich.results.length} beers are blocklisted`);
-      trackCron(env.ANALYTICS, {
-        beersQueued: 0,
-        dailyRemaining: remainingToday,
-        monthlyRemaining: monthlyLimit - monthlyUsed,
-        durationMs: Date.now() - cronStartTime,
-        success: true,
-        skipReason: 'no_beers',
-      });
-      return;
+    if (queueResult.blocklistedMarked > 0) {
+      console.log(`[cron] Skipped ${queueResult.blocklistedMarked} blocklisted items`);
     }
 
-    const skippedCount = beersToEnrich.results.length - eligibleBeers.length;
-    if (skippedCount > 0) {
-      console.log(`[cron] Skipped ${skippedCount} blocklisted items`);
-    }
-
-    // Mark blocklisted beers as skipped so they don't appear in future queries
-    const blocklistedBeers = beersToEnrich.results.filter(
-      beer => shouldSkipEnrichment(beer.brew_name)
-    );
-    if (blocklistedBeers.length > 0) {
-      const skipStatements = blocklistedBeers.map(beer =>
-        env.DB.prepare(
-          `UPDATE enriched_beers SET enrichment_status = 'skipped' WHERE id = ?`
-        ).bind(beer.id)
-      );
-      await env.DB.batch(skipStatements);
-    }
-
-    // Queue each beer for enrichment (processed in parallel by consumers)
-    // Using sendBatch for efficiency instead of individual sends
-    await env.ENRICHMENT_QUEUE.sendBatch(
-      eligibleBeers.map((beer) => ({
-        body: {
-          beerId: beer.id,
-          beerName: beer.brew_name,
-          brewer: beer.brewer,
-        },
-      }))
-    );
-
-    const beersQueued = eligibleBeers.length;
+    const beersQueued = queueResult.beersQueued;
     console.log(`Queued ${beersQueued} beers for enrichment (${remainingToday - beersQueued} slots remaining today)`);
 
     // Track successful cron execution

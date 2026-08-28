@@ -18,6 +18,13 @@ import { getToday } from '../utils/date';
 /**
  * GET /health - Health check endpoint with circuit breaker status
  *
+ * Intentionally unauthenticated with public quota fields: the Golden Taproom
+ * contract test fetches /health with NO API key and requires the enrichment
+ * quota blocks (BeerSelector's consumer schema marks them optional, but the
+ * contract harness enforces them). Exposure is limited to usage counts and
+ * limits — no secrets. Gating these fields is a coordinated cross-repo
+ * contract change, not a unilateral edit.
+ *
  * Returns:
  * - Service status (ok/error)
  * - Database connection status

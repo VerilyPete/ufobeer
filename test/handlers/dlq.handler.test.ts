@@ -89,6 +89,10 @@ const getMockEnv = (db: unknown): Env => ({
     send: vi.fn().mockResolvedValue(undefined),
     sendBatch: vi.fn().mockResolvedValue(undefined),
   } as unknown as Queue,
+  CLEANUP_QUEUE: {
+    send: vi.fn().mockResolvedValue(undefined),
+    sendBatch: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Queue,
 } as Env);
 
 // ============================================================================
@@ -309,7 +313,7 @@ describe('handleDlqReplay', () => {
     const rawMessage = JSON.stringify({ beerId: 'beer-001', beerName: 'Test IPA', brewer: 'Test Brewery' });
     const db = buildSequencedDb([
       { runResult: { meta: { changes: 1 } } },
-      { allResults: [{ id: 1, raw_message: rawMessage, replay_count: 0 }] },
+      { allResults: [{ id: 1, raw_message: rawMessage, replay_count: 0, source_queue: 'beer-enrichment' }] },
       { runResult: { meta: { changes: 1 } } },
     ]);
     const env = getMockEnv(db);
@@ -320,16 +324,127 @@ describe('handleDlqReplay', () => {
 
     await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
 
-    const successUpdateSql = db.prepare.mock.calls[2]?.[0] as string;
+    const successUpdateSql = db.prepare.mock.calls[3]?.[0] as string;
     expect(successUpdateSql).toContain("status = 'replayed'");
     expect(successUpdateSql).toContain('replay_count = replay_count + 1');
+  });
+
+  it('resets enrichment_status to pending BEFORE sending to the enrichment queue', async () => {
+    const rawMessage = JSON.stringify({ beerId: 'beer-001', beerName: 'Test IPA', brewer: 'Test Brewery' });
+    const db = buildSequencedDb([
+      { runResult: { meta: { changes: 1 } } },
+      { allResults: [{ id: 1, raw_message: rawMessage, replay_count: 0, source_queue: 'beer-enrichment' }] },
+      { runResult: { meta: { changes: 1 } } },
+    ]);
+    const env = getMockEnv(db);
+    const request = new Request('http://localhost/admin/dlq/replay', {
+      method: 'POST',
+      body: JSON.stringify({ ids: [1] }),
+    });
+
+    await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
+
+    const resetSql = db.prepare.mock.calls[2]?.[0] as string;
+    expect(resetSql).toContain('UPDATE enriched_beers');
+    expect(resetSql).toContain("enrichment_status = 'pending'");
+    // The reset must execute before the queue send
+    const resetBind = (db.prepare.mock.results[2]?.value as { bind: ReturnType<typeof vi.fn> }).bind;
+    const sendMock = (env.ENRICHMENT_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send;
+    expect(resetBind.mock.invocationCallOrder[0]).toBeLessThan(
+      sendMock.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('routes cleanup-source rows to the cleanup queue with brewDescription preserved', async () => {
+    const rawMessage = JSON.stringify({
+      beerId: 'beer-002',
+      beerName: 'Saison',
+      brewer: 'Farmhouse',
+      brewDescription: '<p>Funky and dry.</p>',
+    });
+    const db = buildSequencedDb([
+      { runResult: { meta: { changes: 1 } } },
+      { allResults: [{ id: 2, raw_message: rawMessage, replay_count: 0, source_queue: 'description-cleanup' }] },
+      { runResult: { meta: { changes: 1 } } },
+    ]);
+    const env = getMockEnv(db);
+    const request = new Request('http://localhost/admin/dlq/replay', {
+      method: 'POST',
+      body: JSON.stringify({ ids: [2] }),
+    });
+
+    const response = await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { data: { replayed_count: number; queued_to?: string; queued_counts: { enrichment: number; cleanup: number } } };
+
+    const cleanupSend = (env.CLEANUP_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send;
+    const enrichmentSend = (env.ENRICHMENT_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send;
+    expect(cleanupSend).toHaveBeenCalledTimes(1);
+    expect(cleanupSend.mock.calls[0]?.[0]).toEqual({
+      beerId: 'beer-002',
+      beerName: 'Saison',
+      brewer: 'Farmhouse',
+      brewDescription: '<p>Funky and dry.</p>',
+    });
+    expect(enrichmentSend).not.toHaveBeenCalled();
+    expect(body.data.queued_counts).toEqual({ enrichment: 0, cleanup: 1 });
+    expect(body.data.queued_to).toBe('description-cleanup');
+  });
+
+  it('reports mixed-source batches via queued_counts and omits queued_to', async () => {
+    const enrichmentRaw = JSON.stringify({ beerId: 'beer-001', beerName: 'Test IPA', brewer: 'Test Brewery' });
+    const cleanupRaw = JSON.stringify({ beerId: 'beer-002', beerName: 'Saison', brewer: 'Farmhouse', brewDescription: 'desc' });
+    const db = buildSequencedDb([
+      { runResult: { meta: { changes: 2 } } },
+      { allResults: [
+        { id: 1, raw_message: enrichmentRaw, replay_count: 0, source_queue: 'beer-enrichment' },
+        { id: 2, raw_message: cleanupRaw, replay_count: 0, source_queue: 'description-cleanup' },
+      ] },
+      { runResult: { meta: { changes: 1 } } },
+    ]);
+    const env = getMockEnv(db);
+    const request = new Request('http://localhost/admin/dlq/replay', {
+      method: 'POST',
+      body: JSON.stringify({ ids: [1, 2] }),
+    });
+
+    const response = await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { data: { queued_to?: string; queued_counts: { enrichment: number; cleanup: number } } };
+
+    expect(body.data.queued_counts).toEqual({ enrichment: 1, cleanup: 1 });
+    expect(body.data.queued_to).toBeUndefined();
+  });
+
+  it('counts corrupt cleanup rows as failed without touching either queue', async () => {
+    const corruptRaw = JSON.stringify({ beerId: 'beer-002' }); // missing required fields
+    const db = buildSequencedDb([
+      { runResult: { meta: { changes: 1 } } },
+      { allResults: [{ id: 2, raw_message: corruptRaw, replay_count: 0, source_queue: 'description-cleanup' }] },
+      { runResult: { meta: { changes: 1 } } },
+    ]);
+    const env = getMockEnv(db);
+    const request = new Request('http://localhost/admin/dlq/replay', {
+      method: 'POST',
+      body: JSON.stringify({ ids: [2] }),
+    });
+
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const response = await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { data: { failed_count: number; replayed_count: number } };
+
+    expect(body.data.failed_count).toBe(1);
+    expect(body.data.replayed_count).toBe(0);
+    expect((env.CLEANUP_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send).not.toHaveBeenCalled();
+    expect((env.ENRICHMENT_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send).not.toHaveBeenCalled();
+
+    vi.restoreAllMocks();
   });
 
   it('on queue send failure rolls back status to pending', async () => {
     const rawMessage = JSON.stringify({ beerId: 'beer-001', beerName: 'Test IPA', brewer: 'Test Brewery' });
     const db = buildSequencedDb([
       { runResult: { meta: { changes: 1 } } },
-      { allResults: [{ id: 1, raw_message: rawMessage, replay_count: 0 }] },
+      { allResults: [{ id: 1, raw_message: rawMessage, replay_count: 0, source_queue: 'beer-enrichment' }] },
       { runResult: { meta: { changes: 1 } } },
     ]);
     const env = getMockEnv(db);
@@ -344,7 +459,8 @@ describe('handleDlqReplay', () => {
 
     await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
 
-    const rollbackSql = db.prepare.mock.calls[2]?.[0] as string;
+    const rollbackSql = db.prepare.mock.calls[3]?.[0] as string;
+    expect(rollbackSql).toContain('UPDATE dlq_messages');
     expect(rollbackSql).toContain("status = 'pending'");
 
     vi.restoreAllMocks();

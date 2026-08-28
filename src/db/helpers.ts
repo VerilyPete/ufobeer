@@ -5,7 +5,7 @@
 
 import { hashDescription } from '../utils/hash';
 import { shouldSkipEnrichment } from '../config';
-import { D1_MAX_PARAMS_PER_STATEMENT, D1_MAX_STATEMENTS_PER_BATCH } from '../constants';
+import { D1_MAX_PARAMS_PER_STATEMENT, D1_MAX_STATEMENTS_PER_BATCH, ABV_CONFIDENCE_FROM_DESCRIPTION } from '../constants';
 
 // ============================================================================
 // Enrichment Data Types
@@ -37,6 +37,7 @@ type ExistingBeerRow = {
   readonly id: string;
   readonly description_hash: string | null;
   readonly abv: number | null;
+  readonly enrichment_status: string | null;
 };
 
 /**
@@ -170,6 +171,7 @@ type BeerInput = {
 type ExistingBeerInfo = {
   readonly description_hash: string | null;
   readonly abv: number | null;
+  readonly enrichment_status: string | null;
 };
 
 /**
@@ -207,6 +209,16 @@ export function categorizeBeer(
   }
 
   if (existing?.abv === null) {
+    // Beers whose enrichment already reached a verdict (not_found, skipped,
+    // failed) must not re-enter the enrichment queue on every taplist sync —
+    // the consumer's status gate would ack them pointlessly (not_found /
+    // skipped) or, worse, re-reserve quota and re-call Perplexity (failed).
+    // Only 'pending' rows — or pre-status-era null rows, treated as pending —
+    // are eligible. A description change resurrects any of these via the
+    // description_changed branch above.
+    if (existing.enrichment_status !== 'pending' && existing.enrichment_status !== null) {
+      return { type: 'unchanged', beer, descriptionHash };
+    }
     if (shouldSkipEnrichment(beer.brew_name)) {
       return { type: 'needs_enrichment_blocklisted', beer, descriptionHash };
     }
@@ -329,7 +341,7 @@ export async function insertPlaceholders(
   // Reuses the chunking pattern from getEnrichmentForBeerIds
   // ============================================================================
   const CHUNK_SIZE = D1_MAX_PARAMS_PER_STATEMENT; // D1 has 100 param limit
-  const existingMap = new Map<string, { description_hash: string | null; abv: number | null }>();
+  const existingMap = new Map<string, { description_hash: string | null; abv: number | null; enrichment_status: string | null }>();
   const selectStatements: D1PreparedStatement[] = [];
 
   for (let i = 0; i < beers.length; i += CHUNK_SIZE) {
@@ -337,7 +349,7 @@ export async function insertPlaceholders(
     const placeholders = chunk.map(() => '?').join(',');
     selectStatements.push(
       db
-        .prepare(`SELECT id, description_hash, abv FROM enriched_beers WHERE id IN (${placeholders})`)
+        .prepare(`SELECT id, description_hash, abv, enrichment_status FROM enriched_beers WHERE id IN (${placeholders})`)
         .bind(...chunk.map((b) => b.id))
     );
   }
@@ -346,7 +358,7 @@ export async function insertPlaceholders(
     const selectResults = await db.batch(selectStatements);
     for (const result of selectResults) {
       for (const row of asTypedRows<ExistingBeerRow>(result.results)) {
-        existingMap.set(row.id, { description_hash: row.description_hash, abv: row.abv });
+        existingMap.set(row.id, { description_hash: row.description_hash, abv: row.abv, enrichment_status: row.enrichment_status });
       }
     }
   } catch (error) {
@@ -435,7 +447,7 @@ export async function insertPlaceholders(
           db
             .prepare(
               `INSERT INTO enriched_beers (id, brew_name, brewer, abv, confidence, enrichment_source, enrichment_status, brew_description_original, description_hash, last_seen_at, updated_at)
-             VALUES (?, ?, ?, ?, 0.9, 'description', 'enriched', ?, ?, ?, ?)`
+             VALUES (?, ?, ?, ?, ${ABV_CONFIDENCE_FROM_DESCRIPTION}, 'description', 'enriched', ?, ?, ?, ?)`
             )
             .bind(beer.id, beer.brew_name, beer.brewer, c.abv, beer.brew_description || null, descriptionHash, now, now)
         );

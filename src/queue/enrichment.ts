@@ -17,6 +17,8 @@
 import type { Env, EnrichmentMessage } from '../types';
 import { fetchAbvFromPerplexity } from '../services/perplexity';
 import { trackEnrichment } from '../analytics';
+import { reserveEnrichmentSlot } from '../db/quota';
+import { ABV_CONFIDENCE_FROM_PERPLEXITY } from '../constants';
 import { getToday, getMonthStart, getMonthEnd } from '../utils/date';
 
 /**
@@ -106,20 +108,9 @@ export async function handleEnrichmentBatch(
 
     try {
       // Layer 1: Atomic reservation - reserve slot BEFORE API call
-      const reservation = await env.DB.prepare(`
-        INSERT INTO enrichment_limits (date, request_count, last_updated)
-        VALUES (?, 1, ?)
-        ON CONFLICT(date) DO UPDATE SET
-          request_count = CASE
-            WHEN request_count < ? THEN request_count + 1
-            ELSE request_count
-          END,
-          last_updated = ?
-        RETURNING request_count, (request_count <= ?) as reserved
-      `).bind(today, Date.now(), dailyLimit, Date.now(), dailyLimit)
-        .first<{ request_count: number; reserved: number }>();
+      const reservation = await reserveEnrichmentSlot(env.DB, today, dailyLimit);
 
-      if (!reservation || !reservation.reserved) {
+      if (!reservation.reserved) {
         console.log(`Daily limit reached, skipping ${beerId}`);
         message.ack();
         continue;
@@ -140,7 +131,7 @@ export async function handleEnrichmentBatch(
       if (abv !== null) {
         await env.DB.prepare(`
           UPDATE enriched_beers
-          SET abv = ?, confidence = 0.7, enrichment_source = 'perplexity', enrichment_status = 'enriched', updated_at = ?
+          SET abv = ?, confidence = ${ABV_CONFIDENCE_FROM_PERPLEXITY}, enrichment_source = 'perplexity', enrichment_status = 'enriched', updated_at = ?
           WHERE id = ?
         `).bind(abv, Date.now(), beerId).run();
 

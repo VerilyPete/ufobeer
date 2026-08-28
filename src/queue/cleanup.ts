@@ -23,6 +23,7 @@ import {
   MIN_CLEANUP_LENGTH_RATIO,
   MAX_CLEANUP_LENGTH_RATIO,
   ABV_CONFIDENCE_FROM_DESCRIPTION,
+  ABV_CONFIDENCE_FROM_DESCRIPTION_FALLBACK,
 } from '../constants';
 import {
   withTimeout,
@@ -235,7 +236,7 @@ function stripResponsePrefixes(text: string): string {
  * Falls back to original if:
  * - AI call fails
  * - ABV extraction breaks after cleanup
- * - Length changes dramatically (>2x or <0.5x)
+ * - Length changes dramatically (<0.7x or >1.1x — see MIN/MAX_CLEANUP_LENGTH_RATIO)
  */
 async function cleanDescriptionSafely(
   original: string,
@@ -591,7 +592,7 @@ function buildBatchOperations(
               description_cleaned_at = ?,
               cleanup_source = 'fallback-circuit-breaker',
               abv = ?,
-              confidence = 0.8,
+              confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION_FALLBACK},
               enrichment_source = 'description-fallback',
               enrichment_status = 'enriched'
             WHERE id = ?
@@ -724,7 +725,7 @@ export async function handleFallbackBatch(
             description_cleaned_at = ?,
             cleanup_source = ?,
             abv = ?,
-            confidence = 0.8,
+            confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION_FALLBACK},
             enrichment_source = 'description-fallback'
           WHERE id = ?
         `).bind(brewDescription, now, source, abv, beerId)

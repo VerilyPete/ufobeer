@@ -21,6 +21,93 @@ import {
 } from '../schemas/request';
 
 // ============================================================================
+// Shared Pending-Beer Queueing (used by the admin trigger and the cron sweep)
+// ============================================================================
+
+export type QueuePendingResult = {
+  /** Eligible beers actually sent to the enrichment queue */
+  readonly beersQueued: number;
+  /** Blocklisted beers marked enrichment_status = 'skipped' */
+  readonly blocklistedMarked: number;
+  /** True when nothing was (or could be) queued */
+  readonly noEligibleBeers: boolean;
+};
+
+/**
+ * Select pending beers, mark blocklisted ones as skipped, and queue the rest.
+ *
+ * Shared by POST /admin/enrich/trigger and the cron enrichment sweep, which
+ * previously carried two divergent copies of this logic. Quota checks and
+ * response building stay at the call sites. Mirrors the original ordering
+ * quirk: when every selected beer is blocklisted, none are marked skipped
+ * (the early return precedes the marking batch).
+ */
+export async function selectAndQueuePendingEnrichment(
+  env: Env,
+  options: { limit: number; excludeFailures?: boolean }
+): Promise<QueuePendingResult> {
+  let query = `
+    SELECT id, brew_name, brewer
+    FROM enriched_beers
+    WHERE enrichment_status = 'pending'
+  `;
+  if (options.excludeFailures) {
+    query += `
+      AND id NOT IN (
+        SELECT beer_id FROM dlq_messages WHERE status = 'pending'
+      )
+    `;
+  }
+  query += `LIMIT ?`;
+
+  const beersToEnrich = await env.DB.prepare(query)
+    .bind(options.limit)
+    .all<{ id: string; brew_name: string; brewer: string }>();
+
+  if (!beersToEnrich.results || beersToEnrich.results.length === 0) {
+    return { beersQueued: 0, blocklistedMarked: 0, noEligibleBeers: true };
+  }
+
+  // Filter out blocklisted items (flights, mixed drinks, etc.)
+  const eligibleBeers = beersToEnrich.results.filter(
+    beer => !shouldSkipEnrichment(beer.brew_name)
+  );
+
+  if (eligibleBeers.length === 0) {
+    return { beersQueued: 0, blocklistedMarked: 0, noEligibleBeers: true };
+  }
+
+  // Mark blocklisted beers as skipped so they don't appear in future queries
+  const blocklistedBeers = beersToEnrich.results.filter(
+    beer => shouldSkipEnrichment(beer.brew_name)
+  );
+  if (blocklistedBeers.length > 0) {
+    const skipStatements = blocklistedBeers.map(beer =>
+      env.DB.prepare(
+        `UPDATE enriched_beers SET enrichment_status = 'skipped' WHERE id = ?`
+      ).bind(beer.id)
+    );
+    await env.DB.batch(skipStatements);
+  }
+
+  await env.ENRICHMENT_QUEUE.sendBatch(
+    eligibleBeers.map((beer) => ({
+      body: {
+        beerId: beer.id,
+        beerName: beer.brew_name,
+        brewer: beer.brewer,
+      },
+    }))
+  );
+
+  return {
+    beersQueued: eligibleBeers.length,
+    blocklistedMarked: blocklistedBeers.length,
+    noEligibleBeers: false,
+  };
+}
+
+// ============================================================================
 // Enrichment Trigger Handler
 // ============================================================================
 
@@ -144,76 +231,24 @@ export async function handleEnrichmentTrigger(
     const monthlyRemaining = monthlyLimit - monthlyUsed;
     const effectiveBatchSize = Math.min(requestedLimit, dailyRemaining, monthlyRemaining, 100);
 
-    // Query beers with pending enrichment status
-    let query = `
-      SELECT id, brew_name, brewer
-      FROM enriched_beers
-      WHERE enrichment_status = 'pending'
-    `;
+    // Select, mark blocklisted, and queue (shared with the cron sweep)
+    const queueResult = await selectAndQueuePendingEnrichment(env, {
+      limit: effectiveBatchSize,
+      excludeFailures,
+    });
 
-    // Optionally exclude beers that have failed (exist in DLQ)
-    if (excludeFailures) {
-      query += `
-        AND id NOT IN (
-          SELECT beer_id FROM dlq_messages WHERE status = 'pending'
-        )
-      `;
-    }
-
-    query += `LIMIT ?`;
-
-    const beersToEnrich = await env.DB.prepare(query)
-      .bind(effectiveBatchSize)
-      .all<{ id: string; brew_name: string; brewer: string }>();
-
-    if (!beersToEnrich.results || beersToEnrich.results.length === 0) {
+    if (queueResult.noEligibleBeers) {
       console.log(`[trigger] No eligible beers found, requestId=${reqCtx.requestId}`);
       return buildResponse(0, 'no_eligible_beers', dailyUsed, monthlyUsed);
     }
 
-    // Filter out blocklisted items (flights, mixed drinks, etc.)
-    const eligibleBeers = beersToEnrich.results.filter(
-      beer => !shouldSkipEnrichment(beer.brew_name)
-    );
-
-    if (eligibleBeers.length === 0) {
-      console.log(`[trigger] All ${beersToEnrich.results.length} beers are blocklisted, requestId=${reqCtx.requestId}`);
-      return buildResponse(0, 'no_eligible_beers', dailyUsed, monthlyUsed);
+    if (queueResult.blocklistedMarked > 0) {
+      console.log(`[trigger] Skipped ${queueResult.blocklistedMarked} blocklisted items`);
     }
 
-    const skippedCount = beersToEnrich.results.length - eligibleBeers.length;
-    if (skippedCount > 0) {
-      console.log(`[trigger] Skipped ${skippedCount} blocklisted items`);
-    }
+    console.log(`[trigger] Queued ${queueResult.beersQueued} beers for enrichment, requestId=${reqCtx.requestId}, excludeFailures=${excludeFailures}`);
 
-    // Mark blocklisted beers as skipped
-    const blocklistedBeers = beersToEnrich.results.filter(
-      beer => shouldSkipEnrichment(beer.brew_name)
-    );
-    if (blocklistedBeers.length > 0) {
-      const skipStatements = blocklistedBeers.map(beer =>
-        env.DB.prepare(
-          `UPDATE enriched_beers SET enrichment_status = 'skipped' WHERE id = ?`
-        ).bind(beer.id)
-      );
-      await env.DB.batch(skipStatements);
-    }
-
-    // Queue beers for enrichment using sendBatch (max 100 messages)
-    await env.ENRICHMENT_QUEUE.sendBatch(
-      eligibleBeers.map((beer) => ({
-        body: {
-          beerId: beer.id,
-          beerName: beer.brew_name,
-          brewer: beer.brewer,
-        },
-      }))
-    );
-
-    const beersQueued = eligibleBeers.length;
-    console.log(`[trigger] Queued ${beersQueued} beers for enrichment, requestId=${reqCtx.requestId}, excludeFailures=${excludeFailures}`);
-
-    return buildResponse(beersQueued, undefined, dailyUsed, monthlyUsed);
+    return buildResponse(queueResult.beersQueued, undefined, dailyUsed, monthlyUsed);
 
   } catch (error) {
     console.error(`[trigger] Failed to trigger enrichment:`, error);

@@ -32,6 +32,34 @@ export const MAX_CLEANUP_LENGTH_RATIO = 1.1;
  */
 export const ABV_CONFIDENCE_FROM_DESCRIPTION = 0.9;
 export const ABV_CONFIDENCE_FROM_PERPLEXITY = 0.7;
+/**
+ * 0.8 = ABV extracted from the original description when the AI cleanup path
+ * was unavailable (quota exceeded / circuit breaker open). Same extraction
+ * method as 0.9 but recorded via the fallback path.
+ */
+export const ABV_CONFIDENCE_FROM_DESCRIPTION_FALLBACK = 0.8;
+
+// =============================================================================
+// Outbound Fetch Timeouts
+// =============================================================================
+
+/**
+ * Timeout for Flying Saucer taplist fetches.
+ * A hung upstream would otherwise pin the client request (or, in the cron,
+ * stall the sequential per-store refresh). On timeout the existing error
+ * paths take over: stale-cache fallback for GET /beers, skip for cron.
+ * Tradeoff: a slow-but-alive upstream on a cold cache now yields a 502
+ * instead of an unbounded wait.
+ */
+export const UPSTREAM_TAPLIST_TIMEOUT_MS = 10_000;
+
+/**
+ * Timeout for Perplexity chat-completion calls (sonar with web search can
+ * legitimately take tens of seconds). Unlike env.AI.run, plain fetch supports
+ * AbortSignal. A TimeoutError does not contain '429', so the consumer's rate-
+ * limit branch is unaffected and the message takes the default retry path.
+ */
+export const PERPLEXITY_TIMEOUT_MS = 30_000;
 
 // =============================================================================
 // ABV Validation Constants

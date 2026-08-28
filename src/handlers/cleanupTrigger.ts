@@ -421,14 +421,32 @@ export async function handleCleanupTrigger(
       }))
     );
 
-    // 10. Build and execute batch database updates
+    // 10. Queue beers for cleanup FIRST, then write the marking/reset
+    // statements for what was actually sent.
+    //
+    // The old write-then-send order was a stranding bug here too — worse than
+    // the sync path: mode=missing eligibility rides
+    // `queued_for_cleanup_at IS NULL`, so beers marked but never sent are
+    // excluded from every future run indefinitely (no cooldown-based
+    // recovery). Send-then-mark's failure mode (marked-but-duplicated
+    // cleanup) is benign because cleanup writes are idempotent.
     const now = Date.now();
-    let statements: D1PreparedStatement[];
+    const beersToQueue = beers.map(beer => ({
+      id: beer.id,
+      brew_name: beer.brew_name,
+      brewer: beer.brewer || '',
+      brew_description: beer.brew_description_original,
+    }));
 
+    const queueResult = await queueBeersForCleanup(env, beersToQueue, reqCtx.requestId);
+    const sentSet = new Set(queueResult.queuedIds ?? []);
+    const sentHashes = beersWithHashes.filter(beer => sentSet.has(beer.id));
+
+    let statements: D1PreparedStatement[];
     if (mode === 'all') {
-      statements = buildResetStatements(env.DB, beersWithHashes, now);
+      statements = buildResetStatements(env.DB, sentHashes, now);
     } else {
-      statements = buildQueuedTimestampStatements(env.DB, beersWithHashes, now);
+      statements = buildQueuedTimestampStatements(env.DB, sentHashes, now);
     }
 
     // Execute in batches (D1 limit)
@@ -448,16 +466,6 @@ export async function handleCleanupTrigger(
 
     // 11. Update cooldown timestamp
     await updateCooldown(env.DB);
-
-    // 12. Queue beers for cleanup
-    const beersToQueue = beers.map(beer => ({
-      id: beer.id,
-      brew_name: beer.brew_name,
-      brewer: beer.brewer || '',
-      brew_description: beer.brew_description_original,
-    }));
-
-    const queueResult = await queueBeersForCleanup(env, beersToQueue, reqCtx.requestId);
 
     // 13. Build and return response
     const projectedAfterQueued = quotaUsed + queueResult.queued;

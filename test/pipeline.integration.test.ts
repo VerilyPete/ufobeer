@@ -59,6 +59,7 @@ function createMockD1(existingBeers: Map<string, {
   brew_description_cleaned?: string | null;
   enrichment_source?: string | null;
   confidence?: number;
+  enrichment_status?: string | null;
 }> = new Map()): MockD1Database {
   const batchStatements: { sql: string; args: unknown[] }[] = [];
 
@@ -87,7 +88,7 @@ function createMockD1(existingBeers: Map<string, {
           batchStatements.push({ sql, args });
 
           // Handle SELECT queries for existing records
-          if (sql.includes('SELECT id, description_hash, abv FROM enriched_beers')) {
+          if (sql.includes('SELECT id, description_hash, abv, enrichment_status FROM enriched_beers')) {
             return {
               all: vi.fn().mockImplementation(async () => {
                 // Extract IDs from the args (they're passed as individual params)
@@ -98,6 +99,9 @@ function createMockD1(existingBeers: Map<string, {
                     id,
                     description_hash: existingBeers.get(id)?.description_hash ?? null,
                     abv: existingBeers.get(id)?.abv ?? null,
+                    // Rows without an explicit status are pre-status-era rows;
+                    // categorizeBeer treats null as pending (queueable)
+                    enrichment_status: existingBeers.get(id)?.enrichment_status ?? null,
                   }));
                 return { results };
               }),

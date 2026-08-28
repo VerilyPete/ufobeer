@@ -27,7 +27,7 @@ import { shouldUpdateContent } from '../utils/cache-helpers';
 import { computeEnrichmentHash } from '../utils/enrichment-hash';
 import { isValidStoreId } from '../validation/storeId';
 import { logError, logWithContext } from '../utils/log';
-import { CACHE_TTL_MS } from '../constants';
+import { CACHE_TTL_MS, UPSTREAM_TAPLIST_TIMEOUT_MS } from '../constants';
 import {
   BatchLookupRequestSchema,
   SyncBeersRequestOuterSchema,
@@ -133,7 +133,153 @@ async function serveStaleFallback(
 }
 
 // ============================================================================
-// Taplist Refresh (shared by GET /beers live-fetch path and scheduled cron)
+// Shared Taplist Core (used by GET /beers live path and cron refresh)
+// ============================================================================
+
+/**
+ * Result of the shared fetch-merge-cache taplist core.
+ *
+ * ok=false means the upstream returned a non-2xx (upstreamStatus set).
+ * Exceptions propagate to the caller: handleBeerList converts them to a
+ * stale-cache fallback or 500; refreshTaplistForStore logs and reports
+ * failure. Response construction, conditional-request handling, and the
+ * per-caller merge logging stay at the call sites.
+ */
+export type TaplistCoreResult =
+  | {
+      readonly ok: true;
+      readonly enrichedBeers: readonly Record<string, unknown>[];
+      readonly cleanedCount: number;
+      readonly enrichmentRecords: number;
+      readonly upstreamLatencyMs: number;
+      readonly etag: string;
+    }
+  | {
+      readonly ok: false;
+      readonly upstreamLatencyMs: number;
+      readonly upstreamStatus: number;
+    };
+
+/**
+ * Fetch a live taplist from Flying Saucer, validate it, merge enrichment
+ * data, write the store cache (full write or timestamp-only based on content
+ * hashes), and queue background enrichment — the pipeline shared by the
+ * GET /beers live path and the cron taplist refresh.
+ */
+async function fetchMergeAndCacheTaplist(
+  env: Env,
+  ctx: ExecutionContext,
+  storeId: string,
+  requestId: string,
+  startTime: number
+): Promise<TaplistCoreResult> {
+  // 1. Fetch from Flying Saucer (timeout guards against a hung upstream)
+  const fsUrl = `${env.FLYING_SAUCER_API_BASE}?sid=${storeId}`;
+  const fsResp = await fetch(fsUrl, {
+    headers: { 'User-Agent': 'BeerSelector/1.0' },
+    signal: AbortSignal.timeout(UPSTREAM_TAPLIST_TIMEOUT_MS),
+  });
+
+  const upstreamLatencyMs = Date.now() - startTime;
+
+  if (!fsResp.ok) {
+    logError('upstream.flying_saucer.error', `HTTP ${fsResp.status}`, {
+      requestId,
+      storeId,
+      status: fsResp.status,
+    });
+    return { ok: false, upstreamLatencyMs, upstreamStatus: fsResp.status };
+  }
+
+  // 2. Parse response with type guards
+  // Flying Saucer API returns: [{...}, {brewInStock: [...]}]
+  const fsData: unknown = await fsResp.json();
+  const rawResponseBody = JSON.stringify(fsData);
+  const rawHash = await hashDescription(rawResponseBody);
+
+  let rawBeersUnvalidated: unknown[] = [];
+  if (Array.isArray(fsData)) {
+    const stockObject = fsData.find(hasBeerStock);
+    if (stockObject) {
+      rawBeersUnvalidated = stockObject.brewInStock;
+    }
+  }
+
+  const rawBeers = rawBeersUnvalidated.filter(isValidBeer);
+
+  // 3. Fetch enrichment data from D1 (bounded query with chunking)
+  const beerIds = rawBeers.map(b => b.id);
+  const enrichmentMap = await getEnrichmentForBeerIds(env.DB, beerIds, requestId);
+
+  // 4. Merge (use cleaned description if available, otherwise keep original)
+  let cleanedCount = 0;
+  const enrichedBeers = rawBeers.map(beer => {
+    const enrichment = enrichmentMap.get(beer.id);
+    if (enrichment?.brew_description_cleaned) cleanedCount++;
+    return {
+      ...beer,
+      brew_description: enrichment?.brew_description_cleaned ?? beer.brew_description,
+      enriched_abv: enrichment?.abv ?? null,
+      enrichment_confidence: enrichment?.confidence ?? null,
+      enrichment_source: enrichment?.source ?? null,
+      is_description_cleaned: !!enrichment?.brew_description_cleaned,
+    };
+  });
+
+  const enrichmentHash = enrichmentMap.size === 0 && beerIds.length > 0
+    ? null
+    : await computeEnrichmentHash(enrichmentMap);
+
+  // 5. Write cache — compare hash to decide full write vs timestamp-only
+  let cachedRow: CachedTaplistRow | null = null;
+  try {
+    cachedRow = await getCachedTaplist(env.DB, storeId);
+  } catch {
+    // If we can't read cached row, treat as content changed
+  }
+
+  const contentChanged = shouldUpdateContent(rawHash, cachedRow?.content_hash ?? null, enrichmentHash, cachedRow?.enrichment_hash ?? null);
+
+  if (contentChanged) {
+    ctx.waitUntil(
+      setCachedTaplist(env.DB, storeId, enrichedBeers, rawHash, enrichmentHash ?? undefined).catch((err) => {
+        logError('cache.write.failed', err, { requestId, storeId });
+      })
+    );
+  } else {
+    ctx.waitUntil(
+      updateCacheTimestamp(env.DB, storeId).catch((err) => {
+        logError('cache.write.failed', err, { requestId, storeId });
+      })
+    );
+  }
+
+  // 6. Sync beers to enriched_beers table (background task)
+  const beersForPlaceholders = rawBeers.map(beer => ({
+    id: beer.id,
+    brew_name: beer.brew_name,
+    brewer: beer.brewer,
+    brew_description: beer.brew_description,
+  }));
+  ctx.waitUntil(
+    processBackgroundEnrichment(env, beersForPlaceholders, requestId)
+  );
+
+  // 7. Combined ETag for conditional requests (used by GET /beers)
+  const etag = await buildCombinedEtag(rawHash, enrichmentHash);
+
+  return {
+    ok: true,
+    enrichedBeers,
+    cleanedCount,
+    enrichmentRecords: enrichmentMap.size,
+    upstreamLatencyMs,
+    etag,
+  };
+}
+
+// ============================================================================
+// Taplist Refresh (cron entry point; wraps the shared core)
 // ============================================================================
 
 export type TaplistRefreshResult = {
@@ -157,84 +303,11 @@ export async function refreshTaplistForStore(
 ): Promise<TaplistRefreshResult> {
   const start = Date.now();
   try {
-    const fsUrl = `${env.FLYING_SAUCER_API_BASE}?sid=${storeId}`;
-    const fsResp = await fetch(fsUrl, {
-      headers: { 'User-Agent': 'BeerSelector/1.0' },
-    });
-
-    const upstreamLatencyMs = Date.now() - start;
-
-    if (!fsResp.ok) {
-      return { beersRefreshed: 0, upstreamLatencyMs, success: false };
+    const result = await fetchMergeAndCacheTaplist(env, ctx, storeId, requestId, start);
+    if (!result.ok) {
+      return { beersRefreshed: 0, upstreamLatencyMs: result.upstreamLatencyMs, success: false };
     }
-
-    const fsData: unknown = await fsResp.json();
-    const rawResponseBody = JSON.stringify(fsData);
-    const rawHash = await hashDescription(rawResponseBody);
-
-    let rawBeersUnvalidated: unknown[] = [];
-    if (Array.isArray(fsData)) {
-      const stockObject = fsData.find(hasBeerStock);
-      if (stockObject) {
-        rawBeersUnvalidated = stockObject.brewInStock;
-      }
-    }
-
-    const rawBeers = rawBeersUnvalidated.filter(isValidBeer);
-
-    const beerIds = rawBeers.map(b => b.id);
-    const enrichmentMap = await getEnrichmentForBeerIds(env.DB, beerIds, requestId);
-
-    const enrichedBeers = rawBeers.map(beer => {
-      const enrichment = enrichmentMap.get(beer.id);
-      return {
-        ...beer,
-        brew_description: enrichment?.brew_description_cleaned ?? beer.brew_description,
-        enriched_abv: enrichment?.abv ?? null,
-        enrichment_confidence: enrichment?.confidence ?? null,
-        enrichment_source: enrichment?.source ?? null,
-        is_description_cleaned: !!enrichment?.brew_description_cleaned,
-      };
-    });
-
-    const enrichmentHash = enrichmentMap.size === 0 && beerIds.length > 0
-      ? null
-      : await computeEnrichmentHash(enrichmentMap);
-
-    let cachedRow: CachedTaplistRow | null = null;
-    try {
-      cachedRow = await getCachedTaplist(env.DB, storeId);
-    } catch {
-      // If we can't read cached row, treat as content changed
-    }
-
-    const contentChanged = shouldUpdateContent(rawHash, cachedRow?.content_hash ?? null, enrichmentHash, cachedRow?.enrichment_hash ?? null);
-
-    if (contentChanged) {
-      ctx.waitUntil(
-        setCachedTaplist(env.DB, storeId, enrichedBeers, rawHash, enrichmentHash ?? undefined).catch((err) => {
-          logError('cache.write.failed', err, { requestId, storeId });
-        })
-      );
-    } else {
-      ctx.waitUntil(
-        updateCacheTimestamp(env.DB, storeId).catch((err) => {
-          logError('cache.write.failed', err, { requestId, storeId });
-        })
-      );
-    }
-
-    const beersForPlaceholders = rawBeers.map(beer => ({
-      id: beer.id,
-      brew_name: beer.brew_name,
-      brewer: beer.brewer,
-      brew_description: beer.brew_description,
-    }));
-    ctx.waitUntil(
-      processBackgroundEnrichment(env, beersForPlaceholders, requestId)
-    );
-
-    return { beersRefreshed: enrichedBeers.length, upstreamLatencyMs, success: true };
+    return { beersRefreshed: result.enrichedBeers.length, upstreamLatencyMs: result.upstreamLatencyMs, success: true };
   } catch (error) {
     logError('taplist.refresh.failed', error, { requestId, storeId });
     return { beersRefreshed: 0, upstreamLatencyMs: Date.now() - start, success: false };
@@ -334,26 +407,15 @@ export async function handleBeerList(
   }
 
   try {
-    // 1. Fetch from Flying Saucer
-    const fsUrl = `${env.FLYING_SAUCER_API_BASE}?sid=${storeId}`;
-    const fsResp = await fetch(fsUrl, {
-      headers: { 'User-Agent': 'BeerSelector/1.0' }
-    });
+    // Shared fetch → validate → merge → cache → background-enrichment core
+    const result = await fetchMergeAndCacheTaplist(env, ctx, storeId, reqCtx.requestId, upstreamStartTime);
 
-    const upstreamLatencyMs = Date.now() - upstreamStartTime;
-
-    if (!fsResp.ok) {
-      logError('upstream.flying_saucer.error', `HTTP ${fsResp.status}`, {
-        requestId: reqCtx.requestId,
-        storeId,
-        status: fsResp.status,
-      });
-
+    if (!result.ok) {
       // Stale fallback: serve cached data when upstream fails
       const fallbackRow = await resolveStaleRow(env.DB, cachedRow, cacheReadSucceeded, storeId);
       if (fallbackRow) {
         const staleBeers = parseCachedBeers(fallbackRow.response_json);
-        if (staleBeers) return await serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, upstreamLatencyMs);
+        if (staleBeers) return await serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, result.upstreamLatencyMs);
       }
 
       return {
@@ -362,89 +424,22 @@ export async function handleBeerList(
           headers: { ...headers, 'Content-Type': 'application/json' }
         }),
         beersReturned: 0,
-        upstreamLatencyMs,
+        upstreamLatencyMs: result.upstreamLatencyMs,
         cacheOutcome: 'miss',
       };
     }
 
-    const fsData: unknown = await fsResp.json();
-    const rawResponseBody = JSON.stringify(fsData);
-    const rawHash = await hashDescription(rawResponseBody);
+    const { enrichedBeers, cleanedCount, enrichmentRecords, upstreamLatencyMs, etag } = result;
 
-    // 2. Parse response with type guards
-    // Flying Saucer API returns: [{...}, {brewInStock: [...]}]
-    let rawBeersUnvalidated: unknown[] = [];
-
-    if (Array.isArray(fsData)) {
-      const stockObject = fsData.find(hasBeerStock);
-      if (stockObject) {
-        rawBeersUnvalidated = stockObject.brewInStock;
-      }
-    }
-
-    // Filter to only valid beer objects
-    const rawBeers = rawBeersUnvalidated.filter(isValidBeer);
-
-    // 3. Fetch enrichment data from D1 (bounded query with chunking)
-    const beerIds = rawBeers.map(b => b.id);
-    const enrichmentMap = await getEnrichmentForBeerIds(env.DB, beerIds, reqCtx.requestId);
-
-    // 4. Merge data (use cleaned description if available, otherwise keep original)
-    let cleanedCount = 0;
-    const enrichedBeers = rawBeers.map(beer => {
-      const enrichment = enrichmentMap.get(beer.id);
-      if (enrichment?.brew_description_cleaned) cleanedCount++;
-      return {
-        ...beer,
-        brew_description: enrichment?.brew_description_cleaned ?? beer.brew_description,
-        enriched_abv: enrichment?.abv ?? null,
-        enrichment_confidence: enrichment?.confidence ?? null,
-        enrichment_source: enrichment?.source ?? null,
-        is_description_cleaned: !!enrichment?.brew_description_cleaned,
-      };
-    });
-
+    // Per-caller merge logging (the cron path does not log this)
     logWithContext(reqCtx.requestId, 'beers.merge.complete', {
-      totalBeers: rawBeers.length,
+      totalBeers: enrichedBeers.length,
       cleanedDescriptions: cleanedCount,
-      enrichmentRecords: enrichmentMap.size,
+      enrichmentRecords,
       storeId,
     });
 
-    const enrichmentHash = enrichmentMap.size === 0 && beerIds.length > 0
-      ? null
-      : await computeEnrichmentHash(enrichmentMap);
-
-    // 5. Write cache — compare hash to decide full write vs timestamp-only
-    const contentChanged = shouldUpdateContent(rawHash, cachedRow?.content_hash ?? null, enrichmentHash, cachedRow?.enrichment_hash ?? null);
-
-    if (contentChanged) {
-      ctx.waitUntil(
-        setCachedTaplist(env.DB, storeId, enrichedBeers, rawHash, enrichmentHash ?? undefined).catch((err) => {
-          logError('cache.write.failed', err, { requestId: reqCtx.requestId, storeId });
-        })
-      );
-    } else {
-      ctx.waitUntil(
-        updateCacheTimestamp(env.DB, storeId).catch((err) => {
-          logError('cache.write.failed', err, { requestId: reqCtx.requestId, storeId });
-        })
-      );
-    }
-
-    // 6. Sync beers to enriched_beers table (background task)
-    const beersForPlaceholders = rawBeers.map(beer => ({
-      id: beer.id,
-      brew_name: beer.brew_name,
-      brewer: beer.brewer,
-      brew_description: beer.brew_description,
-    }));
-    ctx.waitUntil(
-      processBackgroundEnrichment(env, beersForPlaceholders, reqCtx.requestId)
-    );
-
-    // 7. Check conditional request against raw hash
-    const etag = await buildCombinedEtag(rawHash, enrichmentHash);
+    // Check conditional request against the combined hash
     const conditionalResponse = checkConditionalRequest(request, etag);
     if (conditionalResponse) {
       for (const [key, value] of Object.entries(headers)) {
@@ -522,8 +517,11 @@ export async function handleBatchLookup(
     }
     const { ids } = parseResult.data;
 
-    // Limit batch size to 100
+    // Limit batch size to 100; report truncation additively so clients can
+    // detect dropped IDs without a breaking error response
+    const requestedCount = ids.length;
     const limitedIds = ids.slice(0, 100);
+    const truncated = requestedCount > limitedIds.length;
 
     // Build parameterized query - includes both description fields for merging
     const placeholders = limitedIds.map(() => '?').join(',');
@@ -573,6 +571,8 @@ export async function handleBatchLookup(
     return Response.json({
       enrichments: enrichmentData,
       missing,
+      requested_count: requestedCount,
+      truncated,
       requestId: reqCtx.requestId
     }, { headers });
 
@@ -763,17 +763,24 @@ export async function handleBeerSync(
     // Execute batch insert/update
     const syncResult = await syncBeersWithBatchHandling(env.DB, statements);
 
-    // Mark queued beers and update queued_for_cleanup_at timestamps
+    // Send to the cleanup queue FIRST, then mark only what was actually sent.
+    // The old mark-then-send order stranded beers for REQUEUE_COOLDOWN_MS
+    // (24h) whenever the queue send failed after the timestamps landed.
+    let queuedForCleanup = 0;
     if (needsCleanup.length > 0) {
-      const updateStatements = needsCleanup.map(beer =>
-        env.DB.prepare(
-          `UPDATE enriched_beers SET queued_for_cleanup_at = ? WHERE id = ?`
-        ).bind(now, beer.id)
-      );
-      await env.DB.batch(updateStatements);
+      const { queued, queuedIds } = await queueBeersForCleanup(env, needsCleanup, reqCtx.requestId);
+      queuedForCleanup = queued;
+      const sentSet = new Set(queuedIds ?? []);
+      const toMark = needsCleanup.filter(beer => sentSet.has(beer.id));
 
-      // Queue for cleanup
-      await queueBeersForCleanup(env, needsCleanup, reqCtx.requestId);
+      if (toMark.length > 0) {
+        const updateStatements = toMark.map(beer =>
+          env.DB.prepare(
+            `UPDATE enriched_beers SET queued_for_cleanup_at = ? WHERE id = ?`
+          ).bind(now, beer.id)
+        );
+        await env.DB.batch(updateStatements);
+      }
     }
 
     // Combine errors
@@ -781,13 +788,13 @@ export async function handleBeerSync(
 
     logWithContext(reqCtx.requestId, 'beers.sync.complete', {
       synced: syncResult.succeeded,
-      queuedForCleanup: needsCleanup.length,
+      queuedForCleanup: queuedForCleanup,
       validationErrors: validationErrors.length,
     });
 
     return Response.json({
       synced: syncResult.succeeded,
-      queued_for_cleanup: needsCleanup.length,
+      queued_for_cleanup: queuedForCleanup,
       requestId: reqCtx.requestId,
       ...(allErrors.length > 0 && { errors: allErrors }),
     }, { headers });

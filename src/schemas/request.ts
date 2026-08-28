@@ -63,5 +63,13 @@ export const EnrichmentMessageSchema = z.object({
   brewer: z.string(),
 });
 
+export const CleanupMessageSchema = z.object({
+  beerId: z.string(),
+  beerName: z.string(),
+  brewer: z.string(),
+  brewDescription: z.string(),
+});
+
 export type TriggerCleanupRequest = z.infer<typeof TriggerCleanupRequestSchema>;
 export type EnrichmentMessage = z.infer<typeof EnrichmentMessageSchema>;
+export type CleanupMessageBody = z.infer<typeof CleanupMessageSchema>;

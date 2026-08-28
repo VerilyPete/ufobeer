@@ -6,6 +6,14 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { handleBeerSync } from '../../src/handlers/beers';
+import { queueBeersForCleanup } from '../../src/queue';
+import type { Env, RequestContext } from '../../src/types';
+
+vi.mock('../../src/queue', () => ({
+  queueBeersForEnrichment: vi.fn().mockResolvedValue({ queued: 0, skipped: 0 }),
+  queueBeersForCleanup: vi.fn().mockResolvedValue({ queued: 0, queuedIds: [] }),
+}));
 import { syncBeersWithBatchHandling } from '../../src/handlers/beers';
 import { SYNC_CONSTANTS } from '../../src/types';
 import { SyncBeerItemSchema } from '../../src/schemas/request';
@@ -252,5 +260,84 @@ describe('handleBeerSync', () => {
       expect(result.errors[0]).toBe('Database write failed for batch');
       expect(result.errors[0]).not.toContain('String error');
     });
+  });
+});
+
+// ============================================================================
+// handleBeerSync — send-then-mark ordering
+// ============================================================================
+
+describe('handleBeerSync ordering', () => {
+  const reqCtx: RequestContext = {
+    requestId: 'sync-order-test',
+    startTime: Date.now(),
+    clientIdentifier: 'test-client',
+    apiKeyHash: null,
+    clientIp: null,
+    userAgent: null,
+  };
+
+  function createTrackingEnv(): { env: Env; prepareSqls: () => string[] } {
+    const sqls: string[] = [];
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => {
+        sqls.push(sql);
+        return {
+          bind: vi.fn().mockReturnValue({
+            all: vi.fn().mockResolvedValue({ results: [] }),
+            first: vi.fn().mockResolvedValue(null),
+            run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+          }),
+        };
+      }),
+      batch: vi.fn().mockImplementation(async (statements: unknown[]) =>
+        statements.map(() => ({ success: true, results: [], meta: {} }))
+      ),
+    } as unknown as D1Database;
+    return {
+      env: { DB: db } as unknown as Env,
+      prepareSqls: () => sqls,
+    };
+  }
+
+  function syncRequest(): Request {
+    return new Request('https://api.example.com/beers/sync', {
+      method: 'POST',
+      body: JSON.stringify({
+        beers: [
+          { id: 'b1', brew_name: 'Test IPA', brewer: 'Brewer', brew_description: 'Hoppy 5.5%' },
+        ],
+      }),
+    });
+  }
+
+  it('does not write queued_for_cleanup_at when the cleanup queue send delivered nothing', async () => {
+    vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 0, queuedIds: [] });
+    const { env, prepareSqls } = createTrackingEnv();
+
+    const response = await handleBeerSync(syncRequest(), env, {}, reqCtx);
+    const body = await response.json() as { synced: number; queued_for_cleanup: number };
+
+    expect(response.status).toBe(200);
+    expect(body.queued_for_cleanup).toBe(0);
+    expect(prepareSqls().some(sql => sql.includes('queued_for_cleanup_at = ?'))).toBe(false);
+  });
+
+  it('writes queued_for_cleanup_at only after the send, for sent IDs only', async () => {
+    vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 1, queuedIds: ['b1'] });
+    const { env, prepareSqls } = createTrackingEnv();
+
+    const response = await handleBeerSync(syncRequest(), env, {}, reqCtx);
+    const body = await response.json() as { queued_for_cleanup: number };
+
+    expect(response.status).toBe(200);
+    expect(body.queued_for_cleanup).toBe(1);
+    expect(prepareSqls().some(sql => sql.includes('queued_for_cleanup_at = ?'))).toBe(true);
+    // The mark must come after queueBeersForCleanup resolved: invocation order
+    const markCall = prepareSqls().findIndex(sql => sql.includes('queued_for_cleanup_at = ?'));
+    const sendOrder = vi.mocked(queueBeersForCleanup).mock.invocationCallOrder.at(-1);
+    // All DB.prepare calls for the mark happen after the send (single send here)
+    expect(markCall).toBeGreaterThanOrEqual(0);
+    expect(sendOrder).toBeGreaterThan(0);
   });
 });

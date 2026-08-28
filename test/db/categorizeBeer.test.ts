@@ -14,7 +14,7 @@
 import { describe, it, expect } from 'vitest';
 import { categorizeBeer } from '../../src/db/helpers';
 
-type ExistingBeerInfo = { description_hash: string | null; abv: number | null };
+type ExistingBeerInfo = { description_hash: string | null; abv: number | null; enrichment_status: string | null };
 
 function makeBeer(overrides: {
   id?: string;
@@ -36,7 +36,7 @@ describe('categorizeBeer', () => {
       const beer = makeBeer({ brew_description: 'New description' });
       const hashMap = new Map([['beer-1', 'new-hash']]);
       const existingMap = new Map<string, ExistingBeerInfo>([
-        ['beer-1', { description_hash: 'old-hash', abv: 5.0 }],
+        ['beer-1', { description_hash: 'old-hash', abv: 5.0, enrichment_status: 'enriched' }],
       ]);
 
       const result = categorizeBeer(beer, hashMap, existingMap);
@@ -51,7 +51,7 @@ describe('categorizeBeer', () => {
       const beer = makeBeer({ brew_description: 'New description' });
       const hashMap = new Map([['beer-1', 'some-hash']]);
       const existingMap = new Map<string, ExistingBeerInfo>([
-        ['beer-1', { description_hash: null, abv: null }],
+        ['beer-1', { description_hash: null, abv: null, enrichment_status: 'pending' }],
       ]);
 
       const result = categorizeBeer(beer, hashMap, existingMap);
@@ -65,7 +65,7 @@ describe('categorizeBeer', () => {
       const beer = makeBeer({ brew_description: 'A tasty beer' });
       const hashMap = new Map([['beer-1', 'same-hash']]);
       const existingMap = new Map<string, ExistingBeerInfo>([
-        ['beer-1', { description_hash: 'same-hash', abv: null }],
+        ['beer-1', { description_hash: 'same-hash', abv: null, enrichment_status: 'pending' }],
       ]);
 
       const result = categorizeBeer(beer, hashMap, existingMap);
@@ -80,7 +80,7 @@ describe('categorizeBeer', () => {
       const beer = makeBeer({ brew_name: 'Build Your Flight' });
       const hashMap = new Map([['beer-1', 'same-hash']]);
       const existingMap = new Map<string, ExistingBeerInfo>([
-        ['beer-1', { description_hash: 'same-hash', abv: null }],
+        ['beer-1', { description_hash: 'same-hash', abv: null, enrichment_status: 'pending' }],
       ]);
 
       const result = categorizeBeer(beer, hashMap, existingMap);
@@ -167,12 +167,74 @@ describe('categorizeBeer', () => {
     });
   });
 
+  describe('existing beer, no ABV, enrichment already resolved', () => {
+    it('returns unchanged for not_found beers (no requeue churn)', () => {
+      const beer = makeBeer({ brew_description: 'A tasty beer' });
+      const hashMap = new Map([['beer-1', 'same-hash']]);
+      const existingMap = new Map<string, ExistingBeerInfo>([
+        ['beer-1', { description_hash: 'same-hash', abv: null, enrichment_status: 'not_found' }],
+      ]);
+
+      expect(categorizeBeer(beer, hashMap, existingMap).type).toBe('unchanged');
+    });
+
+    it('returns unchanged for skipped beers', () => {
+      const beer = makeBeer({ brew_description: 'A tasty beer' });
+      const hashMap = new Map([['beer-1', 'same-hash']]);
+      const existingMap = new Map<string, ExistingBeerInfo>([
+        ['beer-1', { description_hash: 'same-hash', abv: null, enrichment_status: 'skipped' }],
+      ]);
+
+      expect(categorizeBeer(beer, hashMap, existingMap).type).toBe('unchanged');
+    });
+
+    it('returns unchanged for failed (DLQ-parked) beers', () => {
+      const beer = makeBeer({ brew_description: 'A tasty beer' });
+      const hashMap = new Map([['beer-1', 'same-hash']]);
+      const existingMap = new Map<string, ExistingBeerInfo>([
+        ['beer-1', { description_hash: 'same-hash', abv: null, enrichment_status: 'failed' }],
+      ]);
+
+      expect(categorizeBeer(beer, hashMap, existingMap).type).toBe('unchanged');
+    });
+
+    it('returns unchanged for failed blocklisted beers', () => {
+      const beer = makeBeer({ brew_name: 'Build Your Flight', brew_description: 'desc' });
+      const hashMap = new Map([['beer-1', 'same-hash']]);
+      const existingMap = new Map<string, ExistingBeerInfo>([
+        ['beer-1', { description_hash: 'same-hash', abv: null, enrichment_status: 'failed' }],
+      ]);
+
+      expect(categorizeBeer(beer, hashMap, existingMap).type).toBe('unchanged');
+    });
+
+    it('still queues pre-status-era rows with null status (treated as pending)', () => {
+      const beer = makeBeer({ brew_description: 'A tasty beer' });
+      const hashMap = new Map([['beer-1', 'same-hash']]);
+      const existingMap = new Map<string, ExistingBeerInfo>([
+        ['beer-1', { description_hash: 'same-hash', abv: null, enrichment_status: null }],
+      ]);
+
+      expect(categorizeBeer(beer, hashMap, existingMap).type).toBe('needs_enrichment');
+    });
+
+    it('resurrects a failed beer whose description changed', () => {
+      const beer = makeBeer({ brew_description: 'Brand new description' });
+      const hashMap = new Map([['beer-1', 'new-hash']]);
+      const existingMap = new Map<string, ExistingBeerInfo>([
+        ['beer-1', { description_hash: 'old-hash', abv: null, enrichment_status: 'failed' }],
+      ]);
+
+      expect(categorizeBeer(beer, hashMap, existingMap).type).toBe('description_changed');
+    });
+  });
+
   describe('existing beer with ABV (unchanged)', () => {
     it('returns unchanged', () => {
       const beer = makeBeer({ brew_description: 'Good beer 5%' });
       const hashMap = new Map([['beer-1', 'same-hash']]);
       const existingMap = new Map<string, ExistingBeerInfo>([
-        ['beer-1', { description_hash: 'same-hash', abv: 5.0 }],
+        ['beer-1', { description_hash: 'same-hash', abv: 5.0, enrichment_status: 'enriched' }],
       ]);
 
       const result = categorizeBeer(beer, hashMap, existingMap);
@@ -189,7 +251,7 @@ describe('categorizeBeer', () => {
       const beer = makeBeer({ brew_description: 'New desc' });
       const hashMap = new Map([['beer-1', 'the-hash-value']]);
       const existingMap = new Map<string, ExistingBeerInfo>([
-        ['beer-1', { description_hash: 'old-hash', abv: null }],
+        ['beer-1', { description_hash: 'old-hash', abv: null, enrichment_status: 'pending' }],
       ]);
 
       const result = categorizeBeer(beer, hashMap, existingMap);

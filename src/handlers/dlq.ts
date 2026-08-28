@@ -24,6 +24,7 @@ import {
   DlqReplayRequestSchema,
   DlqAcknowledgeRequestSchema,
   EnrichmentMessageSchema,
+  CleanupMessageSchema,
 } from '../schemas/request';
 
 // ============================================================================
@@ -41,7 +42,7 @@ export async function handleDlqList(
 ): Promise<Response> {
   const status = params.get('status') || 'pending';
   const beerId = params.get('beer_id');
-  const limit = Math.min(parseInt(params.get('limit') || '50', 10), 100);
+  const limit = Math.min(Math.max(parseInt(params.get('limit') || '50', 10) || 50, 1), 100);
   const cursorParam = params.get('cursor');
   const includeRaw = params.get('include_raw') === 'true';
 
@@ -336,36 +337,67 @@ export async function handleDlqReplay(
       }, { headers });
     }
 
-    // STEP 2: Fetch the messages we just claimed
+    // STEP 2: Fetch the messages we just claimed (source_queue routes the replay)
     const { results } = await env.DB.prepare(
-      `SELECT id, raw_message, replay_count FROM dlq_messages
+      `SELECT id, raw_message, replay_count, source_queue FROM dlq_messages
        WHERE id IN (${placeholders}) AND status = 'replaying'`
-    ).bind(...limitedIds).all<{ id: number; raw_message: string; replay_count: number }>();
+    ).bind(...limitedIds).all<{ id: number; raw_message: string; replay_count: number; source_queue: string }>();
 
     let replayedCount = 0;
+    let enrichmentSent = 0;
+    let cleanupSent = 0;
     const replayedIds: number[] = [];
     const failedIds: number[] = [];
 
-    // STEP 3: Send messages to queue
+    // STEP 3: Send messages to the queue they originally failed on.
+    // Rows arrive from BOTH DLQs (enrichment and cleanup share this table);
+    // parsing everything with EnrichmentMessageSchema would silently strip
+    // brewDescription from cleanup rows and misroute them to Perplexity.
     for (const row of results) {
       try {
-        const parsed = EnrichmentMessageSchema.safeParse(JSON.parse(row.raw_message));
-        if (!parsed.success) {
-          console.warn(`Skipping corrupt DLQ row: dlqId=${row.id}`);
-          failedIds.push(row.id);
-          continue;
-        }
-        const messageBody = parsed.data;
+        const raw: unknown = JSON.parse(row.raw_message);
+        const isCleanupSource = row.source_queue === 'description-cleanup';
 
-        await env.ENRICHMENT_QUEUE.send(
-          messageBody,
-          delay_seconds > 0 ? { delaySeconds: delay_seconds } : {}
-        );
+        if (isCleanupSource) {
+          const parsed = CleanupMessageSchema.safeParse(raw);
+          if (!parsed.success) {
+            console.warn(`Skipping corrupt cleanup DLQ row: dlqId=${row.id}`);
+            failedIds.push(row.id);
+            continue;
+          }
+          await env.CLEANUP_QUEUE.send(
+            parsed.data,
+            delay_seconds > 0 ? { delaySeconds: delay_seconds } : {}
+          );
+          cleanupSent++;
+        } else {
+          const parsed = EnrichmentMessageSchema.safeParse(raw);
+          if (!parsed.success) {
+            console.warn(`Skipping corrupt enrichment DLQ row: dlqId=${row.id}`);
+            failedIds.push(row.id);
+            continue;
+          }
+          // Reset the beer's status BEFORE the send. DLQ storage may have
+          // marked it 'failed' (no longer auto-requeued); the consumer's
+          // gate skips anything not 'pending', so a reset-after-send failure
+          // would ack-and-drop the replayed message. If this reset succeeds
+          // but the send below fails, the beer is left 'pending' and the
+          // cron sweep requeues it — self-healing.
+          await env.DB.prepare(
+            `UPDATE enriched_beers SET enrichment_status = 'pending', updated_at = ? WHERE id = ?`
+          ).bind(Date.now(), parsed.data.beerId).run();
+
+          await env.ENRICHMENT_QUEUE.send(
+            parsed.data,
+            delay_seconds > 0 ? { delaySeconds: delay_seconds } : {}
+          );
+          enrichmentSent++;
+        }
 
         replayedIds.push(row.id);
         replayedCount++;
 
-        console.log(`DLQ message replayed: dlqId=${row.id}, beerId=${messageBody.beerId}, replayCount=${row.replay_count + 1}`);
+        console.log(`DLQ message replayed: dlqId=${row.id}, sourceQueue=${row.source_queue}, replayCount=${row.replay_count + 1}`);
       } catch (error) {
         console.error(`Failed to replay DLQ message: dlqId=${row.id}, error=${String(error)}`);
         failedIds.push(row.id);
@@ -402,7 +434,14 @@ export async function handleDlqReplay(
         claimed_count: claimedCount,
         replayed_count: replayedCount,
         failed_count: failedIds.length,
-        queued_to: 'beer-enrichment',
+        // queued_to is only meaningful when exactly one queue was targeted;
+        // omitted for mixed batches and for zero-sent batches (see queued_counts)
+        ...(enrichmentSent > 0 && cleanupSent === 0 && { queued_to: 'beer-enrichment' }),
+        ...(enrichmentSent === 0 && cleanupSent > 0 && { queued_to: 'description-cleanup' }),
+        queued_counts: {
+          enrichment: enrichmentSent,
+          cleanup: cleanupSent,
+        },
       },
     }, { headers });
 

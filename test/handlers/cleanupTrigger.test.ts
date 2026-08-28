@@ -16,7 +16,7 @@ import type { Env, RequestContext } from '../../src/types';
 
 // Mock the queue module
 vi.mock('../../src/queue', () => ({
-  queueBeersForCleanup: vi.fn().mockResolvedValue({ queued: 1 }),
+  queueBeersForCleanup: vi.fn().mockResolvedValue({ queued: 1, queuedIds: ['beer-1'] }),
 }));
 
 import { queueBeersForCleanup } from '../../src/queue';
@@ -168,7 +168,7 @@ const headers = { 'Content-Type': 'application/json' };
  */
 function resetMocks() {
   vi.clearAllMocks();
-  vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 1 });
+  vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 1, queuedIds: ['beer-1'] });
 }
 
 describe('handleCleanupTrigger', () => {
@@ -215,6 +215,59 @@ describe('handleCleanupTrigger', () => {
       const response = await handleCleanupTrigger(request, env, headers, ctx);
       expect(response.status).toBe(200);
       // Limit should be clamped to 500
+    });
+  });
+
+  describe('send-then-mark ordering', () => {
+    it('does not write queued_for_cleanup_at when the queue send delivered nothing', async () => {
+      const env = createMockEnv({
+        beers: [
+          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
+        ],
+      });
+      vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 0, queuedIds: [] });
+      const request = createMockRequest({ mode: 'missing' });
+      const ctx = createMockContext();
+
+      const response = await handleCleanupTrigger(request, env, headers, ctx);
+      const body = await response.json() as { data: { beers_queued: number } };
+
+      expect(response.status).toBe(200);
+      expect(body.data.beers_queued).toBe(0);
+      const prepare = (env.DB as unknown as { prepare: ReturnType<typeof vi.fn> }).prepare;
+      const sqls = (prepare.mock.calls as unknown[][]).map(c => String(c[0]));
+      expect(sqls.some(sql => sql.includes('UPDATE enriched_beers SET') && sql.includes('queued_for_cleanup_at'))).toBe(false);
+    });
+
+    it('writes queued_for_cleanup_at only for IDs the queue actually accepted', async () => {
+      const env = createMockEnv({
+        beers: [
+          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
+        ],
+      });
+      // Chunk-level partial failure: beer 1 was not delivered
+      vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 0, queuedIds: [] });
+      const request = createMockRequest({ mode: 'missing' });
+      const ctx = createMockContext();
+
+      await handleCleanupTrigger(request, env, headers, ctx);
+
+      const prepare = (env.DB as unknown as { prepare: ReturnType<typeof vi.fn> }).prepare;
+      const sqls = (prepare.mock.calls as unknown[][]).map(c => String(c[0]));
+      expect(sqls.some(sql => sql.includes('UPDATE enriched_beers SET') && sql.includes('queued_for_cleanup_at'))).toBe(false);
+
+      // Now the successful case: same beer delivered → marking statement runs
+      const env2 = createMockEnv({
+        beers: [
+          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
+        ],
+      });
+      vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 1, queuedIds: ['1'] });
+      await handleCleanupTrigger(createMockRequest({ mode: 'missing' }), env2, headers, createMockContext());
+
+      const prepare2 = (env2.DB as unknown as { prepare: ReturnType<typeof vi.fn> }).prepare;
+      const sqls2 = (prepare2.mock.calls as unknown[][]).map(c => String(c[0]));
+      expect(sqls2.some(sql => sql.includes('UPDATE enriched_beers SET') && sql.includes('queued_for_cleanup_at'))).toBe(true);
     });
   });
 

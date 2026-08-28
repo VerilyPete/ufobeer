@@ -9,7 +9,7 @@
  */
 
 import type { Env } from '../types';
-import { MIN_BEER_ABV, MAX_BEER_ABV } from '../constants';
+import { MIN_BEER_ABV, MAX_BEER_ABV, PERPLEXITY_TIMEOUT_MS } from '../constants';
 import { PerplexityResponseSchema } from '../schemas/external';
 
 /**
@@ -46,6 +46,7 @@ export async function fetchAbvFromPerplexity(
   try {
     const response = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
+      signal: AbortSignal.timeout(PERPLEXITY_TIMEOUT_MS),
       headers: {
         'Authorization': `Bearer ${env.PERPLEXITY_API_KEY}`,
         'Content-Type': 'application/json',

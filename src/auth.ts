@@ -57,6 +57,15 @@ export async function validateApiKey(
   env: Env,
   reqCtx: RequestContext
 ): Promise<{ valid: boolean; apiKeyHash: string | null }> {
+  // Fail closed when the secret is not configured. Without this,
+  // timingSafeCompare would hash TextEncoder's rendering of undefined (the
+  // literal string "undefined") and a misconfigured deploy could be
+  // authenticated by a client sending exactly that value.
+  if (!env.API_KEY) {
+    console.error('API_KEY not configured - rejecting request (fail closed)');
+    return { valid: false, apiKeyHash: null };
+  }
+
   const apiKey = request.headers.get('X-API-Key');
 
   if (!apiKey) {

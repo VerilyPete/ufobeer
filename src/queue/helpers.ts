@@ -90,26 +90,32 @@ export async function queueBeersForEnrichment(
  * filtering for Perplexity forwarding happens downstream in the cleanup
  * queue consumer (buildBatchOperations / handleFallbackBatch).
  *
+ * Callers MUST only mark beers as queued (queued_for_cleanup_at, cleanup
+ * resets) AFTER this resolves and only for the returned queuedIds — a
+ * mark-then-send order strands un-sent beers behind the requeue cooldown.
+ * Granularity is per chunk: sendBatch is all-or-nothing per chunk.
+ *
  * @param env - Cloudflare Worker environment bindings
  * @param beers - Array of beers needing cleanup (includes brew_description)
  * @param requestId - Request ID for logging correlation
- * @returns Object with queued count
+ * @returns Object with queued count and the IDs that were actually sent
  */
 export async function queueBeersForCleanup(
   env: Env,
   beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string; readonly brew_description: string }>,
   requestId: string
-): Promise<{ queued: number }> {
+): Promise<{ queued: number; queuedIds: string[] }> {
   if (beers.length === 0) {
     console.log(JSON.stringify({
       event: 'queue_cleanup_skip',
       requestId,
       reason: 'no_beers',
     }));
-    return { queued: 0 };
+    return { queued: 0, queuedIds: [] };
   }
 
   let queued = 0;
+  const queuedIds: string[] = [];
   for (let i = 0; i < beers.length; i += BATCH_SIZE) {
     const chunk = beers.slice(i, i + BATCH_SIZE);
     const messages = chunk.map(beer => ({
@@ -124,6 +130,7 @@ export async function queueBeersForCleanup(
     try {
       await env.CLEANUP_QUEUE.sendBatch(messages);
       queued += chunk.length;
+      queuedIds.push(...chunk.map(beer => beer.id));
     } catch (error) {
       console.error(JSON.stringify({
         event: 'queue_cleanup_error',
@@ -142,5 +149,5 @@ export async function queueBeersForCleanup(
     totalBeers: beers.length,
   }));
 
-  return { queued };
+  return { queued, queuedIds };
 }

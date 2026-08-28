@@ -26,7 +26,6 @@ import type {
   CleanupTriggerValidationResult,
 } from '../../src/types';
 import type { RequestMetrics, EnrichmentMetrics, CronMetrics, AdminDlqMetrics, DlqConsumerMetrics, AdminTriggerMetrics, CleanupTriggerMetrics, AnalyticsEngineDataset } from '../../src/analytics';
-import type { RespondOptions } from '../../src/context';
 import type { RateLimitResult } from '../../src/rate-limit';
 import type { BeerEnrichmentData, InsertPlaceholdersResult } from '../../src/db/helpers';
 import type { SyncBatchResult } from '../../src/handlers/beers';
@@ -61,10 +60,6 @@ describe('interface-to-type conversion compile checks', () => {
     expectTypeOf<RateLimitResult>().toHaveProperty('allowed');
     expectTypeOf<RateLimitResult>().toHaveProperty('remaining');
     expectTypeOf<RateLimitResult>().toHaveProperty('resetAt');
-  });
-
-  it('RespondOptions has writeAuditLog callback', () => {
-    expectTypeOf<RespondOptions>().toHaveProperty('writeAuditLog');
   });
 
   it('GetBeersResult has response field', () => {

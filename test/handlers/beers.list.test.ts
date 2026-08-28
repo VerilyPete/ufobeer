@@ -35,7 +35,7 @@ vi.mock('../../src/db', () => ({
 // Mock the queue module
 vi.mock('../../src/queue', () => ({
   queueBeersForEnrichment: vi.fn().mockResolvedValue({ queued: 0, skipped: 0 }),
-  queueBeersForCleanup: vi.fn().mockResolvedValue({ queued: 0 }),
+  queueBeersForCleanup: vi.fn().mockResolvedValue({ queued: 0, queuedIds: [] }),
 }));
 
 // Mock hash utility

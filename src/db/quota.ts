@@ -7,6 +7,80 @@ import type { Env, EnrichmentQuotaStatus } from '../types';
 import { getToday, getMonthStart, getMonthEnd } from '../utils/date';
 
 /**
+ * Result of attempting to reserve one enrichment quota slot.
+ */
+export type EnrichmentReservation = {
+  /** Whether a slot was actually consumed (false = daily limit reached) */
+  readonly reserved: boolean;
+  /** The day's request count after the reservation attempt */
+  readonly requestCount: number;
+};
+
+/**
+ * Atomically reserve one Perplexity API slot for today, BEFORE the API call.
+ *
+ * Pattern (shared with reserveCleanupQuotaBatch in queue/cleanupHelpers.ts):
+ * seed the day's row, read the pre-reservation count, then run a single
+ * conditional UPDATE that only increments while within the limit. RETURNING
+ * exposes the post-update count; `reserved` is computed as post > pre, i.e.
+ * a slot was genuinely consumed.
+ *
+ * Why not compute `reserved` inside the RETURNING clause: RETURNING sees the
+ * post-update value, so `request_count <= limit` reports "reserved" when the
+ * counter is parked exactly at the limit with no increment (the original bug
+ * this function replaces), and `request_count < limit` wrongly rejects the
+ * limit-th call. post > pre is correct at every boundary.
+ *
+ * Concurrency: the pre-read is not part of the gate — the conditional UPDATE
+ * is. This is safe because the enrichment queue consumer
+ * (max_concurrency: 1 in wrangler.jsonc) is the only writer to
+ * enrichment_limits; if that setting is ever raised, the pre-read becomes
+ * racy (two readers can both see pre, and the loser computes a phantom
+ * reservation) and this must move to serialized storage (e.g., Durable
+ * Objects). Costs three D1 round trips per message instead of one —
+ * negligible at current volumes.
+ */
+export async function reserveEnrichmentSlot(
+  db: D1Database,
+  date: string,
+  dailyLimit: number
+): Promise<EnrichmentReservation> {
+  const now = Date.now();
+
+  // Ensure the day's row exists
+  await db.prepare(`
+    INSERT INTO enrichment_limits (date, request_count, last_updated)
+    VALUES (?, 0, ?)
+    ON CONFLICT(date) DO NOTHING
+  `).bind(date, now).run();
+
+  const currentRow = await db.prepare(`
+    SELECT request_count FROM enrichment_limits WHERE date = ?
+  `).bind(date).first<{ request_count: number }>();
+  const previousCount = currentRow?.request_count ?? 0;
+
+  const result = await db.prepare(`
+    UPDATE enrichment_limits
+    SET request_count = CASE
+        WHEN request_count + 1 <= ? THEN request_count + 1
+        ELSE request_count
+      END,
+      last_updated = ?
+    WHERE date = ?
+    RETURNING request_count as new_count
+  `).bind(dailyLimit, now, date).first<{ new_count: number }>();
+
+  if (!result) {
+    return { reserved: false, requestCount: previousCount };
+  }
+
+  return {
+    reserved: result.new_count > previousCount,
+    requestCount: result.new_count,
+  };
+}
+
+/**
  * Get enrichment quota status with circuit breaker checks.
  * Checks daily and monthly limits, plus global kill switch.
  *
