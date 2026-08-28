@@ -1,0 +1,16 @@
+# Copy to .dev.vars for local development (`wrangler dev`).
+# .dev.vars is gitignored; values below are placeholders, never real secrets.
+# Production values are set with `wrangler secret put <NAME>`.
+
+# Client API key — sent as the X-API-Key header. Generate with high entropy,
+# e.g. `openssl rand -base64 32`.
+API_KEY=local-dev-api-key
+
+# Admin secret — sent as the X-Admin-Secret header for /admin/* routes.
+ADMIN_SECRET=local-dev-admin-secret
+
+# Perplexity AI key (optional locally; enrichment returns null without it).
+PERPLEXITY_API_KEY=
+
+# Flying Saucer upstream JSON endpoint.
+FLYING_SAUCER_API_BASE=https://fsbs.beerknurd.com

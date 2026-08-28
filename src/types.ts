@@ -31,6 +31,10 @@ export type Env = {
   // Environment variables (set in wrangler.jsonc vars)
   readonly ALLOWED_ORIGIN: string;
   readonly RATE_LIMIT_RPM: string;
+  // Pre-auth per-IP limit (requests/minute) applied before API key validation;
+  // defaults to 30 when unset. Must stay above legitimate per-IP usage since
+  // it throttles every route, including /health.
+  readonly PRE_AUTH_RPM?: string | undefined;
 
   // Circuit breaker (from Phase 1)
   readonly DAILY_ENRICHMENT_LIMIT?: string | undefined;

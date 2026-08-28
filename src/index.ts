@@ -33,7 +33,7 @@ import {
 import type { Env, EnrichmentMessage, CleanupMessage } from './types';
 import { ENABLED_STORE_IDS } from './config';
 import { getCorsHeaders } from './context';
-import { checkRateLimit, getEndpointRateLimitKey } from './rate-limit';
+import { checkRateLimit, getEndpointRateLimitKey, getPreAuthRateLimitKey } from './rate-limit';
 import { writeAuditLog, writeAdminAuditLog } from './audit';
 import {
   handleEnrichmentTrigger,
@@ -123,6 +123,40 @@ export default {
 
     try {
 
+    // Pre-auth rate limit: every non-OPTIONS request — including /health and
+    // would-be-401 brute force — is throttled per client IP before it can
+    // reach auth, audit logging, or handler D1 queries. Without this, the
+    // post-auth limiter below never sees rejected traffic.
+    const preAuthLimit = parseInt(env.PRE_AUTH_RPM ?? '', 10) || 30;
+    const preAuthResult = await checkRateLimit(
+      env.DB,
+      getPreAuthRateLimitKey(requestContext.clientIdentifier),
+      preAuthLimit
+    );
+    if (!preAuthResult.allowed) {
+      if (preAuthResult.degraded) {
+        return respond(
+          { error: 'Service temporarily unavailable', requestId: requestContext.requestId },
+          503,
+          { ...(corsHeaders ?? {}), 'Retry-After': '10' },
+          'Rate limiter unavailable'
+        );
+      }
+      trackRateLimit(env.ANALYTICS, requestContext.clientIdentifier, url.pathname);
+      return respond(
+        { error: 'Rate limit exceeded', requestId: requestContext.requestId },
+        429,
+        {
+          ...(corsHeaders ?? {}),
+          'X-RateLimit-Limit': String(preAuthLimit),
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': String(Math.floor(preAuthResult.resetAt / 1000)),
+          'Retry-After': String(Math.ceil((preAuthResult.resetAt - Date.now()) / 1000)),
+        },
+        'Pre-auth rate limited'
+      );
+    }
+
     // Health check (no auth required)
     if (url.pathname === '/health') {
       return handleHealthCheck(env);
@@ -153,6 +187,15 @@ export default {
 
     if (!rateLimitResult.allowed) {
       trackRateLimit(env.ANALYTICS, authedContext.clientIdentifier, url.pathname);
+      if (rateLimitResult.degraded) {
+        // Limiter could not run (D1 error) — fail closed as transient, not 429.
+        return respond(
+          { error: 'Service temporarily unavailable', requestId: authedContext.requestId },
+          503,
+          { ...(corsHeaders ?? {}), 'Retry-After': '10' },
+          'Rate limiter unavailable'
+        );
+      }
       return respond(
         { error: 'Rate limit exceeded', requestId: authedContext.requestId },
         429,
@@ -239,6 +282,14 @@ export default {
 
       if (!syncRateLimitResult.allowed) {
         trackRateLimit(env.ANALYTICS, authedContext.clientIdentifier, url.pathname);
+        if (syncRateLimitResult.degraded) {
+          return respond(
+            { error: 'Service temporarily unavailable', requestId: authedContext.requestId },
+            503,
+            { ...(corsHeaders ?? {}), 'Retry-After': '10' },
+            'Rate limiter unavailable (sync)'
+          );
+        }
         return respond(
           {
             error: 'Rate limit exceeded for sync endpoint',

@@ -31,6 +31,21 @@ export function getEndpointRateLimitKey(clientIdentifier: string, endpoint: stri
 }
 
 /**
+ * Generate a rate limit key for pre-authentication requests.
+ *
+ * Applied before API key validation so unauthenticated traffic — /health
+ * hits, malformed requests, and API-key brute force — is throttled per
+ * client IP instead of flowing through to auth, audit logging, and
+ * handler D1 queries.
+ *
+ * @param clientIdentifier - The client's IP-derived identifier
+ * @returns A composite key for the pre-auth bucket
+ */
+export function getPreAuthRateLimitKey(clientIdentifier: string): string {
+  return `preauth:${clientIdentifier}`;
+}
+
+/**
  * Result of a rate limit check.
  */
 export type RateLimitResult = {
@@ -54,7 +69,7 @@ export type RateLimitResult = {
  * Features:
  * - Atomic counter increment (no race conditions)
  * - Automatic cleanup of old rate limit records (1% sample)
- * - Graceful degradation on database errors (allows request)
+ * - Fails closed on database errors (rejects with degraded flag)
  *
  * @param db - D1 database instance
  * @param clientIdentifier - Unique identifier for the client (IP or API key hash)
@@ -116,8 +131,12 @@ export async function checkRateLimit(
 
     return { allowed: true, remaining: Math.max(0, limitPerMinute - count), resetAt, degraded: false };
   } catch (error) {
-    // On error, allow request but log
+    // Fail closed: without a working limiter, reject rather than allow.
+    // A D1 outage already breaks every data path (and /health's SELECT 1),
+    // so this adds no new outage surface — but it prevents an unlimited
+    // request burst precisely when the system is unhealthy. Callers must
+    // map degraded to 503 (transient) rather than 429 (client fault).
     console.error('Rate limit check failed:', error);
-    return { allowed: true, remaining: limitPerMinute, resetAt, degraded: true };
+    return { allowed: false, remaining: 0, resetAt, degraded: true };
   }
 }

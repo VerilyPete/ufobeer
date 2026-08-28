@@ -17,6 +17,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import worker from '../src/index';
+import { validateApiKey } from '../src/auth';
 import type { Env } from '../src/types';
 
 // ============================================================================
@@ -60,10 +61,10 @@ vi.mock('../src/auth', async (importOriginal) => {
 /**
  * Creates a minimal mock Env.
  */
-function createMockEnv(options: { allowedOrigin?: string } = {}): Env {
+function createMockEnv(options: { allowedOrigin?: string; db?: D1Database } = {}): Env {
   const allowedOrigin = options.allowedOrigin ?? 'https://ufobeer.app';
   return {
-    DB: {
+    DB: options.db ?? {
       prepare: vi.fn().mockReturnValue({
         bind: vi.fn().mockReturnValue({
           all: vi.fn().mockResolvedValue({ results: [] }),
@@ -209,6 +210,95 @@ describe('fetch handler top-level error boundary', () => {
     const response = await worker.fetch(request, env, ctx);
 
     expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+  });
+});
+
+/**
+ * Creates a mock Env DB whose rate-limit `.first()` results can be sequenced
+ * per call (pre-auth limiter, post-auth limiter, sync limiter, ...).
+ */
+function createSequencedDbMock(): { db: D1Database; first: ReturnType<typeof vi.fn> } {
+  const first = vi.fn();
+  const db = {
+    prepare: vi.fn().mockReturnValue({
+      bind: vi.fn().mockReturnValue({
+        first,
+        run: vi.fn().mockResolvedValue({ success: true }),
+      }),
+    }),
+    batch: vi.fn().mockResolvedValue([]),
+  } as unknown as D1Database;
+  return { db, first };
+}
+
+// ============================================================================
+// Tests: rate limiter wiring and fail-closed behavior
+// ============================================================================
+
+describe('rate limiter wiring', () => {
+  it('returns 429 when the pre-auth limit is exceeded', async () => {
+    const { db, first } = createSequencedDbMock();
+    // PRE_AUTH_RPM unset -> default 30; this request lands as #31.
+    first.mockResolvedValueOnce({ request_count: 31 });
+    const env = createMockEnv({ db });
+    const ctx = createMockCtx();
+    const request = createGetRequest('/beers?sid=13879');
+
+    const response = await worker.fetch(request, env, ctx);
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get('X-RateLimit-Limit')).toBe('30');
+    const body = await response.json() as Record<string, unknown>;
+    expect(body['error']).toBe('Rate limit exceeded');
+  });
+
+  it('returns 503 (not 429 or 500) when the pre-auth limiter cannot run', async () => {
+    const { db, first } = createSequencedDbMock();
+    first.mockRejectedValueOnce(new Error('D1 unavailable'));
+    const env = createMockEnv({ db });
+    const ctx = createMockCtx();
+    const request = createGetRequest('/beers?sid=13879');
+
+    const response = await worker.fetch(request, env, ctx);
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('Retry-After')).toBe('10');
+    const body = await response.json() as Record<string, unknown>;
+    expect(body['error']).toBe('Service temporarily unavailable');
+  });
+
+  it('returns 503 when the post-auth limiter fails after auth succeeded', async () => {
+    const { db, first } = createSequencedDbMock();
+    // Pre-auth check passes, post-auth check fails.
+    first.mockResolvedValueOnce({ request_count: 1 });
+    first.mockRejectedValueOnce(new Error('D1 unavailable'));
+
+    // The file-level auth mock rejects; a passing auth result is required to
+    // reach the post-auth limiter.
+    vi.mocked(validateApiKey).mockResolvedValueOnce({ valid: true, apiKeyHash: 'hash-123' });
+
+    const env = createMockEnv({ db });
+    const ctx = createMockCtx();
+    const request = createGetRequest('/beers?sid=13879');
+
+    const response = await worker.fetch(request, env, ctx);
+
+    expect(response.status).toBe(503);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body['error']).toBe('Service temporarily unavailable');
+  });
+
+  it('throttles /health under the pre-auth limit', async () => {
+    const { db, first } = createSequencedDbMock();
+    first.mockResolvedValueOnce({ request_count: 31 });
+    const env = createMockEnv({ db });
+    const ctx = createMockCtx();
+    const request = new Request('https://api.ufobeer.app/health', { method: 'GET' });
+
+    const response = await worker.fetch(request, env, ctx);
+
+    expect(response.status).toBe(429);
+    expect(first).toHaveBeenCalledTimes(1);
   });
 });
 

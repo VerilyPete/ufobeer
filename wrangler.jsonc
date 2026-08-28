@@ -1,6 +1,9 @@
 {
 	"name": "ufobeer",
 	"main": "src/index.ts",
+	// api.ufobeer.app custom domain verified live 2026-08-28; disable the
+	// *.workers.dev preview URL so zone-level rules cover all traffic.
+	"workers_dev": false,
 	"compatibility_date": "2025-01-01",
 	"ai": {
 		"binding": "AI"
@@ -75,6 +78,7 @@
 	"vars": {
 		"ALLOWED_ORIGIN": "https://ufobeer.app",
 		"RATE_LIMIT_RPM": "60",
+		"PRE_AUTH_RPM": "30",
 		"PERPLEXITY_MAX_CONCURRENCY": "10",
 		"DAILY_ENRICHMENT_LIMIT": "500",
 		"MONTHLY_ENRICHMENT_LIMIT": "2000",

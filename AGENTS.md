@@ -153,6 +153,7 @@ Defined in `wrangler.jsonc`:
 ```
 ALLOWED_ORIGIN          # CORS origin (https://ufobeer.app)
 RATE_LIMIT_RPM          # Requests per minute per client (60)
+PRE_AUTH_RPM            # Pre-auth requests/min per IP, all routes (30)
 PERPLEXITY_MAX_CONCURRENCY  # Parallel Perplexity calls (10)
 DAILY_ENRICHMENT_LIMIT  # Perplexity calls/day (500)
 MONTHLY_ENRICHMENT_LIMIT # Perplexity calls/month (2000)
@@ -165,7 +166,7 @@ DAILY_CLEANUP_LIMIT     # Cleanup calls/day (1000)
 ```bash
 wrangler secret put PERPLEXITY_API_KEY
 wrangler secret put API_KEY          # Client API key
-wrangler secret put ADMIN_API_KEY    # Admin API key
+wrangler secret put ADMIN_SECRET     # Admin secret for /admin/* routes (X-Admin-Secret header)
 ```
 
 ## Key Patterns
@@ -174,6 +175,8 @@ wrangler secret put ADMIN_API_KEY    # Admin API key
 - Per-client, per-minute tracking in `rate_limits` table
 - Uses atomic `INSERT ... ON CONFLICT ... RETURNING` for efficiency
 - Client identified by API key hash or IP
+- Pre-auth per-IP bucket (`preauth:{ip}`, `PRE_AUTH_RPM` var, default 30/min) runs before auth so unauthenticated traffic — including /health and 401 brute force — is throttled
+- Fails closed on D1 errors: callers map `degraded: true` to 503 (transient), not 429
 
 ### Quota System
 - Daily/monthly limits on Perplexity API calls (cost control)

@@ -2,6 +2,13 @@
 	"name": "ufobeer-error-alerts",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-01-01",
+	// Recipient for error alert emails; src/index.ts reads env.TO_ADDRESS.
+	// Must match send_email.destination_address below.
+	"vars": {
+		"TO_ADDRESS": "alerts-to@ufobeer.app"
+	},
+	// Tail consumers receive no HTTP traffic; keep the *.workers.dev URL off.
+	"workers_dev": false,
 	"send_email": [
 		{
 			"name": "SEND_EMAIL",

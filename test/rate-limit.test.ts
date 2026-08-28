@@ -9,7 +9,29 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { getEndpointRateLimitKey, checkRateLimit } from '../src/rate-limit';
+import { getEndpointRateLimitKey, getPreAuthRateLimitKey, checkRateLimit } from '../src/rate-limit';
+
+describe('getPreAuthRateLimitKey', () => {
+  it('should create a preauth-prefixed key', () => {
+    expect(getPreAuthRateLimitKey('203.0.113.7')).toBe('preauth:203.0.113.7');
+  });
+
+  it('should bucket unknown-IP requests together', () => {
+    expect(getPreAuthRateLimitKey('unknown')).toBe('preauth:unknown');
+  });
+
+  it('should not collide with post-auth or endpoint keys for the same client', () => {
+    const preAuthKey = getPreAuthRateLimitKey('client-1');
+    const endpointKey = getEndpointRateLimitKey('client-1', 'sync');
+
+    expect(preAuthKey).not.toBe(endpointKey);
+    expect(new Set([preAuthKey, endpointKey, 'client-1']).size).toBe(3);
+  });
+
+  it('should handle IPv6 addresses', () => {
+    expect(getPreAuthRateLimitKey('2001:db8::1')).toBe('preauth:2001:db8::1');
+  });
+});
 
 describe('getEndpointRateLimitKey', () => {
   it('should create endpoint-specific key', () => {
@@ -313,14 +335,14 @@ describe('checkRateLimit', () => {
     });
   });
 
-  describe('database error handling (graceful degradation)', () => {
-    it('should allow request on database error', async () => {
+  describe('database error handling (fail closed)', () => {
+    it('should reject request on database error', async () => {
       const mockDb = createMockDb();
       mockDb.first.mockRejectedValueOnce(new Error('DB connection failed'));
 
       const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
 
-      expect(result.allowed).toBe(true);
+      expect(result.allowed).toBe(false);
     });
 
     it('returns degraded: true on database error', async () => {
@@ -341,13 +363,13 @@ describe('checkRateLimit', () => {
       expect(result.degraded).toBe(false);
     });
 
-    it('should return full remaining count on database error', async () => {
+    it('should return zero remaining on database error', async () => {
       const mockDb = createMockDb();
       mockDb.first.mockRejectedValueOnce(new Error('DB timeout'));
 
       const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
 
-      expect(result.remaining).toBe(100);
+      expect(result.remaining).toBe(0);
     });
 
     it('should log error on database failure', async () => {
@@ -376,15 +398,17 @@ describe('checkRateLimit', () => {
       dateNowSpy.mockRestore();
     });
 
-    it('should handle different error types gracefully', async () => {
+    it('should reject for different error types (fail closed for all)', async () => {
       const mockDb = createMockDb();
       mockDb.first.mockRejectedValueOnce(new TypeError('Cannot read property'));
       const result1 = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-      expect(result1.allowed).toBe(true);
+      expect(result1.allowed).toBe(false);
+      expect(result1.degraded).toBe(true);
 
       mockDb.first.mockRejectedValueOnce('Network error');
       const result2 = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-      expect(result2.allowed).toBe(true);
+      expect(result2.allowed).toBe(false);
+      expect(result2.degraded).toBe(true);
     });
   });
 
