@@ -178,8 +178,14 @@ wrangler secret put PERPLEXITY_API_KEY  # external Perplexity key — rotate in 
 
 ## 8. Follow-ups outside this repo (BeerSelector)
 
-- `src/api/mockSession.ts` contains real personal data (member ID, name,
-  email, card number, session ID) — purge before any release/TestFlight build.
-- `auth_cookies` are stored in plaintext SQLite and rendered on the Settings
-  screen (`app/settings.tsx`) — move to SecureStore / redact display.
-- No certificate pinning; all traffic relies on standard TLS.
+- [x] **PII removed from BeerSelector repo** (2026-08-28): `mockSession.ts`
+      and the `mybeers.json` fixture sanitized in the working tree, and all
+      personal data (email, member ID, name, card numbers, session ID)
+      purged from git history across `main`, three feature branches, and two
+      tags via `git filter-repo`; force-pushed and verified from a fresh
+      clone. The exposed beerknurd session token should be treated as
+      compromised — change the Flying Saucer account password if not
+      already done.
+- [ ] `auth_cookies` are stored in plaintext SQLite and rendered on the
+      Settings screen (`app/settings.tsx`) — move to SecureStore / redact display.
+- [ ] No certificate pinning; all traffic relies on standard TLS.
