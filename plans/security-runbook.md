@@ -44,7 +44,12 @@ key); these edge rules are the backstop and cover anything the worker misses.
       `(http.host eq "api.ufobeer.app" and starts_with(http.request.uri.path, "/beers") and not http.request.headers["x-api-key"])` → Block.
       Remove this rule once `workers_dev` is disabled and the hostname is
       guaranteed to only serve the worker (it's harmless to keep regardless).
-- [ ] **Bot Fight Mode** on (Security → Bots) — included on free.
+- [ ] **Bot Fight Mode — deliberately left OFF.** On the free tier it is
+      zone-wide with no path exclusions, and it challenges "definitely
+      automated" traffic — i.e., every API client (the app, curl, monitors).
+      Enabling it risks breaking legitimate API calls; revisit only if
+      scraping becomes a real problem, and re-verify the app still connects
+      immediately after turning it on.
 - [ ] Optional: **Cloudflare Access** (Zero Trust, free ≤50 users) service-token
       policy in front of `api.ufobeer.app/admin/*` — adds a third credential
       layer beyond `X-API-Key` + `X-Admin-Secret`. Skip unless threat model
