@@ -86,7 +86,7 @@ export async function handleEnrichmentBatch(
   for (let i = 0; i < batch.messages.length; i++) {
     const message = batch.messages[i];
     if (!message) continue;
-    const { beerId, beerName, brewer } = message.body;
+    const { beerId, beerName, brewer, descriptionHash } = message.body;
 
     // Check if beer still needs enrichment (pending status)
     const existing = await env.DB.prepare(
@@ -129,20 +129,50 @@ export async function handleEnrichmentBatch(
       });
 
       if (abv !== null) {
-        await env.DB.prepare(`
+        // Optimistic concurrency: bind the write to the same 'pending'
+        // status this iteration already observed above, so a row that
+        // changed status between that check and this write (e.g. another
+        // consumer enriched it, or a redelivered message raced this one)
+        // is not silently overwritten. AND'd with a descriptionHash check
+        // for parity with cleanup.ts's stale-result binding -- the status
+        // guard stays (belt and braces): a description-hash mismatch alone
+        // would not catch a race where the row's description never
+        // changed but its status did between the check above and this
+        // write. `IS` (not `=`) so a null message hash -- a beer with no
+        // description at all -- correctly matches a null stored column
+        // instead of a SQL `NULL = NULL` non-match silently discarding
+        // every such write as "stale."
+        const updateResult = await env.DB.prepare(`
           UPDATE enriched_beers
           SET abv = ?, confidence = ${ABV_CONFIDENCE_FROM_PERPLEXITY}, enrichment_source = 'perplexity', enrichment_status = 'enriched', updated_at = ?
-          WHERE id = ?
-        `).bind(abv, Date.now(), beerId).run();
+          WHERE id = ? AND enrichment_status = 'pending' AND description_hash IS ?
+        `).bind(abv, Date.now(), beerId, descriptionHash ?? null).run();
 
-        console.log(`Enriched ${beerId}: ${beerName} -> ABV ${abv}%`);
+        if (updateResult.meta?.changes === 0) {
+          console.warn(JSON.stringify({
+            event: 'enrichment.stale_result',
+            beerId,
+            reason: 'enrichment_status or description_hash changed between pending-check and write; result discarded',
+          }));
+        } else {
+          console.log(`Enriched ${beerId}: ${beerName} -> ABV ${abv}%`);
+        }
       } else {
-        console.log(`No ABV found for ${beerId}: ${beerName}`);
-        await env.DB.prepare(`
+        const updateResult = await env.DB.prepare(`
           UPDATE enriched_beers
           SET enrichment_status = 'not_found', updated_at = ?
-          WHERE id = ?
-        `).bind(Date.now(), beerId).run();
+          WHERE id = ? AND enrichment_status = 'pending' AND description_hash IS ?
+        `).bind(Date.now(), beerId, descriptionHash ?? null).run();
+
+        if (updateResult.meta?.changes === 0) {
+          console.warn(JSON.stringify({
+            event: 'enrichment.stale_result',
+            beerId,
+            reason: 'enrichment_status or description_hash changed between pending-check and write; result discarded',
+          }));
+        } else {
+          console.log(`No ABV found for ${beerId}: ${beerName}`);
+        }
       }
 
       message.ack();

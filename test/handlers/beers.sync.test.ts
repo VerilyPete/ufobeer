@@ -17,6 +17,8 @@ vi.mock('../../src/queue', () => ({
 import { syncBeersWithBatchHandling } from '../../src/handlers/beers';
 import { SYNC_CONSTANTS } from '../../src/types';
 import { SyncBeerItemSchema } from '../../src/schemas/request';
+import { hashDescription } from '../../src/utils/hash';
+import { SYNC_BODY_MAX_BYTES } from '../../src/constants';
 
 describe('handleBeerSync', () => {
   describe('SyncBeerItemSchema validation', () => {
@@ -303,6 +305,7 @@ describe('handleBeerSync ordering', () => {
   function syncRequest(): Request {
     return new Request('https://api.example.com/beers/sync', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         beers: [
           { id: 'b1', brew_name: 'Test IPA', brewer: 'Brewer', brew_description: 'Hoppy 5.5%' },
@@ -339,5 +342,227 @@ describe('handleBeerSync ordering', () => {
     // All DB.prepare calls for the mark happen after the send (single send here)
     expect(markCall).toBeGreaterThanOrEqual(0);
     expect(sendOrder).toBeGreaterThan(0);
+  });
+});
+
+// ============================================================================
+// handleBeerSync — description_hash refresh (stale-result binding prerequisite)
+// ============================================================================
+
+describe('handleBeerSync description_hash refresh', () => {
+  const reqCtx: RequestContext = {
+    requestId: 'sync-hash-test',
+    startTime: Date.now(),
+    clientIdentifier: 'test-client',
+    apiKeyHash: null,
+    clientIp: null,
+    userAgent: null,
+  };
+
+  function createTrackingEnv(): { env: Env; upsertSql: () => string | undefined; upsertBindings: () => unknown[] } {
+    let upsertSql: string | undefined;
+    let upsertBindings: unknown[] = [];
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => ({
+        bind: vi.fn().mockImplementation((...args: unknown[]) => {
+          if (sql.includes('INSERT INTO enriched_beers') && sql.includes('ON CONFLICT')) {
+            upsertSql = sql;
+            upsertBindings = args;
+          }
+          return {
+            all: vi.fn().mockResolvedValue({ results: [] }),
+            first: vi.fn().mockResolvedValue(null),
+            run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+          };
+        }),
+      })),
+      batch: vi.fn().mockImplementation(async (statements: unknown[]) =>
+        statements.map(() => ({ success: true, results: [], meta: {} }))
+      ),
+    } as unknown as D1Database;
+    return {
+      env: { DB: db } as unknown as Env,
+      upsertSql: () => upsertSql,
+      upsertBindings: () => upsertBindings,
+    };
+  }
+
+  function syncRequest(description: string): Request {
+    return new Request('https://api.example.com/beers/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        beers: [
+          { id: 'existing-beer', brew_name: 'Test IPA', brewer: 'Brewer', brew_description: description },
+        ],
+      }),
+    });
+  }
+
+  it('refreshes description_hash on conflict, computed the same way as elsewhere', async () => {
+    vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 0, queuedIds: [] });
+    const { env, upsertSql, upsertBindings } = createTrackingEnv();
+    const description = 'A newly reported description, 6.0% ABV';
+
+    const response = await handleBeerSync(syncRequest(description), env, {}, reqCtx);
+    expect(response.status).toBe(200);
+
+    const sql = upsertSql();
+    expect(sql).toBeDefined();
+    expect(sql).toContain('description_hash = COALESCE(excluded.description_hash, enriched_beers.description_hash)');
+
+    // The bound description_hash value matches hashDescription() of the
+    // description on this sync request -- the same computation used
+    // elsewhere (db/helpers.ts's categorizeBeer, beers.ts's live-fetch path).
+    const expectedHash = await hashDescription(description);
+    // bind order: id, brew_name, brewer, brew_description, description_hash, last_seen_at, updated_at
+    expect(upsertBindings()[4]).toBe(expectedHash);
+  });
+
+  it('does not null out description_hash when a sync call omits brew_description for an existing ID', async () => {
+    vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 0, queuedIds: [] });
+    const { env, upsertBindings } = createTrackingEnv();
+    const request = new Request('https://api.example.com/beers/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        beers: [{ id: 'existing-beer', brew_name: 'Test IPA' }],
+      }),
+    });
+
+    const response = await handleBeerSync(request, env, {}, reqCtx);
+    expect(response.status).toBe(200);
+
+    // No description supplied -> bound description_hash is null, and the
+    // COALESCE in the SQL (not this test) is what preserves the existing
+    // stored hash instead of overwriting it with NULL.
+    expect(upsertBindings()[4]).toBeNull();
+  });
+});
+
+// ============================================================================
+// handleBeerSync — producer-side stale-result binding (descriptionHash on
+// the objects handed to queueBeersForCleanup)
+// ============================================================================
+
+describe('handleBeerSync cleanup-queue descriptionHash', () => {
+  const reqCtx: RequestContext = {
+    requestId: 'sync-descHash-test',
+    startTime: Date.now(),
+    clientIdentifier: 'test-client',
+    apiKeyHash: null,
+    clientIp: null,
+    userAgent: null,
+  };
+
+  function createEnv(): Env {
+    const db = {
+      prepare: vi.fn().mockImplementation(() => ({
+        bind: vi.fn().mockReturnValue({
+          all: vi.fn().mockResolvedValue({ results: [] }),
+          first: vi.fn().mockResolvedValue(null),
+          run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+        }),
+      })),
+      batch: vi.fn().mockImplementation(async (statements: unknown[]) =>
+        statements.map(() => ({ success: true, results: [], meta: {} }))
+      ),
+    } as unknown as D1Database;
+    return { DB: db } as unknown as Env;
+  }
+
+  it('attaches a descriptionHash matching hashDescription(brew_description) to the beer handed to queueBeersForCleanup', async () => {
+    vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 1, queuedIds: ['new-beer'] });
+    const description = 'Freshly synced description, no ABV listed';
+    const request = new Request('https://api.example.com/beers/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        beers: [{ id: 'new-beer', brew_name: 'New Beer', brewer: 'Brewer', brew_description: description }],
+      }),
+    });
+
+    const response = await handleBeerSync(request, createEnv(), {}, reqCtx);
+    expect(response.status).toBe(200);
+
+    expect(queueBeersForCleanup).toHaveBeenCalledTimes(1);
+    const [, beers] = vi.mocked(queueBeersForCleanup).mock.calls[0]!;
+    expect(beers).toHaveLength(1);
+    const expectedHash = await hashDescription(description);
+    expect((beers[0] as unknown as { descriptionHash: string }).descriptionHash).toBe(expectedHash);
+  });
+});
+
+// ============================================================================
+// handleBeerSync — bounded body guard integration
+// ============================================================================
+
+describe('handleBeerSync bounded body guard', () => {
+  const reqCtx: RequestContext = {
+    requestId: 'sync-body-guard-test',
+    startTime: Date.now(),
+    clientIdentifier: 'test-client',
+    apiKeyHash: null,
+    clientIp: null,
+    userAgent: null,
+  };
+
+  function createEnv(): Env {
+    const db = {
+      prepare: vi.fn(),
+      batch: vi.fn(),
+    } as unknown as D1Database;
+    return { DB: db } as unknown as Env;
+  }
+
+  it('returns 415 when Content-Type is not application/json', async () => {
+    const request = new Request('https://api.example.com/beers/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ beers: [] }),
+    });
+
+    const response = await handleBeerSync(request, createEnv(), {}, reqCtx);
+    expect(response.status).toBe(415);
+  });
+
+  it('returns 413 when the body exceeds SYNC_BODY_MAX_BYTES', async () => {
+    // The bounded reader rejects on raw byte count before any schema (or
+    // even JSON.parse) is attempted, so the body's actual validity against
+    // SyncBeersRequestOuterSchema is irrelevant here -- only its size is.
+    const oversizedBody = JSON.stringify({ beers: ['x'.repeat(SYNC_BODY_MAX_BYTES + 1000)] });
+    expect(new TextEncoder().encode(oversizedBody).length).toBeGreaterThan(SYNC_BODY_MAX_BYTES);
+
+    const request = new Request('https://api.example.com/beers/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: oversizedBody,
+    });
+
+    const response = await handleBeerSync(request, createEnv(), {}, reqCtx);
+    expect(response.status).toBe(413);
+  });
+
+  it('returns 400 for malformed JSON', async () => {
+    const request = new Request('https://api.example.com/beers/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not valid json',
+    });
+
+    const response = await handleBeerSync(request, createEnv(), {}, reqCtx);
+    expect(response.status).toBe(400);
+  });
+
+  it('returns 400 (schema rejection) when more than 50 beers are submitted', async () => {
+    const beers = Array.from({ length: 51 }, (_, i) => ({ id: `beer-${i}`, brew_name: 'Beer' }));
+    const request = new Request('https://api.example.com/beers/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ beers }),
+    });
+
+    const response = await handleBeerSync(request, createEnv(), {}, reqCtx);
+    expect(response.status).toBe(400);
   });
 });

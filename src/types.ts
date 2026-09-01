@@ -58,6 +58,31 @@ export type EnrichmentMessage = {
   readonly beerId: string;
   readonly beerName: string;
   readonly brewer: string;
+  /**
+   * Hash of the authoritative description this message was produced from,
+   * for parity with CleanupMessage.descriptionHash below. Required but
+   * nullable (not optional) -- deliberately unlike CleanupMessage: a beer
+   * with no description at all (categorizeBeer's needs_enrichment /
+   * new_needs_enrichment branches in src/db/helpers.ts) legitimately has no
+   * hash to bind, so producers always supply the field, using `null` (not
+   * omission) for "no hash to check." This also sidesteps
+   * exactOptionalPropertyTypes friction at every producer: a required
+   * nullable field takes a plain `someHash ?? null` assignment, the same
+   * shape as queueBeersForCleanup's self-computed fallback, with no
+   * conditional key-spreading needed. CleanupMessage stays optional because
+   * every legitimate CleanupMessage has a description and therefore a real
+   * hash -- a missing hash there is unambiguously a legacy/stale message,
+   * not a legitimate null. A message already in flight across the deploy
+   * that introduced this field (genuinely missing the key at the JSON
+   * level) still deserializes with `descriptionHash: undefined` at
+   * runtime regardless of this type; the consumer treats that the same as
+   * `null` (`descriptionHash ?? null` at bind time).
+   * The enrichment consumer binds this alongside (not instead of) the
+   * existing `enrichment_status = 'pending'` optimistic-concurrency guard,
+   * using SQL `IS` (not `=`) so a null message hash correctly matches a
+   * null stored column instead of never matching.
+   */
+  readonly descriptionHash: string | null;
 };
 
 /**
@@ -70,6 +95,13 @@ export type CleanupMessage = {
   readonly beerName: string;
   readonly brewer: string;
   readonly brewDescription: string;
+  /**
+   * Hash of the authoritative description this message was produced from.
+   * Result writes are bound to it so a stale or replayed message cannot
+   * overwrite newer state. Optional only for messages already in flight
+   * across the deploy that introduced it; those are treated as stale.
+   */
+  readonly descriptionHash?: string;
 };
 
 // ============================================================================

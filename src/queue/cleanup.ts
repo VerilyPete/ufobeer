@@ -24,6 +24,8 @@ import {
   MAX_CLEANUP_LENGTH_RATIO,
   ABV_CONFIDENCE_FROM_DESCRIPTION,
   ABV_CONFIDENCE_FROM_DESCRIPTION_FALLBACK,
+  MAX_PROMPT_DESCRIPTION_LENGTH,
+  MAX_CLEANED_OUTPUT_LENGTH,
 } from '../constants';
 import {
   withTimeout,
@@ -40,6 +42,105 @@ import type { CircuitBreaker } from './circuitBreaker';
 
 /** Default daily cleanup limit - can be overridden via env.DAILY_CLEANUP_LIMIT */
 const DEFAULT_DAILY_CLEANUP_LIMIT = 1000;
+
+// ============================================================================
+// Prompt injection / output validation constants
+// ============================================================================
+// MAX_PROMPT_DESCRIPTION_LENGTH and MAX_CLEANED_OUTPUT_LENGTH now live in
+// src/constants.ts (imported above) as part of the constants consolidation.
+
+/** C0 control characters and DEL, excluding \t \n \r which are legitimate
+ * in free-form beer descriptions. */
+// Built from numeric char codes (rather than a regex literal with hex
+// escapes) to keep this file's raw bytes unambiguous: C0 controls
+// (0x00-0x1F) minus tab/newline/carriage-return (legitimate in
+// free-form descriptions), plus DEL (0x7F).
+const CONTROL_CHAR_CODES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 127];
+const CONTROL_CHAR_PATTERN = new RegExp('[' + CONTROL_CHAR_CODES.map((c) => String.fromCharCode(c)).join('') + ']');
+
+/**
+ * Delimiter and instruction-like artifacts that should never legitimately
+ * appear in a cleaned beer description. Any spelling of the prompt's own
+ * `<TEXT>`/`</TEXT>` delimiter, or phrasing that reads as the model
+ * following injected instructions rather than cleaning text, is treated as
+ * evidence the model was steered off-task.
+ */
+const INJECTION_ARTIFACT_PATTERN = /<\s*\/?\s*text\s*>|ignore\s+(all\s+|any\s+|previous\s+|prior\s+)?instructions|you are now|new instructions|system prompt|###\s*(instruction|system)/i;
+
+const URL_PATTERN = /https?:\/\/[^\s"'<>]+/gi;
+
+/**
+ * Neutralize any spelling of the prompt's closing (and re-opening)
+ * delimiter before the description is concatenated into the prompt, so
+ * injected text cannot terminate the `<TEXT>` block early and have
+ * subsequent attacker-supplied text read as fresh instructions.
+ *
+ * This is a defense-in-depth layer, not the primary control -- an
+ * attacker can pre-encode the delimiter (e.g. `&lt;/TEXT&gt;`) and rely on
+ * the model's own instructed entity-decoding to reconstruct it after this
+ * check runs. The primary controls are bounding description length before
+ * assembly and validating model *output* content (see
+ * `hasUnsafePromptArtifacts` below) regardless of how an injection reached
+ * the model.
+ */
+function sanitizePromptDelimiters(text: string): string {
+  return text.replace(/<\s*\/?\s*text\s*>/gi, '[removed]');
+}
+
+/**
+ * Extract the set of URLs present in a string, used to detect a cleaned
+ * description that gained a URL the source text never had -- one of the
+ * concrete things a prompt injection could try to add.
+ */
+function extractUrls(text: string): ReadonlySet<string> {
+  return new Set(text.match(URL_PATTERN) ?? []);
+}
+
+/**
+ * Validate model *output* content before it is persisted or served.
+ * Neither the ABV-regression check nor the length-ratio check in
+ * `cleanDescriptionSafely` is a barrier to an attacker who controls the
+ * input: the ratio divides by attacker-supplied `original`, so the
+ * denominator can be sized to pass any desired output. This checks the
+ * content itself, independent of that ratio:
+ *
+ * - an absolute length cap (MAX_CLEANED_OUTPUT_LENGTH)
+ * - control characters (beyond \t \n \r)
+ * - delimiter/instruction-like artifacts (evidence of a followed injection)
+ * - a URL that was not present in the original description
+ */
+function hasUnsafePromptArtifacts(cleaned: string, original: string): boolean {
+  if (cleaned.length > MAX_CLEANED_OUTPUT_LENGTH) return true;
+  if (CONTROL_CHAR_PATTERN.test(cleaned)) return true;
+  if (INJECTION_ARTIFACT_PATTERN.test(cleaned)) return true;
+
+  const originalUrls = extractUrls(original);
+  for (const url of extractUrls(cleaned)) {
+    if (!originalUrls.has(url)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Sanitize raw description text for the fallback ("use original") path:
+ * strip HTML tags and control characters, and bound length. Every
+ * `usedOriginal: true` return from `cleanDescriptionSafely` -- and the
+ * circuit-breaker/quota-exceeded fallback paths that never call it at all
+ * -- persist this value as `brew_description_cleaned` and it is served
+ * directly to clients (`handlers/beers.ts`'s
+ * `enrichment?.brew_description_cleaned ?? beer.brew_description`).
+ * Without this, an AI failure serves the raw unsanitized source, HTML
+ * included, as the "cleaned" value.
+ */
+function sanitizeFallbackDescription(text: string): string {
+  const stripped = text
+    .replace(/<[^>]*>/g, '')
+    .replace(new RegExp(CONTROL_CHAR_PATTERN, 'g'), '');
+  return stripped.length > MAX_CLEANED_OUTPUT_LENGTH
+    ? stripped.slice(0, MAX_CLEANED_OUTPUT_LENGTH)
+    : stripped;
+}
 
 const CLEANUP_PROMPT = `Clean the text between <TEXT> and </TEXT>. Return ONLY the cleaned text, nothing else.
 
@@ -102,16 +203,61 @@ type BatchMetrics = {
 };
 
 /**
+ * A single UPDATE statement paired with the beer ID it targets, so a
+ * stale-write result (0 rows changed -- see findStaleBeerIds) can be
+ * traced back to the message it came from after db.batch() resolves.
+ */
+type DbOperation = {
+  readonly statement: D1PreparedStatement;
+  readonly beerId: string;
+};
+
+/**
  * Operations collected from batch processing.
  * Includes D1 statements, queue messages, and message disposition.
  */
 type BatchOperations = {
-  readonly dbStatements: readonly D1PreparedStatement[];
+  readonly dbOperations: readonly DbOperation[];
   readonly perplexityMessages: readonly EnrichmentMessage[];
   readonly ackMessages: readonly Message<CleanupMessage>[];
   readonly retryMessages: readonly Message<CleanupMessage>[];
   readonly metrics: BatchMetrics;
 };
+
+/**
+ * Determine which beer IDs' UPDATE did not actually change a row, from the
+ * D1Result[] db.batch() resolves with and the beerId each statement
+ * targeted (same order). This is the stale-result signal: every write in
+ * this module is bound with `WHERE id = ? AND description_hash = ?`, so a
+ * mismatch (the row's authoritative description changed after this
+ * message was produced) reports 0 changes instead of throwing.
+ *
+ * A result with no reported `meta.changes` (e.g. a simplified test double
+ * that resolves `db.batch()` with `[]`) is treated as a successful write,
+ * not stale -- real D1 always reports per-statement changes, so this only
+ * affects test doubles that don't model per-statement results.
+ */
+function findStaleBeerIds(
+  operations: readonly DbOperation[],
+  results: readonly D1Result[]
+): ReadonlySet<string> {
+  const stale = new Set<string>();
+  operations.forEach((op, i) => {
+    if (results[i]?.meta?.changes === 0) {
+      stale.add(op.beerId);
+    }
+  });
+  return stale;
+}
+
+/** Log a stale-write warning in a consistent shape across call sites. */
+function logStaleWrite(beerId: string, reason: string): void {
+  console.warn(JSON.stringify({
+    event: 'cleanup.stale_result',
+    beerId,
+    reason,
+  }));
+}
 
 /**
  * Result from processAIConcurrently for each message.
@@ -250,10 +396,26 @@ async function cleanDescriptionSafely(
     };
   }
 
+  // Bound description length before prompt assembly, rather than relying
+  // on the post-hoc length-ratio check below (see MAX_PROMPT_DESCRIPTION_LENGTH).
+  // Applied regardless of source: request-schema bounds on brew_description
+  // are a client-facing concern and do not constrain descriptions that
+  // originate from Flying Saucer. Used consistently below so ABV
+  // extraction and the ratio check operate on what the model actually saw.
+  const boundedOriginal = original.length > MAX_PROMPT_DESCRIPTION_LENGTH
+    ? original.slice(0, MAX_PROMPT_DESCRIPTION_LENGTH)
+    : original;
+  const originalAbv = extractABV(boundedOriginal);
+
   let cleaned: string;
   try {
+    // Treat every LLM input as hostile regardless of provenance: neutralize
+    // the prompt's own delimiter before assembly so injected text cannot
+    // terminate the <TEXT> block early (see sanitizePromptDelimiters for
+    // why this is defense-in-depth, not the primary control).
+    const promptSafeDescription = sanitizePromptDelimiters(boundedOriginal);
     const result = await ai.run('@cf/meta/llama-3.2-3b-instruct', {
-      prompt: CLEANUP_PROMPT + original + '\n</TEXT>',
+      prompt: CLEANUP_PROMPT + promptSafeDescription + '\n</TEXT>',
       max_tokens: 700,
     });
 
@@ -263,50 +425,71 @@ async function cleanDescriptionSafely(
     } else {
       console.error('[cleanup] AI response missing text');
       return {
-        cleaned: original,
+        cleaned: sanitizeFallbackDescription(boundedOriginal),
         usedOriginal: true,
-        extractedABV: extractABV(original),
+        extractedABV: originalAbv,
       };
     }
   } catch (e) {
     console.error('[cleanup] Inference failed:', e instanceof Error ? e.message : String(e));
     return {
-      cleaned: original,
+      cleaned: sanitizeFallbackDescription(boundedOriginal),
       usedOriginal: true,
-      extractedABV: extractABV(original),
+      extractedABV: originalAbv,
     };
   }
 
-  // Validation 1: ABV extraction should work the same or better
-  const originalAbv = extractABV(original);
+  // Validation 1: reject content-level injection artifacts. The ABV and
+  // length-ratio checks below are NOT a barrier to an attacker who
+  // controls the input -- the ratio divides by attacker-supplied
+  // `original`, so the denominator can be sized to pass any desired
+  // output, and the ABV check only fires when originalAbv !== null. This
+  // is the primary control against model output that was steered by an
+  // injected instruction, regardless of how the injection reached the
+  // model.
+  if (hasUnsafePromptArtifacts(cleaned, boundedOriginal)) {
+    console.warn('[cleanup] Cleaned output failed content validation, using original');
+    return {
+      cleaned: sanitizeFallbackDescription(boundedOriginal),
+      usedOriginal: true,
+      extractedABV: originalAbv,
+    };
+  }
+
+  // Validation 2: ABV extraction should work the same or better
   const cleanedAbv = extractABV(cleaned);
 
   if (originalAbv !== null && cleanedAbv === null) {
     console.warn('[cleanup] Cleanup broke ABV extraction, using original');
     return {
-      cleaned: original,
+      cleaned: sanitizeFallbackDescription(boundedOriginal),
       usedOriginal: true,
       extractedABV: originalAbv,
     };
   }
 
-  // Validation 2: Length shouldn't change much (only removing HTML artifacts)
+  // Validation 3: Length shouldn't change much (only removing HTML artifacts)
   // Tighter bounds since we're only removing artifacts, not rewriting
-  const lengthRatio = cleaned.length / original.length;
+  const lengthRatio = cleaned.length / boundedOriginal.length;
   if (lengthRatio < MIN_CLEANUP_LENGTH_RATIO || lengthRatio > MAX_CLEANUP_LENGTH_RATIO) {
     console.warn(`[cleanup] Length changed too much (ratio=${lengthRatio.toFixed(2)}), using original`);
     return {
-      cleaned: original,
+      cleaned: sanitizeFallbackDescription(boundedOriginal),
       usedOriginal: true,
       extractedABV: originalAbv,
     };
   }
 
-  // AI cleanup successful - return ABV from cleaned version
+  // AI cleanup successful. Do NOT derive a persisted ABV from model output
+  // when the source text contained none: an injection that fabricates an
+  // ABV in a description with none passes both checks above (the ABV
+  // check only fires when originalAbv !== null; a fabricated short ABV
+  // string is easily within the length ratio), so this must be enforced
+  // explicitly rather than trusting cleanedAbv.
   return {
     cleaned,
     usedOriginal: false,
-    extractedABV: cleanedAbv,
+    extractedABV: originalAbv === null ? null : cleanedAbv,
   };
 }
 
@@ -514,7 +697,7 @@ function buildBatchOperations(
     })
     .filter((c): c is CategorizedResult => c !== null);
 
-  const dbStatements: D1PreparedStatement[] = [];
+  const dbOperations: DbOperation[] = [];
   const perplexityMessages: EnrichmentMessage[] = [];
   const ackMessages: Message<CleanupMessage>[] = [];
   const retryMessages: Message<CleanupMessage>[] = [];
@@ -537,8 +720,9 @@ function buildBatchOperations(
       case 'success_with_abv':
         aiSuccessCount++;
         abvExtractedCount++;
-        dbStatements.push(
-          env.DB.prepare(`
+        dbOperations.push({
+          beerId: c.beerId,
+          statement: env.DB.prepare(`
             UPDATE enriched_beers SET
               brew_description_cleaned = ?,
               description_cleaned_at = ?,
@@ -547,36 +731,51 @@ function buildBatchOperations(
               confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION},
               enrichment_source = 'description',
               enrichment_status = 'enriched'
-            WHERE id = ?
+            WHERE id = ? AND description_hash = ?
           `).bind(
             c.cleaned,
             now,
             c.usedOriginal ? null : 'workers-ai',
             c.abv,
-            c.beerId
-          )
-        );
+            c.beerId,
+            c.message.body.descriptionHash ?? null
+          ),
+        });
         ackMessages.push(c.message);
         break;
 
       case 'success_no_abv':
         aiSuccessCount++;
-        dbStatements.push(
-          env.DB.prepare(`
+        dbOperations.push({
+          beerId: c.beerId,
+          statement: env.DB.prepare(`
             UPDATE enriched_beers SET
               brew_description_cleaned = ?,
               description_cleaned_at = ?,
               cleanup_source = ?
-            WHERE id = ?
+            WHERE id = ? AND description_hash = ?
           `).bind(
             c.cleaned,
             now,
             c.usedOriginal ? null : 'workers-ai',
-            c.beerId
-          )
-        );
+            c.beerId,
+            c.message.body.descriptionHash ?? null
+          ),
+        });
         if (!shouldSkipEnrichment(c.beerName)) {
-          perplexityMessages.push({ beerId: c.beerId, beerName: c.beerName, brewer: c.brewer });
+          // The row's description_hash column is untouched by this UPDATE
+          // (only cleanup fields are set above), so the CleanupMessage's
+          // own descriptionHash -- which just matched the row for this
+          // write to have succeeded -- is still the row's current hash.
+          // Forwarding it gives the downstream Perplexity write the same
+          // stale-result binding as cleanup.ts (Cloudflare security review
+          // Phase 1, item 2a/5 parity).
+          perplexityMessages.push({
+            beerId: c.beerId,
+            beerName: c.beerName,
+            brewer: c.brewer,
+            descriptionHash: c.message.body.descriptionHash ?? null,
+          });
         }
         ackMessages.push(c.message);
         break;
@@ -585,8 +784,9 @@ function buildBatchOperations(
         circuitBreakerTriggered = true;
         fallbackUsedCount++;
         abvExtractedCount++;
-        dbStatements.push(
-          env.DB.prepare(`
+        dbOperations.push({
+          beerId: c.beerId,
+          statement: env.DB.prepare(`
             UPDATE enriched_beers SET
               brew_description_cleaned = ?,
               description_cleaned_at = ?,
@@ -595,26 +795,43 @@ function buildBatchOperations(
               confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION_FALLBACK},
               enrichment_source = 'description-fallback',
               enrichment_status = 'enriched'
-            WHERE id = ?
-          `).bind(c.brewDescription, now, c.abv, c.beerId)
-        );
+            WHERE id = ? AND description_hash = ?
+          `).bind(
+            sanitizeFallbackDescription(c.brewDescription),
+            now,
+            c.abv,
+            c.beerId,
+            c.message.body.descriptionHash ?? null
+          ),
+        });
         ackMessages.push(c.message);
         break;
 
       case 'fallback_no_abv':
         circuitBreakerTriggered = true;
         fallbackUsedCount++;
-        dbStatements.push(
-          env.DB.prepare(`
+        dbOperations.push({
+          beerId: c.beerId,
+          statement: env.DB.prepare(`
             UPDATE enriched_beers SET
               brew_description_cleaned = ?,
               description_cleaned_at = ?,
               cleanup_source = 'fallback-circuit-breaker'
-            WHERE id = ?
-          `).bind(c.brewDescription, now, c.beerId)
-        );
+            WHERE id = ? AND description_hash = ?
+          `).bind(
+            sanitizeFallbackDescription(c.brewDescription),
+            now,
+            c.beerId,
+            c.message.body.descriptionHash ?? null
+          ),
+        });
         if (!shouldSkipEnrichment(c.beerName)) {
-          perplexityMessages.push({ beerId: c.beerId, beerName: c.beerName, brewer: c.brewer });
+          perplexityMessages.push({
+            beerId: c.beerId,
+            beerName: c.beerName,
+            brewer: c.brewer,
+            descriptionHash: c.message.body.descriptionHash ?? null,
+          });
         }
         ackMessages.push(c.message);
         break;
@@ -637,7 +854,7 @@ function buildBatchOperations(
   };
 
   return {
-    dbStatements,
+    dbOperations,
     perplexityMessages,
     ackMessages,
     retryMessages,
@@ -704,22 +921,27 @@ export async function handleFallbackBatch(
   source: FallbackSource
 ): Promise<void> {
   const now = Date.now();
-  const dbStatements: D1PreparedStatement[] = [];
-  const perplexityMessages: EnrichmentMessage[] = [];
+  const dbOperations: DbOperation[] = [];
+  const perplexityCandidates: EnrichmentMessage[] = [];
 
   let abvFoundCount = 0;
 
   for (const message of messages) {
-    const { beerId, beerName, brewer, brewDescription } = message.body;
-
-    // Try to extract ABV from the original description (no AI cleanup)
+    const { beerId, beerName, brewer, brewDescription, descriptionHash } = message.body;
+    // Sanitize before persisting -- this path never calls Workers AI, so
+    // without this the raw unsanitized description (HTML included)
+    // becomes the served "cleaned" value. ABV is extracted from the raw
+    // source, not the sanitized value: sanitization only strips
+    // HTML/control chars and never touches ABV-relevant characters.
+    const sanitizedDescription = sanitizeFallbackDescription(brewDescription);
     const abv = extractABV(brewDescription);
 
     if (abv !== null) {
       // Found ABV in original description
       abvFoundCount++;
-      dbStatements.push(
-        env.DB.prepare(`
+      dbOperations.push({
+        beerId,
+        statement: env.DB.prepare(`
           UPDATE enriched_beers SET
             brew_description_cleaned = ?,
             description_cleaned_at = ?,
@@ -727,30 +949,45 @@ export async function handleFallbackBatch(
             abv = ?,
             confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION_FALLBACK},
             enrichment_source = 'description-fallback'
-          WHERE id = ?
-        `).bind(brewDescription, now, source, abv, beerId)
-      );
+          WHERE id = ? AND description_hash = ?
+        `).bind(sanitizedDescription, now, source, abv, beerId, descriptionHash ?? null),
+      });
     } else {
       // No ABV found - store original and queue for Perplexity enrichment (if not blocklisted)
-      dbStatements.push(
-        env.DB.prepare(`
+      dbOperations.push({
+        beerId,
+        statement: env.DB.prepare(`
           UPDATE enriched_beers SET
             brew_description_cleaned = ?,
             description_cleaned_at = ?,
             cleanup_source = ?
-          WHERE id = ?
-        `).bind(brewDescription, now, source, beerId)
-      );
+          WHERE id = ? AND description_hash = ?
+        `).bind(sanitizedDescription, now, source, beerId, descriptionHash ?? null),
+      });
       if (!shouldSkipEnrichment(beerName)) {
-        perplexityMessages.push({ beerId, beerName, brewer });
+        perplexityCandidates.push({
+          beerId,
+          beerName,
+          brewer,
+          descriptionHash: descriptionHash ?? null,
+        });
       }
     }
   }
 
-  // Execute D1 updates with retry
-  if (dbStatements.length > 0) {
-    await batchUpdateWithRetry(env.DB, dbStatements);
+  // Execute D1 updates with retry, then determine which writes actually
+  // landed. A stale (hash-mismatched, or missing-hash) message must not
+  // enqueue Perplexity work derived from data that was never persisted.
+  let staleBeerIds: ReadonlySet<string> = new Set();
+  if (dbOperations.length > 0) {
+    const results = await batchUpdateWithRetry(env.DB, dbOperations.map(op => op.statement));
+    staleBeerIds = findStaleBeerIds(dbOperations, results);
+    for (const beerId of staleBeerIds) {
+      logStaleWrite(beerId, 'fallback batch: description_hash mismatch or missing');
+    }
   }
+
+  const perplexityMessages = perplexityCandidates.filter(msg => !staleBeerIds.has(msg.beerId));
 
   // Queue Perplexity messages atomically
   if (perplexityMessages.length > 0) {
@@ -856,27 +1093,39 @@ async function handleQuotaExceededMessages(
   }
 }
 
+/** Result of the D1 batch execution phase. */
+type DatabaseBatchResult =
+  | { readonly success: true; readonly staleBeerIds: ReadonlySet<string> }
+  | { readonly success: false };
+
 /**
  * Phase 5: Execute D1 batch update with retry logic.
  *
- * Wraps batchUpdateWithRetry and handles failure by retrying all messages.
- * Returns true if batch succeeded, false if all messages should be retried.
+ * Wraps batchUpdateWithRetry, handles failure by retrying all messages, and
+ * -- on success -- reports which beer IDs had a stale write (0 rows
+ * changed, from the `WHERE id = ? AND description_hash = ?` optimistic
+ * concurrency check on every UPDATE this module issues) so the caller can
+ * skip deriving further work (e.g. Perplexity enqueue) from data that was
+ * never actually persisted.
  *
  * @param db - D1 database instance
- * @param statements - Prepared D1 statements to execute
- * @param messages - Original messages (for retry on failure)
- * @returns true if successful, false if messages should be retried
+ * @param operations - Prepared D1 statements paired with their beer IDs
+ * @param messages - Original messages (for retry on total batch failure)
  */
 async function executeDatabaseBatch(
   db: D1Database,
-  statements: readonly D1PreparedStatement[],
+  operations: readonly DbOperation[],
   messages: readonly Message<CleanupMessage>[]
-): Promise<boolean> {
-  if (statements.length === 0) return true;
+): Promise<DatabaseBatchResult> {
+  if (operations.length === 0) return { success: true, staleBeerIds: new Set() };
 
   try {
-    await batchUpdateWithRetry(db, [...statements]);
-    return true;
+    const results = await batchUpdateWithRetry(db, operations.map(op => op.statement));
+    const staleBeerIds = findStaleBeerIds(operations, results);
+    for (const beerId of staleBeerIds) {
+      logStaleWrite(beerId, 'main batch: description_hash mismatch or missing');
+    }
+    return { success: true, staleBeerIds };
   } catch (dbError) {
     console.error('[cleanup] Batch D1 update failed after retries:', dbError);
     // Retry ALL messages if DB fails after retries
@@ -885,7 +1134,7 @@ async function executeDatabaseBatch(
     for (const msg of messages) {
       msg.retry();
     }
-    return false;
+    return { success: false };
   }
 }
 
@@ -979,14 +1228,38 @@ export async function handleCleanupBatch(
   });
 
   // ============================================================
+  // Phase 0: Drop messages with no descriptionHash
+  // ============================================================
+  // Only possible for messages already in flight (enqueued before the
+  // deploy that added CleanupMessage.descriptionHash) -- every UPDATE this
+  // consumer issues binds `AND description_hash = ?`, and a message with
+  // no hash to bind can never be distinguished from a genuinely stale one,
+  // so it is treated the same way: acknowledged without writing. This is a
+  // one-time drop of whatever was queued at deploy time, not an ongoing
+  // condition.
+  const messagesWithHash: Message<CleanupMessage>[] = [];
+  for (const msg of batch.messages) {
+    if (msg.body.descriptionHash) {
+      messagesWithHash.push(msg);
+    } else {
+      logStaleWrite(msg.body.beerId, 'no descriptionHash on message (pre-deploy in-flight message)');
+      msg.ack();
+    }
+  }
+  if (messagesWithHash.length === 0) {
+    console.log('[cleanup] All messages in batch had no descriptionHash; acked without processing');
+    return;
+  }
+
+  // ============================================================
   // Phase 1: Reserve quota atomically
   // ============================================================
   let quotaResult: QuotaReservationResult;
   try {
-    quotaResult = await reserveQuotaForBatch(env.DB, batch.messages, dailyLimit);
+    quotaResult = await reserveQuotaForBatch(env.DB, messagesWithHash, dailyLimit);
   } catch (error) {
     console.error('[cleanup] Quota reservation failed:', error);
-    for (const msg of batch.messages) {
+    for (const msg of messagesWithHash) {
       msg.retry();
     }
     return;
@@ -1025,19 +1298,25 @@ export async function handleCleanupBatch(
   // ============================================================
   // Phase 5: Execute batch D1 update with retry
   // ============================================================
-  const dbSuccess = await executeDatabaseBatch(
+  const dbResult = await executeDatabaseBatch(
     env.DB,
-    operations.dbStatements,
+    operations.dbOperations,
     quotaResult.toProcess
   );
-  if (!dbSuccess) {
+  if (!dbResult.success) {
     return; // Messages already retried in executeDatabaseBatch
   }
 
   // ============================================================
   // Phase 6: Queue Perplexity messages
   // ============================================================
-  await queueForPerplexityEnrichment(env.ENRICHMENT_QUEUE, operations.perplexityMessages);
+  // Exclude beers whose write was stale (0 rows changed) -- enqueuing
+  // Perplexity work derived from data that was never persisted would
+  // reintroduce the same stale-result problem one step downstream.
+  const perplexityMessages = operations.perplexityMessages.filter(
+    msg => !dbResult.staleBeerIds.has(msg.beerId)
+  );
+  await queueForPerplexityEnrichment(env.ENRICHMENT_QUEUE, perplexityMessages);
 
   // ============================================================
   // Phase 7: Ack/retry individual messages based on results

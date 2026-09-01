@@ -18,8 +18,12 @@ import type {
   RequestContext,
   DlqMessageRow,
   PaginationCursor,
+  CleanupMessage,
+  EnrichmentMessage,
 } from '../types';
 import { errorResponse } from '../context';
+import { readBoundedJson, boundedJsonErrorResponse } from '../utils/body';
+import { SMALL_JSON_BODY_MAX_BYTES } from '../constants';
 import {
   DlqReplayRequestSchema,
   DlqAcknowledgeRequestSchema,
@@ -301,7 +305,12 @@ export async function handleDlqReplay(
   reqCtx: RequestContext
 ): Promise<Response> {
   try {
-    const parseResult = DlqReplayRequestSchema.safeParse(await request.json());
+    const bodyResult = await readBoundedJson(request, SMALL_JSON_BODY_MAX_BYTES);
+    if (!bodyResult.ok) {
+      return boundedJsonErrorResponse(bodyResult, reqCtx.requestId, headers);
+    }
+
+    const parseResult = DlqReplayRequestSchema.safeParse(bodyResult.data);
     if (!parseResult.success) {
       return errorResponse(
         'ids array required',
@@ -311,8 +320,10 @@ export async function handleDlqReplay(
     }
     const { ids, delay_seconds } = parseResult.data;
 
-    // Limit batch size
-    const limitedIds = ids.slice(0, 50);
+    // DlqReplayRequestSchema already caps `ids` at DLQ_REPLAY_MAX_IDS (50)
+    // and rejects an oversized array with a 400 above, instead of silently
+    // truncating it after the fact.
+    const limitedIds = ids;
     const now = Date.now();
 
     // STEP 1: Optimistically update status to 'replaying' to prevent race conditions
@@ -365,8 +376,25 @@ export async function handleDlqReplay(
             failedIds.push(row.id);
             continue;
           }
+          // Built explicitly (rather than spreading parsed.data) so an
+          // absent descriptionHash omits the key entirely instead of
+          // assigning it `undefined` -- required under
+          // exactOptionalPropertyTypes for CleanupMessage.descriptionHash.
+          // This also preserves the original message's descriptionHash on
+          // replay, rather than stripping it, so a replayed message stays
+          // bound to the same description version it was originally built
+          // from (stale-result binding).
+          const cleanupMessage: CleanupMessage = {
+            beerId: parsed.data.beerId,
+            beerName: parsed.data.beerName,
+            brewer: parsed.data.brewer,
+            brewDescription: parsed.data.brewDescription,
+            ...(parsed.data.descriptionHash !== undefined
+              ? { descriptionHash: parsed.data.descriptionHash }
+              : {}),
+          };
           await env.CLEANUP_QUEUE.send(
-            parsed.data,
+            cleanupMessage,
             delay_seconds > 0 ? { delaySeconds: delay_seconds } : {}
           );
           cleanupSent++;
@@ -387,8 +415,21 @@ export async function handleDlqReplay(
             `UPDATE enriched_beers SET enrichment_status = 'pending', updated_at = ? WHERE id = ?`
           ).bind(Date.now(), parsed.data.beerId).run();
 
+          // EnrichmentMessage.descriptionHash is required-but-nullable, so
+          // a `?? null` fallback (not a conditional key-spread) normalizes
+          // a genuinely absent key -- a DLQ row written before this field
+          // existed -- into an explicit null. This also preserves the
+          // original message's descriptionHash on replay, matching the
+          // CleanupMessage branch above (stale-result binding parity,
+          // Cloudflare security review Phase 1, item 2a/5).
+          const enrichmentMessage: EnrichmentMessage = {
+            beerId: parsed.data.beerId,
+            beerName: parsed.data.beerName,
+            brewer: parsed.data.brewer,
+            descriptionHash: parsed.data.descriptionHash ?? null,
+          };
           await env.ENRICHMENT_QUEUE.send(
-            parsed.data,
+            enrichmentMessage,
             delay_seconds > 0 ? { delaySeconds: delay_seconds } : {}
           );
           enrichmentSent++;
@@ -469,7 +510,12 @@ export async function handleDlqAcknowledge(
   reqCtx: RequestContext
 ): Promise<Response> {
   try {
-    const parseResult = DlqAcknowledgeRequestSchema.safeParse(await request.json());
+    const bodyResult = await readBoundedJson(request, SMALL_JSON_BODY_MAX_BYTES);
+    if (!bodyResult.ok) {
+      return boundedJsonErrorResponse(bodyResult, reqCtx.requestId, headers);
+    }
+
+    const parseResult = DlqAcknowledgeRequestSchema.safeParse(bodyResult.data);
     if (!parseResult.success) {
       return errorResponse(
         'ids array required',
@@ -479,8 +525,10 @@ export async function handleDlqAcknowledge(
     }
     const { ids } = parseResult.data;
 
-    // Limit batch size
-    const limitedIds = ids.slice(0, 100);
+    // DlqAcknowledgeRequestSchema already caps `ids` at
+    // DLQ_ACKNOWLEDGE_MAX_IDS (100) and rejects an oversized array with a
+    // 400 above, instead of silently truncating it after the fact.
+    const limitedIds = ids;
     const now = Date.now();
 
     const placeholders = limitedIds.map(() => '?').join(',');
@@ -490,13 +538,24 @@ export async function handleDlqAcknowledge(
        WHERE id IN (${placeholders}) AND status = 'pending'`
     ).bind(now, ...limitedIds).run();
 
-    console.log(`DLQ messages acknowledged: requestedCount=${limitedIds.length}, acknowledgedCount=${result.meta.changes}`);
+    const requestedCount = limitedIds.length;
+    const acknowledgedCount = result.meta.changes;
+    // Rows requested but not acknowledged: not found, or not in 'pending'
+    // status (already acknowledged/replaying/replayed). Surfaced so the
+    // caller -- and the admin audit row at the index.ts call site -- can
+    // distinguish a full acknowledge from a partial one, the same way
+    // dlq_replay already reports requested_count/failed_count.
+    const failedCount = requestedCount - acknowledgedCount;
+
+    console.log(`DLQ messages acknowledged: requestedCount=${requestedCount}, acknowledgedCount=${acknowledgedCount}`);
 
     return Response.json({
       success: true,
       requestId: reqCtx.requestId,
       data: {
-        acknowledged_count: result.meta.changes,
+        acknowledged_count: acknowledgedCount,
+        requested_count: requestedCount,
+        failed_count: failedCount,
       },
     }, { headers });
 

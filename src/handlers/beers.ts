@@ -17,6 +17,12 @@ import type {
 } from '../types';
 import { isValidBeer, hasBeerStock, SYNC_CONSTANTS } from '../types';
 import { insertPlaceholders, getEnrichmentForBeerIds } from '../db';
+// queueBeersForCleanup (src/queue/helpers.ts) attaches descriptionHash onto
+// the CleanupMessage it sends, computing one from brew_description when the
+// caller doesn't supply it -- so this file's cleanup-message producers
+// (handleBeerSync's needsCleanup, and processBackgroundEnrichment's use of
+// insertPlaceholders's needsCleanup) reach the queue correctly bound. See
+// the security review's "stale-result binding" remediation.
 import { queueBeersForEnrichment, queueBeersForCleanup } from '../queue';
 import { getCachedTaplist, setCachedTaplist, updateCacheTimestamp, parseCachedBeers } from '../db/cache';
 import type { CachedTaplistRow } from '../db/cache';
@@ -27,12 +33,73 @@ import { shouldUpdateContent } from '../utils/cache-helpers';
 import { computeEnrichmentHash } from '../utils/enrichment-hash';
 import { isValidStoreId } from '../validation/storeId';
 import { logError, logWithContext } from '../utils/log';
-import { CACHE_TTL_MS, UPSTREAM_TAPLIST_TIMEOUT_MS } from '../constants';
+import { readBoundedJson, boundedJsonErrorResponse } from '../utils/body';
+import { readBoundedText, ResponseTooLargeError } from '../utils/bounded-response';
+import { CACHE_TTL_MS, UPSTREAM_TAPLIST_TIMEOUT_MS, SYNC_BODY_MAX_BYTES, SMALL_JSON_BODY_MAX_BYTES, FLYING_SAUCER_RESPONSE_MAX_BYTES } from '../constants';
+import { FlyingSaucerResponseSchema, isFlyingSaucerBeerRecordWithinSizeCap } from '../schemas/external';
 import {
   BatchLookupRequestSchema,
   SyncBeersRequestOuterSchema,
   SyncBeerItemSchema,
 } from '../schemas/request';
+
+// ============================================================================
+// Flying Saucer Origin Allowlist
+// ============================================================================
+
+/**
+ * Allowlisted Flying Saucer upstream origins. `env.FLYING_SAUCER_API_BASE`
+ * is a Worker secret (set via `wrangler secret put`, not attacker
+ * controlled) but was previously trusted indefinitely and interpolated
+ * directly into a fetch URL by string concatenation. This allowlist fails
+ * closed on a misconfigured, unexpected, or non-HTTPS origin instead of
+ * fetching it.
+ *
+ * - `https://fsbs.beerknurd.com` is the real production Flying Saucer host.
+ *   Confirmed from `.dev.vars.example` (`FLYING_SAUCER_API_BASE=https://
+ *   fsbs.beerknurd.com`) and `plans/cache-research-api.md` (which records
+ *   the full production base as `https://fsbs.beerknurd.com/bk-store-json.php`).
+ * - `https://flying-saucer.golden-taproom.test` is used exclusively by the
+ *   golden contract test (`contract-test/goldenTaproom.contract.test.ts`,
+ *   not owned by this change -- see its `TEST_ORIGIN` constant) to exercise
+ *   this exact fetch path end to end against a Miniflare `fetchMock`
+ *   double. `.test` is an IANA-reserved TLD (RFC 2606) that never resolves
+ *   on the public internet, so allowlisting it adds no real attack surface
+ *   even if it somehow reached a production configuration.
+ */
+const ALLOWED_FLYING_SAUCER_ORIGINS = new Set([
+  'https://fsbs.beerknurd.com',
+  'https://flying-saucer.golden-taproom.test',
+]);
+
+type FlyingSaucerUrlResult =
+  | { readonly ok: true; readonly url: string }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Build the Flying Saucer taplist URL from the configured base and store
+ * ID, using the `URL` API (not string interpolation) and validating the
+ * base's origin against the allowlist above. Preserves whatever path the
+ * configured base carries (e.g. `/bk-store-json.php`) -- only the origin is
+ * validated, since the path is part of the trusted configuration, not
+ * attacker input.
+ */
+function buildFlyingSaucerUrl(base: string, storeId: string): FlyingSaucerUrlResult {
+  let parsed: URL;
+  try {
+    parsed = new URL(base);
+  } catch {
+    return { ok: false, reason: 'FLYING_SAUCER_API_BASE is not a valid URL' };
+  }
+  if (parsed.protocol !== 'https:') {
+    return { ok: false, reason: 'FLYING_SAUCER_API_BASE must use HTTPS' };
+  }
+  if (!ALLOWED_FLYING_SAUCER_ORIGINS.has(parsed.origin)) {
+    return { ok: false, reason: 'FLYING_SAUCER_API_BASE origin is not allowlisted' };
+  }
+  parsed.searchParams.set('sid', storeId);
+  return { ok: true, url: parsed.toString() };
+}
 
 // ============================================================================
 // Background Enrichment Processing
@@ -173,9 +240,18 @@ async function fetchMergeAndCacheTaplist(
   requestId: string,
   startTime: number
 ): Promise<TaplistCoreResult> {
-  // 1. Fetch from Flying Saucer (timeout guards against a hung upstream)
-  const fsUrl = `${env.FLYING_SAUCER_API_BASE}?sid=${storeId}`;
-  const fsResp = await fetch(fsUrl, {
+  // 1. Validate the configured upstream origin and build the URL with the
+  // `URL` API (not string interpolation) before fetching. Fails closed on a
+  // misconfigured, unexpected, or non-HTTPS FLYING_SAUCER_API_BASE, distinct
+  // in the logs (`config_error`) from an actual upstream outage below.
+  const urlResult = buildFlyingSaucerUrl(env.FLYING_SAUCER_API_BASE, storeId);
+  if (!urlResult.ok) {
+    logError('upstream.flying_saucer.config_error', urlResult.reason, { requestId, storeId });
+    return { ok: false, upstreamLatencyMs: Date.now() - startTime, upstreamStatus: 0 };
+  }
+
+  // 2. Fetch from Flying Saucer (timeout guards against a hung upstream)
+  const fsResp = await fetch(urlResult.url, {
     headers: { 'User-Agent': 'BeerSelector/1.0' },
     signal: AbortSignal.timeout(UPSTREAM_TAPLIST_TIMEOUT_MS),
   });
@@ -191,11 +267,43 @@ async function fetchMergeAndCacheTaplist(
     return { ok: false, upstreamLatencyMs, upstreamStatus: fsResp.status };
   }
 
-  // 2. Parse response with type guards
-  // Flying Saucer API returns: [{...}, {brewInStock: [...]}]
-  const fsData: unknown = await fsResp.json();
-  const rawResponseBody = JSON.stringify(fsData);
+  // 3. Read the body with a hard byte cap while streaming (before it is
+  // fully buffered), so a compromised or misbehaving upstream cannot force
+  // an unbounded amount of memory to be materialized. On an oversized body,
+  // fail this fetch the same way an upstream outage does (stale-cache
+  // fallback at the call site), distinct in the logs.
+  let rawResponseBody: string;
+  try {
+    rawResponseBody = await readBoundedText(fsResp, FLYING_SAUCER_RESPONSE_MAX_BYTES);
+  } catch (error) {
+    if (error instanceof ResponseTooLargeError) {
+      logError('upstream.flying_saucer.oversized', error, {
+        requestId,
+        storeId,
+        maxBytes: FLYING_SAUCER_RESPONSE_MAX_BYTES,
+      });
+      return { ok: false, upstreamLatencyMs, upstreamStatus: fsResp.status };
+    }
+    throw error;
+  }
+
+  // Hash the bounded bytes already read above rather than re-stringifying a
+  // parsed object graph -- avoids holding both a full parsed object graph
+  // AND a second full JSON serialization in memory solely to compute a
+  // hash. NOTE: this changes the hash's input from `JSON.stringify(parsed)`
+  // to the raw upstream bytes; see the security review report for the
+  // one-time cache-invalidation consequence of that change.
   const rawHash = await hashDescription(rawResponseBody);
+
+  // 4. Parse response with type guards
+  // Flying Saucer API returns: [{...}, {brewInStock: [...]}]
+  let fsData: unknown;
+  try {
+    fsData = JSON.parse(rawResponseBody);
+  } catch (error) {
+    logError('upstream.flying_saucer.invalid_json', error, { requestId, storeId });
+    return { ok: false, upstreamLatencyMs, upstreamStatus: fsResp.status };
+  }
 
   let rawBeersUnvalidated: unknown[] = [];
   if (Array.isArray(fsData)) {
@@ -205,7 +313,26 @@ async function fetchMergeAndCacheTaplist(
     }
   }
 
-  const rawBeers = rawBeersUnvalidated.filter(isValidBeer);
+  // Reject an over-long beer array before iterating it, rather than relying
+  // solely on per-record validation below.
+  const arrayCheck = FlyingSaucerResponseSchema.safeParse(rawBeersUnvalidated);
+  if (!arrayCheck.success) {
+    logError('upstream.flying_saucer.oversized_array', 'brewInStock exceeds MAX_FLYING_SAUCER_RESPONSE_ITEMS', {
+      requestId,
+      storeId,
+      length: rawBeersUnvalidated.length,
+    });
+    return { ok: false, upstreamLatencyMs, upstreamStatus: fsResp.status };
+  }
+
+  // isValidBeer is a FlyingSaucerBeerSchema.safeParse() type guard (the
+  // "successful per-record safeParse" that isFlyingSaucerBeerRecordWithinSizeCap
+  // must follow -- see its doc comment in schemas/external.ts); chaining the
+  // aggregate size cap after it drops an oversized record (including
+  // passthrough fields the schema itself can't bound) before hashing/caching.
+  const rawBeers = rawBeersUnvalidated
+    .filter(isValidBeer)
+    .filter(isFlyingSaucerBeerRecordWithinSizeCap);
 
   // 3. Fetch enrichment data from D1 (bounded query with chunking)
   const beerIds = rawBeers.map(b => b.id);
@@ -508,7 +635,12 @@ export async function handleBatchLookup(
   reqCtx: RequestContext
 ): Promise<Response> {
   try {
-    const parseResult = BatchLookupRequestSchema.safeParse(await request.json());
+    const bodyResult = await readBoundedJson(request, SMALL_JSON_BODY_MAX_BYTES);
+    if (!bodyResult.ok) {
+      return boundedJsonErrorResponse(bodyResult, reqCtx.requestId, headers);
+    }
+
+    const parseResult = BatchLookupRequestSchema.safeParse(bodyResult.data);
     if (!parseResult.success) {
       return Response.json(
         { error: 'ids array required', requestId: reqCtx.requestId },
@@ -516,20 +648,18 @@ export async function handleBatchLookup(
       );
     }
     const { ids } = parseResult.data;
-
-    // Limit batch size to 100; report truncation additively so clients can
-    // detect dropped IDs without a breaking error response
+    // BatchLookupRequestSchema already caps `ids` at BATCH_MAX_IDS (100) and
+    // rejects an oversized array with a 400 above, instead of silently
+    // truncating it after the fact.
     const requestedCount = ids.length;
-    const limitedIds = ids.slice(0, 100);
-    const truncated = requestedCount > limitedIds.length;
 
     // Build parameterized query - includes both description fields for merging
-    const placeholders = limitedIds.map(() => '?').join(',');
+    const placeholders = ids.map(() => '?').join(',');
     const { results } = await env.DB.prepare(
       `SELECT id, abv, confidence, enrichment_source, is_verified, brew_description_original, brew_description_cleaned
        FROM enriched_beers
        WHERE id IN (${placeholders})`
-    ).bind(...limitedIds).all<{
+    ).bind(...ids).all<{
       id: string;
       abv: number | null;
       confidence: number;
@@ -541,7 +671,7 @@ export async function handleBatchLookup(
 
     // Track which IDs were found
     const foundIds = new Set(results.map(r => r.id));
-    const missing = limitedIds.filter(id => !foundIds.has(id));
+    const missing = ids.filter(id => !foundIds.has(id));
 
     // Format response with merged descriptions (consistent with GET /beers behavior)
     // Field names aligned with mobile app expectations: enriched_abv, enrichment_confidence
@@ -572,7 +702,10 @@ export async function handleBatchLookup(
       enrichments: enrichmentData,
       missing,
       requested_count: requestedCount,
-      truncated,
+      // Kept for response-shape stability: an oversized ids array is now
+      // rejected with a 400 by BatchLookupRequestSchema above, so a request
+      // that reaches this point never needed truncation.
+      truncated: false,
       requestId: reqCtx.requestId
     }, { headers });
 
@@ -653,7 +786,12 @@ export async function handleBeerSync(
   reqCtx: RequestContext
 ): Promise<Response> {
   try {
-    const outerParse = SyncBeersRequestOuterSchema.safeParse(await request.json());
+    const bodyResult = await readBoundedJson(request, SYNC_BODY_MAX_BYTES);
+    if (!bodyResult.ok) {
+      return boundedJsonErrorResponse(bodyResult, reqCtx.requestId, headers);
+    }
+
+    const outerParse = SyncBeersRequestOuterSchema.safeParse(bodyResult.data);
     if (!outerParse.success) {
       return Response.json(
         { error: 'beers array required', requestId: reqCtx.requestId },
@@ -668,8 +806,10 @@ export async function handleBeerSync(
       );
     }
 
-    // Limit batch size
-    const beers = outerParse.data.beers.slice(0, SYNC_CONSTANTS.MAX_BATCH_SIZE);
+    // SyncBeersRequestOuterSchema already caps `beers` at
+    // SYNC_CONSTANTS.MAX_BATCH_SIZE and rejects an oversized array with a
+    // 400 above, instead of silently truncating it after the fact.
+    const beers = outerParse.data.beers;
     const validationErrors: string[] = [];
     const validBeers: Array<{
       id: string;
@@ -708,6 +848,16 @@ export async function handleBeerSync(
       brew_name: string;
       brewer: string;
       brew_description: string;
+      /**
+       * Hash of brew_description above, computed the same way as
+       * db/helpers.ts's categorizeBeer. Carried alongside the beer so a
+       * cleanup-message producer can bind the outgoing message to the exact
+       * description version it was built from (stale-result binding).
+       * NOTE: queueBeersForCleanup (src/queue/helpers.ts) does not yet read
+       * or forward this field onto the CleanupMessage it sends -- see the
+       * handler-level comment below.
+       */
+      descriptionHash: string;
     }> = [];
 
     // Check existing records to determine queueing behavior
@@ -734,6 +884,14 @@ export async function handleBeerSync(
       // Use ON CONFLICT DO UPDATE to properly update last_seen_at
       // Note: is_verified defaults to 0 on INSERT but is NOT updated on conflict
       // to preserve manual verifications
+      //
+      // description_hash is refreshed on conflict (COALESCE'd like brewer,
+      // so a sync call that omits a description doesn't null out an
+      // existing hash) -- previously this SET clause left description_hash
+      // untouched for existing IDs, so a later `WHERE ... AND
+      // description_hash = ?` staleness check on a queued cleanup result
+      // would compare against a stale column that never matched the
+      // description the cleanup message was actually built from.
       statements.push(
         env.DB.prepare(`
           INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at, is_verified)
@@ -741,7 +899,8 @@ export async function handleBeerSync(
           ON CONFLICT(id) DO UPDATE SET
             last_seen_at = excluded.last_seen_at,
             brew_name = COALESCE(excluded.brew_name, enriched_beers.brew_name),
-            brewer = COALESCE(excluded.brewer, enriched_beers.brewer)
+            brewer = COALESCE(excluded.brewer, enriched_beers.brewer),
+            description_hash = COALESCE(excluded.description_hash, enriched_beers.description_hash)
         `).bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description, descriptionHash, now, now)
       );
 
@@ -756,6 +915,10 @@ export async function handleBeerSync(
           brew_name: beer.brew_name,
           brewer: beer.brewer || '',
           brew_description: beer.brew_description, // TS narrows to string here
+          // descriptionHash is non-null here: beer.brew_description is
+          // truthy (checked above), and descriptionHash is computed from it
+          // a few lines up via hashDescription().
+          descriptionHash: descriptionHash as string,
         });
       }
     }
@@ -768,6 +931,10 @@ export async function handleBeerSync(
     // (24h) whenever the queue send failed after the timestamps landed.
     let queuedForCleanup = 0;
     if (needsCleanup.length > 0) {
+      // needsCleanup entries carry descriptionHash (see the type above);
+      // queueBeersForCleanup does not yet forward it onto the CleanupMessage
+      // it sends, so it is currently dropped here rather than reaching the
+      // queue. See the module-level TODO near queueBeersForCleanup's import.
       const { queued, queuedIds } = await queueBeersForCleanup(env, needsCleanup, reqCtx.requestId);
       queuedForCleanup = queued;
       const sentSet = new Set(queuedIds ?? []);

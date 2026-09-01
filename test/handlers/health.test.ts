@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { handleHealthCheck } from '../../src/handlers/health';
+import { handleHealthCheck, handleLiveness } from '../../src/handlers/health';
 import type { Env } from '../../src/types';
 
 // ============================================================================
@@ -274,5 +274,61 @@ describe('handleHealthCheck', () => {
     expect(body.enrichment.monthly.used).toBe(0);
 
     vi.restoreAllMocks();
+  });
+
+  it('sets Cache-Control: no-store on a successful response', async () => {
+    const env = getMockEnv();
+    const response = await handleHealthCheck(env);
+
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('sets X-Content-Type-Options: nosniff on a successful response', async () => {
+    const env = getMockEnv();
+    const response = await handleHealthCheck(env);
+
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+  });
+
+  it('sets Cache-Control: no-store on a DB-failure (503) response', async () => {
+    const db = getMockDb({ selectOneThrows: true });
+    const env = getMockEnv({ DB: db as unknown as D1Database });
+    const response = await handleHealthCheck(env);
+
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+});
+
+// ============================================================================
+// handleLiveness Tests
+// ============================================================================
+
+describe('handleLiveness', () => {
+  it('returns a Response with status 200', () => {
+    const response = handleLiveness();
+    expect(response.status).toBe(200);
+  });
+
+  it('response body has status ok', async () => {
+    const response = handleLiveness();
+    const body = await response.json() as Record<string, unknown>;
+    expect(body.status).toBe('ok');
+  });
+
+  it('sets Cache-Control: no-store', () => {
+    const response = handleLiveness();
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('sets X-Content-Type-Options: nosniff', () => {
+    const response = handleLiveness();
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+  });
+
+  it('takes no Env parameter — structurally cannot issue a D1 query', () => {
+    // handleLiveness's signature is `() => Response`; this test documents
+    // (and would fail to typecheck if violated) that it has no way to reach
+    // env.DB at all, not merely that it happens not to call it today.
+    expect(handleLiveness.length).toBe(0);
   });
 });

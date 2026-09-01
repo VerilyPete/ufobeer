@@ -9,8 +9,52 @@
  */
 
 import type { Env } from '../types';
-import { MIN_BEER_ABV, MAX_BEER_ABV, PERPLEXITY_TIMEOUT_MS } from '../constants';
+import {
+  MIN_BEER_ABV,
+  MAX_BEER_ABV,
+  PERPLEXITY_TIMEOUT_MS,
+  MAX_PROMPT_FIELD_LENGTH,
+  MAX_PERPLEXITY_RESPONSE_BYTES,
+  MAX_LOGGED_ERROR_BODY_LENGTH,
+} from '../constants';
 import { PerplexityResponseSchema } from '../schemas/external';
+import { readBoundedText, ResponseTooLargeError } from '../utils/bounded-response';
+
+// MAX_PROMPT_FIELD_LENGTH, MAX_PERPLEXITY_RESPONSE_BYTES, and
+// MAX_LOGGED_ERROR_BODY_LENGTH now live in src/constants.ts (imported
+// above) as part of the constants consolidation.
+
+/**
+ * Neutralize characters that could be used to break out of the quoted
+ * beer-name/brewer context in the Perplexity prompt or simulate new
+ * instruction lines, then bound length. Perplexity's prompt has no
+ * `<TEXT>`-style delimiter to escape (see cleanup.ts for that), but
+ * beerName/brewer are still attacker-influenceable text landing directly
+ * in a prompt string, so the same "never trust the input" posture applies.
+ *
+ * Deliberately does NOT strip ordinary punctuation like apostrophes —
+ * that would mangle real beer/brewery names (e.g. "O'Hara's Irish Red").
+ */
+function sanitizeForPrompt(text: string): string {
+  // Strip C0/DEL control characters without embedding literal control
+  // bytes or hex escapes in this source file.
+  const stripped = Array.from(text)
+    .filter((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return !(code <= 0x1f || code === 0x7f);
+    })
+    .join('');
+  return stripped
+    .replace(/\s+/g, ' ')
+    .replace(/"/g, "'")
+    .slice(0, MAX_PROMPT_FIELD_LENGTH)
+    .trim();
+}
+
+
+function truncateForLog(text: string, maxLength = MAX_LOGGED_ERROR_BODY_LENGTH): string {
+  return text.length > maxLength ? `${text.slice(0, maxLength)}... [truncated]` : text;
+}
 
 /**
  * Fetch ABV from Perplexity API for a given beer.
@@ -37,11 +81,18 @@ export async function fetchAbvFromPerplexity(
     return null;
   }
 
+  // beerName/brewer can originate from /beers/sync, which lets a caller
+  // with the extractable app key overwrite them on an existing beer ID —
+  // treat them as hostile input regardless of provenance, the same as the
+  // Workers AI cleanup prompt (see src/queue/cleanup.ts).
+  const safeBeerName = sanitizeForPrompt(beerName);
+  const safeBrewer = brewer ? sanitizeForPrompt(brewer) : null;
+
   // Include style hint for better search results on obscure beers
   // e.g., "Entropic IPA" -> search includes "IPA" which helps find typical ABV ranges
-  const prompt = brewer
-    ? `What is the ABV (alcohol by volume) percentage of the beer "${beerName}" by ${brewer}? Search Untappd, BeerAdvocate, or the brewery's website. Reply with ONLY a single number (e.g., 5.5). If multiple versions exist, use the most recent. If unknown, reply "unknown". Do not explain.`
-    : `What is the ABV (alcohol by volume) percentage of the beer "${beerName}"? Search Untappd, BeerAdvocate, or the brewery's website. Reply with ONLY a single number (e.g., 5.5). If multiple versions exist, use the most recent. If unknown, reply "unknown". Do not explain.`;
+  const prompt = safeBrewer
+    ? `What is the ABV (alcohol by volume) percentage of the beer "${safeBeerName}" by ${safeBrewer}? Search Untappd, BeerAdvocate, or the brewery's website. Reply with ONLY a single number (e.g., 5.5). If multiple versions exist, use the most recent. If unknown, reply "unknown". Do not explain.`
+    : `What is the ABV (alcohol by volume) percentage of the beer "${safeBeerName}"? Search Untappd, BeerAdvocate, or the brewery's website. Reply with ONLY a single number (e.g., 5.5). If multiple versions exist, use the most recent. If unknown, reply "unknown". Do not explain.`;
 
   try {
     const response = await fetch('https://api.perplexity.ai/chat/completions', {
@@ -75,12 +126,36 @@ export async function fetchAbvFromPerplexity(
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`Perplexity API error (${response.status}):`, errorText);
+      // Truncate independently of the success-path parser cap below -- this
+      // bounds log volume from a misbehaving upstream, not memory, so it
+      // still uses response.text() directly rather than the bounded reader.
+      const errorText = await response.text().catch(() => '[unreadable error body]');
+      console.error(`Perplexity API error (${response.status}):`, truncateForLog(errorText));
       throw new Error(`Perplexity API returned ${response.status}`);
     }
 
-    const raw = await response.json();
+    let bodyText: string;
+    try {
+      bodyText = await readBoundedText(response, MAX_PERPLEXITY_RESPONSE_BYTES);
+    } catch (error) {
+      if (error instanceof ResponseTooLargeError) {
+        console.error(`Perplexity response exceeded ${MAX_PERPLEXITY_RESPONSE_BYTES} byte cap, discarding`);
+        return null;
+      }
+      throw error;
+    }
+
+    let raw: unknown;
+    try {
+      raw = JSON.parse(bodyText);
+    } catch {
+      console.warn('Perplexity response was not valid JSON');
+      return null;
+    }
+
+    // Distrust the response the same way as any other externally-controlled
+    // input: schema-validate before use, and never treat unparsed content as
+    // trustworthy just because the HTTP call itself succeeded.
     const parsed = PerplexityResponseSchema.safeParse(raw);
     const content = parsed.success
       ? parsed.data.choices[0]?.message?.content?.trim()

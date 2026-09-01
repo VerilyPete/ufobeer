@@ -16,6 +16,11 @@ import { handleBeerList, refreshTaplistForStore } from '../../src/handlers/beers
 import type { Env, RequestContext, FlyingSaucerBeer } from '../../src/types';
 import type { CachedBeer } from '../../src/schemas/cache';
 import type { CachedTaplistRow } from '../../src/db/cache';
+import {
+  FLYING_SAUCER_RESPONSE_MAX_BYTES,
+  MAX_FLYING_SAUCER_RESPONSE_ITEMS,
+  MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES,
+} from '../../src/constants';
 
 // ============================================================================
 // Mock Modules
@@ -72,7 +77,7 @@ import { queueBeersForEnrichment, queueBeersForCleanup } from '../../src/queue';
 import { getCachedTaplist, parseCachedBeers, setCachedTaplist, updateCacheTimestamp } from '../../src/db/cache';
 import { checkConditionalRequest } from '../../src/utils/conditional';
 import { shouldUpdateContent } from '../../src/utils/cache-helpers';
-import { buildCombinedEtag } from '../../src/utils/hash';
+import { hashDescription, buildCombinedEtag } from '../../src/utils/hash';
 import { computeEnrichmentHash } from '../../src/utils/enrichment-hash';
 
 // ============================================================================
@@ -844,7 +849,7 @@ describe('handleBeerList', () => {
         withAbv: 0,
         needsEnrichment: [],
         needsCleanup: [
-          { id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery', brew_description: 'New description' },
+          { id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery', brew_description: 'New description', descriptionHash: 'mock-description-hash' },
         ],
         failed: [],
       });
@@ -860,7 +865,7 @@ describe('handleBeerList', () => {
 
       expect(queueBeersForCleanup).toHaveBeenCalledWith(
         env,
-        [{ id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery', brew_description: 'New description' }],
+        [{ id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery', brew_description: 'New description', descriptionHash: 'mock-description-hash' }],
         'test-request-id'
       );
     });
@@ -881,7 +886,7 @@ describe('handleBeerList', () => {
         totalSynced: 1,
         withAbv: 0,
         needsEnrichment: [
-          { id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery' },
+          { id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery', descriptionHash: null },
         ],
         needsCleanup: [],
         failed: [],
@@ -898,7 +903,7 @@ describe('handleBeerList', () => {
 
       expect(queueBeersForEnrichment).toHaveBeenCalledWith(
         env,
-        [{ id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery' }],
+        [{ id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery', descriptionHash: null }],
         'test-request-id'
       );
     });
@@ -970,10 +975,10 @@ describe('handleBeerList', () => {
         totalSynced: 2,
         withAbv: 0,
         needsEnrichment: [
-          { id: '2', brew_name: 'Beer needing enrichment', brewer: 'Test Brewery' },
+          { id: '2', brew_name: 'Beer needing enrichment', brewer: 'Test Brewery', descriptionHash: null },
         ],
         needsCleanup: [
-          { id: '1', brew_name: 'Beer with new desc', brewer: 'Test Brewery', brew_description: 'New' },
+          { id: '1', brew_name: 'Beer with new desc', brewer: 'Test Brewery', brew_description: 'New', descriptionHash: 'mock-description-hash' },
         ],
         failed: [],
       });
@@ -1769,6 +1774,327 @@ describe('handleBeerList', () => {
 
       expect(result.response.status).toBe(500);
       expect(result.cacheOutcome).toBe('miss');
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Upstream origin allowlist (Cloudflare security review Phase 1, item 5)
+  // --------------------------------------------------------------------------
+
+  describe('upstream origin allowlist', () => {
+    it('rejects a non-allowlisted origin without calling fetch, and returns 502 when no cache exists', async () => {
+      vi.clearAllMocks();
+      const mockFetch = vi.fn();
+      globalThis.fetch = mockFetch;
+      vi.mocked(getCachedTaplist).mockResolvedValue(null);
+
+      const env = { ...createMockEnv(), FLYING_SAUCER_API_BASE: 'https://evil.example.com/taplist' };
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(502);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-HTTPS configured base without calling fetch', async () => {
+      vi.clearAllMocks();
+      const mockFetch = vi.fn();
+      globalThis.fetch = mockFetch;
+      vi.mocked(getCachedTaplist).mockResolvedValue(null);
+
+      const env = { ...createMockEnv(), FLYING_SAUCER_API_BASE: 'http://fsbs.beerknurd.com/bk-store-json.php' };
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(502);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed configured base URL without calling fetch', async () => {
+      vi.clearAllMocks();
+      const mockFetch = vi.fn();
+      globalThis.fetch = mockFetch;
+      vi.mocked(getCachedTaplist).mockResolvedValue(null);
+
+      const env = { ...createMockEnv(), FLYING_SAUCER_API_BASE: 'not a url' };
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(502);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('falls back to stale cache when the configured origin is not allowlisted', async () => {
+      vi.clearAllMocks();
+      const mockFetch = vi.fn();
+      globalThis.fetch = mockFetch;
+
+      const cachedBeers = [createCachedBeer({ id: '1', brew_name: 'Stale Beer' })];
+      vi.mocked(getCachedTaplist).mockResolvedValue(createCachedTaplistRow({
+        response_json: JSON.stringify(cachedBeers),
+        cached_at: Date.now() - 600_000,
+      }));
+      vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+
+      const env = { ...createMockEnv(), FLYING_SAUCER_API_BASE: 'https://evil.example.com/taplist' };
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(200);
+      const body = await result.response.json() as { source: string };
+      expect(body.source).toBe('stale');
+      expect(result.cacheOutcome).toBe('stale');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('accepts the configured base with the allowlisted origin regardless of its path', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue(createFlyingSaucerResponse([])),
+      });
+      globalThis.fetch = mockFetch;
+
+      const env = { ...createMockEnv(), FLYING_SAUCER_API_BASE: 'https://fsbs.beerknurd.com/bk-store-json.php' };
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(200);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://fsbs.beerknurd.com/bk-store-json.php?sid=13885',
+        expect.anything()
+      );
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Upstream response body bounds (Cloudflare security review Phase 1, item 5)
+  // --------------------------------------------------------------------------
+
+  describe('upstream response body bounds', () => {
+    /**
+     * A streamed Response double that lazily emits chunks up to totalBytes,
+     * so a test can prove the bounded reader stopped early (few pulls)
+     * rather than actually buffering the full size in memory.
+     */
+    function createStreamedOversizedResponse(totalBytes: number, chunkSize = 1024 * 1024) {
+      let bytesEmitted = 0;
+      let pullCount = 0;
+      const chunk = new Uint8Array(chunkSize).fill(65); // 'A' -- valid single-byte UTF-8
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pullCount++;
+          if (bytesEmitted >= totalBytes) {
+            controller.close();
+            return;
+          }
+          const remaining = totalBytes - bytesEmitted;
+          const toSend = remaining < chunkSize ? chunk.slice(0, remaining) : chunk;
+          controller.enqueue(toSend);
+          bytesEmitted += toSend.byteLength;
+        },
+      });
+      return { body, getPullCount: () => pullCount };
+    }
+
+    it('aborts a streamed 200 MB response after exceeding the byte cap, without buffering the full body, and returns the stale cache row', async () => {
+      vi.clearAllMocks();
+      const twoHundredMb = 200 * 1024 * 1024;
+      const { body, getPullCount } = createStreamedOversizedResponse(twoHundredMb);
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, body });
+
+      const cachedBeers = [createCachedBeer({ id: '1', brew_name: 'Stale Beer' })];
+      vi.mocked(getCachedTaplist).mockResolvedValue(createCachedTaplistRow({
+        response_json: JSON.stringify(cachedBeers),
+        cached_at: Date.now() - 600_000,
+      }));
+      vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+
+      const env = createMockEnv();
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(200);
+      const responseBody = await result.response.json() as { source: string };
+      expect(responseBody.source).toBe('stale');
+      expect(result.cacheOutcome).toBe('stale');
+
+      // Proves the reader aborted early: at ~1 MiB/chunk against a cap of
+      // FLYING_SAUCER_RESPONSE_MAX_BYTES, it must stop within a handful of
+      // pulls -- nowhere near the ~200 pulls a full 200 MB stream would take.
+      const maxExpectedPulls = Math.ceil(FLYING_SAUCER_RESPONSE_MAX_BYTES / (1024 * 1024)) + 2;
+      expect(getPullCount()).toBeLessThanOrEqual(maxExpectedPulls);
+      expect(getPullCount()).toBeLessThan(20);
+    });
+
+    it('returns 502 for an oversized streamed response when no stale cache exists', async () => {
+      vi.clearAllMocks();
+      const { body } = createStreamedOversizedResponse(200 * 1024 * 1024);
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, body });
+      vi.mocked(getCachedTaplist).mockResolvedValue(null);
+
+      const env = createMockEnv();
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(502);
+    });
+
+    it('hashes the exact bytes read from the bounded reader rather than re-serializing the parsed object', async () => {
+      // Deliberately contains whitespace JSON.stringify(JSON.parse(text))
+      // would NOT reproduce -- proves the content hash is computed from the
+      // literal upstream bytes, not a re-stringified parse of them.
+      const rawText = '[{"store_info":"metadata"}, {"brewInStock":  []}]';
+      vi.clearAllMocks();
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: vi.fn().mockResolvedValue(rawText),
+      });
+
+      const env = createMockEnv();
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(vi.mocked(hashDescription)).toHaveBeenCalledWith(rawText);
+      // The re-serialized form differs in whitespace from rawText -- if the
+      // implementation regressed to re-stringifying the parsed object, this
+      // call would appear instead of (or in addition to) the raw-bytes call.
+      const reSerialized = JSON.stringify(JSON.parse(rawText));
+      expect(reSerialized).not.toBe(rawText);
+      expect(vi.mocked(hashDescription)).not.toHaveBeenCalledWith(reSerialized);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Upstream response validation (schema-invalid arrays and records)
+  // --------------------------------------------------------------------------
+
+  describe('upstream response validation', () => {
+    it('falls back to stale cache when the upstream body is not valid JSON', async () => {
+      vi.clearAllMocks();
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockRejectedValue(new SyntaxError('Unexpected token')),
+        text: vi.fn().mockResolvedValue('{not valid json'),
+      });
+
+      const cachedBeers = [createCachedBeer({ id: '1', brew_name: 'Stale Beer' })];
+      vi.mocked(getCachedTaplist).mockResolvedValue(createCachedTaplistRow({
+        response_json: JSON.stringify(cachedBeers),
+        cached_at: Date.now() - 600_000,
+      }));
+      vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+
+      const env = createMockEnv();
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(200);
+      const body = await result.response.json() as { source: string };
+      expect(body.source).toBe('stale');
+      expect(result.cacheOutcome).toBe('stale');
+    });
+
+    it('rejects a brewInStock array longer than MAX_FLYING_SAUCER_RESPONSE_ITEMS and falls back to stale cache', async () => {
+      vi.clearAllMocks();
+      const oversizedBeers = Array.from(
+        { length: MAX_FLYING_SAUCER_RESPONSE_ITEMS + 1 },
+        (_, i) => createBeer({ id: `beer-${i}`, brew_name: `Beer ${i}` })
+      );
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(oversizedBeers)),
+      });
+
+      const cachedBeers = [createCachedBeer({ id: '1', brew_name: 'Stale Beer' })];
+      vi.mocked(getCachedTaplist).mockResolvedValue(createCachedTaplistRow({
+        response_json: JSON.stringify(cachedBeers),
+        cached_at: Date.now() - 600_000,
+      }));
+      vi.mocked(parseCachedBeers).mockReturnValue(cachedBeers);
+
+      const env = createMockEnv();
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(200);
+      const body = await result.response.json() as { source: string };
+      expect(body.source).toBe('stale');
+      expect(result.cacheOutcome).toBe('stale');
+    });
+
+    it('accepts a brewInStock array at exactly MAX_FLYING_SAUCER_RESPONSE_ITEMS', async () => {
+      vi.clearAllMocks();
+      const beers = Array.from(
+        { length: MAX_FLYING_SAUCER_RESPONSE_ITEMS },
+        (_, i) => createBeer({ id: `beer-${i}`, brew_name: `Beer ${i}` })
+      );
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+      });
+
+      const env = createMockEnv();
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(200);
+      expect(result.beersReturned).toBe(MAX_FLYING_SAUCER_RESPONSE_ITEMS);
+    });
+
+    it('drops an individual beer record whose serialized size exceeds MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES, keeping valid records', async () => {
+      vi.clearAllMocks();
+      const oversizedBeer = createBeer({
+        id: 'oversized',
+        brew_name: 'Oversized Beer',
+        // A passthrough field the schema doesn't enumerate -- only the
+        // aggregate size cap (not FlyingSaucerBeerSchema itself) can reject
+        // this, since the schema is deliberately `.passthrough()`.
+        suspicious_passthrough_blob: 'x'.repeat(MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES),
+      } as Partial<FlyingSaucerBeer>);
+      const validBeer = createBeer({ id: 'valid', brew_name: 'Valid Beer' });
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue(createFlyingSaucerResponse([oversizedBeer, validBeer])),
+      });
+
+      const env = createMockEnv();
+      const { ctx } = createMockExecutionContext();
+      const reqCtx = createMockReqCtx();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
+
+      expect(result.response.status).toBe(200);
+      expect(result.beersReturned).toBe(1);
+      const body = await result.response.json() as { beers: Array<{ id: string }> };
+      expect(body.beers.map(b => b.id)).toEqual(['valid']);
     });
   });
 

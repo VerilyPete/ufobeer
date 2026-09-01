@@ -4,23 +4,51 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Full history so gitleaks can scan past commits, not just the tip.
           fetch-depth: 0
 
+      - name: Verify workflow actions are pinned to full commit SHAs
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in .github/workflows/*.yml; do
+            refs=$(grep -E '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*' "$f" \
+              | sed -E 's/^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*//' \
+              | awk '{print $1}')
+            while IFS= read -r ref; do
+              [ -z "$ref" ] && continue
+              case "$ref" in
+                ./*|docker://*) continue ;;
+              esac
+              if ! echo "$ref" | grep -Eq '^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+@[0-9a-f]{40}$'; then
+                echo "::error file=$f::Unpinned action reference (must be owner/repo@<40-char SHA>): $ref"
+                fail=1
+              fi
+            done <<< "$refs"
+          done
+          exit "$fail"
+
       - name: Secret scanning (gitleaks)
         run: |
+          set -euo pipefail
           curl -sSL -o /tmp/gitleaks.tar.gz \
             https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+          # Checksum pinned from the release's published checksums file
+          # (gitleaks_8.21.2_checksums.txt) — verified 2026-09-01.
+          echo "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba  /tmp/gitleaks.tar.gz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           /tmp/gitleaks detect -v --redact
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           cache: 'npm'

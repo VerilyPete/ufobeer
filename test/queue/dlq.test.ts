@@ -12,6 +12,10 @@ import { trackDlqConsumer } from '../../src/analytics';
 // Factories
 // ============================================================================
 
+// Default attempts=1 (not the exhaustion boundary -- see
+// MAX_DLQ_CONSUMER_ATTEMPTS in src/queue/dlq.ts) so failure-path tests
+// exercise plain retry() behavior unless a test explicitly sets attempts
+// to test exhaustion.
 const getMockMessage = (overrides?: Partial<{
   id: string;
   body: Partial<EnrichmentMessage>;
@@ -24,7 +28,7 @@ const getMockMessage = (overrides?: Partial<{
     brewer: 'Test Brewery',
     ...overrides?.body,
   },
-  attempts: overrides?.attempts ?? 3,
+  attempts: overrides?.attempts ?? 1,
   ack: vi.fn(),
   retry: vi.fn(),
 });
@@ -42,7 +46,7 @@ const getMockCleanupMessage = (overrides?: Partial<{
     brewDescription: 'A hoppy IPA with citrus notes',
     ...overrides?.body,
   },
-  attempts: overrides?.attempts ?? 3,
+  attempts: overrides?.attempts ?? 1,
   ack: vi.fn(),
   retry: vi.fn(),
 });
@@ -432,6 +436,58 @@ describe('handleDlqBatch', () => {
       })
     );
   });
+
+  // ==========================================================================
+  // Terminal behavior on retry exhaustion (Cloudflare security review
+  // "Medium: the DLQ consumers have no further dead-letter destination")
+  // ==========================================================================
+
+  describe('retry exhaustion (no further dead-letter destination)', () => {
+    it('retries (does not ack) when storage fails on a non-final attempt', async () => {
+      const msg = getMockMessage({ attempts: 1 });
+      const batch = getMockBatch([msg]);
+      const db = getMockDb();
+      db.prepare.mockReturnValue({
+        bind: vi.fn().mockReturnValue({
+          run: vi.fn().mockRejectedValue(new Error('DB write error')),
+        }),
+      });
+      const env = { ...getMockEnv(), DB: db as unknown as D1Database } as Env;
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await handleDlqBatch(batch as unknown as MessageBatch<EnrichmentMessage>, env, 'req-123');
+
+      expect(msg.retry).toHaveBeenCalledOnce();
+      expect(msg.ack).not.toHaveBeenCalled();
+
+      vi.restoreAllMocks();
+    });
+
+    it('acks (does not retry) and logs a loud exhaustion error on the final allowed attempt', async () => {
+      const msg = getMockMessage({ attempts: 3 });
+      const batch = getMockBatch([msg]);
+      const db = getMockDb();
+      db.prepare.mockReturnValue({
+        bind: vi.fn().mockReturnValue({
+          run: vi.fn().mockRejectedValue(new Error('DB write error')),
+        }),
+      });
+      const env = { ...getMockEnv(), DB: db as unknown as D1Database } as Env;
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await handleDlqBatch(batch as unknown as MessageBatch<EnrichmentMessage>, env, 'req-123');
+
+      expect(msg.ack).toHaveBeenCalledOnce();
+      expect(msg.retry).not.toHaveBeenCalled();
+
+      const exhaustionLog = consoleErrorSpy.mock.calls
+        .map(call => call[0])
+        .find((arg): arg is string => typeof arg === 'string' && arg.includes('dlq.consumer.exhausted'));
+      expect(exhaustionLog).toBeDefined();
+
+      vi.restoreAllMocks();
+    });
+  });
 });
 
 // ============================================================================
@@ -543,5 +599,52 @@ describe('handleCleanupDlqBatch', () => {
     );
 
     vi.restoreAllMocks();
+  });
+
+  describe('retry exhaustion (no further dead-letter destination)', () => {
+    it('retries (does not ack) when storage fails on a non-final attempt', async () => {
+      const msg = getMockCleanupMessage({ attempts: 1 });
+      const batch = getMockBatch([msg], 'description-cleanup-dlq');
+      const db = getMockDb();
+      db.prepare.mockReturnValue({
+        bind: vi.fn().mockReturnValue({
+          run: vi.fn().mockRejectedValue(new Error('DB write error')),
+        }),
+      });
+      const env = { ...getMockEnv(), DB: db as unknown as D1Database } as Env;
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await handleCleanupDlqBatch(batch as unknown as MessageBatch<CleanupMessage>, env, 'req-456');
+
+      expect(msg.retry).toHaveBeenCalledOnce();
+      expect(msg.ack).not.toHaveBeenCalled();
+
+      vi.restoreAllMocks();
+    });
+
+    it('acks (does not retry) and logs a loud exhaustion error on the final allowed attempt', async () => {
+      const msg = getMockCleanupMessage({ attempts: 3 });
+      const batch = getMockBatch([msg], 'description-cleanup-dlq');
+      const db = getMockDb();
+      db.prepare.mockReturnValue({
+        bind: vi.fn().mockReturnValue({
+          run: vi.fn().mockRejectedValue(new Error('DB write error')),
+        }),
+      });
+      const env = { ...getMockEnv(), DB: db as unknown as D1Database } as Env;
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await handleCleanupDlqBatch(batch as unknown as MessageBatch<CleanupMessage>, env, 'req-456');
+
+      expect(msg.ack).toHaveBeenCalledOnce();
+      expect(msg.retry).not.toHaveBeenCalled();
+
+      const exhaustionLog = consoleErrorSpy.mock.calls
+        .map(call => call[0])
+        .find((arg): arg is string => typeof arg === 'string' && arg.includes('dlq.consumer.exhausted'));
+      expect(exhaustionLog).toBeDefined();
+
+      vi.restoreAllMocks();
+    });
   });
 });

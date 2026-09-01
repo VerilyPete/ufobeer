@@ -334,3 +334,68 @@ describe('handleEnrichmentTrigger', () => {
     expect(body.data.enabled).toBe(true);
   });
 });
+
+// ============================================================================
+// Bounded body guard
+// ============================================================================
+
+describe('handleEnrichmentTrigger bounded body guard', () => {
+  it('treats a genuinely empty body as {} (documented no-op trigger call)', async () => {
+    const env = getEnrichmentEnv();
+    const request = new Request('http://localhost/admin/enrich/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // No body at all -- this is the case the handler's own comment
+      // documents as valid ("empty body is valid, all fields optional").
+    });
+
+    const response = await handleEnrichmentTrigger(request, env, getDefaultHeaders(), getMockReqCtx());
+    expect(response.status).toBe(200);
+  });
+
+  it('returns 400 for malformed non-empty JSON rather than silently treating it as {}', async () => {
+    const env = getEnrichmentEnv();
+    const request = new Request('http://localhost/admin/enrich/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not valid json',
+    });
+
+    const response = await handleEnrichmentTrigger(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { error: { code: string } };
+
+    expect(response.status).toBe(400);
+    expect(body.error.code).toBe('INVALID_JSON');
+  });
+
+  it('returns 415 when Content-Type is not application/json', async () => {
+    const env = getEnrichmentEnv();
+    const request = new Request('http://localhost/admin/enrich/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({}),
+    });
+
+    const response = await handleEnrichmentTrigger(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { error: { code: string } };
+
+    expect(response.status).toBe(415);
+    expect(body.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
+  });
+
+  it('returns 413 when the body exceeds SMALL_JSON_BODY_MAX_BYTES', async () => {
+    const env = getEnrichmentEnv();
+    const oversized = JSON.stringify({ limit: 50, note: 'x'.repeat(100_000) });
+    const request = new Request('http://localhost/admin/enrich/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: oversized,
+    });
+
+    const response = await handleEnrichmentTrigger(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { error: { code: string } };
+
+    expect(response.status).toBe(413);
+    expect(body.error.code).toBe('PAYLOAD_TOO_LARGE');
+  });
+});

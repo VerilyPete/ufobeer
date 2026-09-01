@@ -20,8 +20,21 @@ vi.mock('../../src/utils/date', async (importOriginal) => {
   };
 });
 
+// Mock the deterministic row reapers so tests can assert they were called
+// from the cron handler without depending on real D1 SQL.
+vi.mock('../../src/rate-limit', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/rate-limit')>();
+  return { ...real, reapOldRateLimits: vi.fn().mockResolvedValue(0) };
+});
+vi.mock('../../src/audit', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/audit')>();
+  return { ...real, reapOldAuditLog: vi.fn().mockResolvedValue(0) };
+});
+
 import { refreshTaplistForStore } from '../../src/handlers/beers';
 import { getCurrentHourCT } from '../../src/utils/date';
+import { reapOldRateLimits } from '../../src/rate-limit';
+import { reapOldAuditLog } from '../../src/audit';
 
 // ============================================================================
 // Factories
@@ -232,5 +245,60 @@ describe('handleScheduledEnrichment', () => {
     expect(refreshTaplistForStore).not.toHaveBeenCalled();
     const dataPoint = analytics.writeDataPoint.mock.calls[0]?.[0];
     expect(dataPoint?.blobs?.[4]).toBe('skip:outside_hours');
+  });
+
+  // ============================================================================
+  // Deterministic row reapers (rate_limits, audit_log)
+  // ============================================================================
+
+  it('runs both the rate_limits and audit_log reapers on every cron tick', async () => {
+    const env = createScheduledEnv();
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(reapOldRateLimits).toHaveBeenCalledWith(env.DB);
+    expect(reapOldAuditLog).toHaveBeenCalledWith(env.DB);
+  });
+
+  it('still runs both reapers even when the kill switch is active', async () => {
+    const env = createScheduledEnv({ ENRICHMENT_ENABLED: 'false' });
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(reapOldRateLimits).toHaveBeenCalledWith(env.DB);
+    expect(reapOldAuditLog).toHaveBeenCalledWith(env.DB);
+  });
+
+  it('still runs both reapers when outside operating hours', async () => {
+    vi.mocked(getCurrentHourCT).mockReturnValueOnce(3); // 3am CT
+    const env = createScheduledEnv();
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(reapOldRateLimits).toHaveBeenCalledWith(env.DB);
+    expect(reapOldAuditLog).toHaveBeenCalledWith(env.DB);
+  });
+
+  it('still runs the audit_log reaper even when the rate_limits reaper throws', async () => {
+    vi.mocked(reapOldRateLimits).mockRejectedValueOnce(new Error('D1 unavailable'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const env = createScheduledEnv();
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(reapOldAuditLog).toHaveBeenCalledWith(env.DB);
+    consoleSpy.mockRestore();
+  });
+
+  it('does not let a failing reaper block the enrichment sweep', async () => {
+    vi.mocked(reapOldRateLimits).mockRejectedValueOnce(new Error('D1 unavailable'));
+    vi.mocked(reapOldAuditLog).mockRejectedValueOnce(new Error('D1 unavailable'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const env = createScheduledEnv();
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(refreshTaplistForStore).toHaveBeenCalled();
+    consoleSpy.mockRestore();
   });
 });

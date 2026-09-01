@@ -13,6 +13,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { handleCleanupTrigger } from '../../src/handlers/cleanupTrigger';
 import type { Env, RequestContext } from '../../src/types';
+import { hashDescription } from '../../src/utils/hash';
 
 // Mock the queue module
 vi.mock('../../src/queue', () => ({
@@ -806,7 +807,7 @@ describe('handleCleanupTrigger', () => {
   // --------------------------------------------------------------------------
 
   describe('Invalid request body', () => {
-    it('returns INVALID_PARAMS when body is not valid JSON', async () => {
+    it('returns INVALID_JSON when body is not valid JSON', async () => {
       const env = createMockEnv({});
       const request = new Request('https://example.com/admin/cleanup/trigger', {
         method: 'POST',
@@ -818,9 +819,12 @@ describe('handleCleanupTrigger', () => {
       const response = await handleCleanupTrigger(request, env, headers, ctx);
       const json = await response.json() as { success: boolean; error: { code: string; message: string } };
 
+      // Shared bounded-body-reader contract (src/utils/body.ts): malformed
+      // JSON is a 400 with code INVALID_JSON, consistent across every
+      // body-bearing route rather than this route's own bespoke code.
       expect(response.status).toBe(400);
-      expect(json.error.code).toBe('INVALID_PARAMS');
-      expect(json.error.message).toBe('Invalid JSON body');
+      expect(json.error.code).toBe('INVALID_JSON');
+      expect(json.error.message).toBe('Request body is not valid JSON');
     });
 
     it('returns INVALID_MODE when body is empty object', async () => {
@@ -868,6 +872,71 @@ describe('handleCleanupTrigger', () => {
       expect(response.status).toBe(400);
       expect(json.error.code).toBe('INVALID_BODY');
       expect(json.error.message).toBe('Request body must be a JSON object');
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Bounded body guard
+  // --------------------------------------------------------------------------
+
+  describe('bounded body guard', () => {
+    it('returns 415 when Content-Type is not application/json', async () => {
+      const env = createMockEnv({});
+      const request = new Request('https://example.com/admin/cleanup/trigger', {
+        method: 'POST',
+        body: JSON.stringify({ mode: 'missing' }),
+        headers: { 'Content-Type': 'text/plain' },
+      });
+
+      const response = await handleCleanupTrigger(request, env, headers, createMockContext());
+      const json = await response.json() as { error: { code: string } };
+
+      expect(response.status).toBe(415);
+      expect(json.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
+    });
+
+    it('returns 413 when the body exceeds SMALL_JSON_BODY_MAX_BYTES', async () => {
+      const env = createMockEnv({});
+      const oversized = JSON.stringify({ mode: 'missing', note: 'x'.repeat(100_000) });
+      const request = new Request('https://example.com/admin/cleanup/trigger', {
+        method: 'POST',
+        body: oversized,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const response = await handleCleanupTrigger(request, env, headers, createMockContext());
+      const json = await response.json() as { error: { code: string } };
+
+      expect(response.status).toBe(413);
+      expect(json.error.code).toBe('PAYLOAD_TOO_LARGE');
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Producer-side stale-result binding: descriptionHash on queued beers
+  // --------------------------------------------------------------------------
+
+  describe('descriptionHash on beers handed to queueBeersForCleanup', () => {
+    it('attaches the same descriptionHash used for the D1 write to every queued beer, for mode: missing', async () => {
+      const env = createMockEnv({
+        beers: [
+          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Description one', brew_description_cleaned: null },
+          { id: '2', brew_name: 'Beer 2', brewer: 'Brewer', brew_description_original: 'Description two', brew_description_cleaned: null },
+        ],
+      });
+      vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 2, queuedIds: ['1', '2'] });
+
+      const response = await handleCleanupTrigger(createMockRequest({ mode: 'missing' }), env, headers, createMockContext());
+      expect(response.status).toBe(200);
+
+      expect(queueBeersForCleanup).toHaveBeenCalledTimes(1);
+      const [, queuedBeers] = vi.mocked(queueBeersForCleanup).mock.calls[0]!;
+      const byId = new Map((queuedBeers as unknown as Array<{ id: string; descriptionHash: string }>).map(b => [b.id, b.descriptionHash]));
+
+      const expectedHash1 = await hashDescription('Description one');
+      const expectedHash2 = await hashDescription('Description two');
+      expect(byId.get('1')).toBe(expectedHash1);
+      expect(byId.get('2')).toBe(expectedHash2);
     });
   });
 });

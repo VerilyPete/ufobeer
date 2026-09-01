@@ -9,6 +9,42 @@
 
 import type { Env, EnrichmentMessage, CleanupMessage } from '../types';
 import { trackDlqConsumer } from '../analytics';
+import { MAX_DLQ_CONSUMER_ATTEMPTS } from '../constants';
+
+// MAX_DLQ_CONSUMER_ATTEMPTS now lives in src/constants.ts (imported above)
+// as part of the constants consolidation; see its doc comment there for the
+// wrangler.jsonc max_retries sync note.
+
+/**
+ * Handle a DLQ consumer's terminal failure to store a message: log a loud,
+ * distinctly-shaped error when this was the final allowed attempt (so Tail
+ * Worker alerting can pick it up), and decide ack vs retry accordingly.
+ */
+function handleDlqStoreFailure(
+  message: { readonly id: string; readonly attempts: number },
+  beerId: string,
+  sourceQueue: string,
+  requestId: string,
+  error: unknown
+): 'ack' | 'retry' {
+  if (message.attempts < MAX_DLQ_CONSUMER_ATTEMPTS) {
+    return 'retry';
+  }
+
+  console.error(JSON.stringify({
+    level: 'error',
+    event: 'dlq.consumer.exhausted',
+    messageId: message.id,
+    beerId,
+    attempts: message.attempts,
+    sourceQueue,
+    requestId,
+    error: error instanceof Error ? error.message : String(error),
+    note: 'DLQ consumer exhausted retries storing this message to D1; the platform will drop it with no further dead-letter destination configured.',
+    timestamp: Date.now(),
+  }));
+  return 'ack';
+}
 
 /**
  * Truncate a value for logging to avoid bloating log output.
@@ -85,9 +121,22 @@ export async function handleDlqBatch(
         errorType: 'db_write_error',
       });
 
-      // With max_retries: 3, retry() will requeue the message
-      // After 3 failures, the message will be dropped
-      message.retry();
+      // With max_retries: MAX_DLQ_CONSUMER_ATTEMPTS, retry() will requeue
+      // the message. On the final allowed attempt, log loudly instead of
+      // retrying into what the platform will drop anyway (see
+      // handleDlqStoreFailure / MAX_DLQ_CONSUMER_ATTEMPTS above).
+      const disposition = handleDlqStoreFailure(
+        message,
+        message.body?.beerId ?? 'unknown',
+        'beer-enrichment-dlq',
+        requestId,
+        error
+      );
+      if (disposition === 'ack') {
+        message.ack();
+      } else {
+        message.retry();
+      }
     }
   }
 
@@ -215,7 +264,18 @@ export async function handleCleanupDlqBatch(
         errorType: 'db_write_error',
       });
 
-      message.retry();
+      const disposition = handleDlqStoreFailure(
+        message,
+        message.body?.beerId ?? 'unknown',
+        'description-cleanup-dlq',
+        requestId,
+        error
+      );
+      if (disposition === 'ack') {
+        message.ack();
+      } else {
+        message.retry();
+      }
     }
   }
 

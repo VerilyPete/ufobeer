@@ -27,6 +27,8 @@ import { cleanupOldDlqMessages } from './dlq';
 import { getToday, getCurrentHourCT, isWithinOperatingHours } from '../utils/date';
 import { refreshTaplistForStore } from './beers';
 import { selectAndQueuePendingEnrichment } from './enrichment';
+import { reapOldRateLimits } from '../rate-limit';
+import { reapOldAuditLog } from '../audit';
 
 export function computeNextCronTime(
   now: number,
@@ -94,6 +96,30 @@ export async function handleScheduledEnrichment(
 ): Promise<void> {
   const cronStartTime = Date.now();
   const cronRequestId = crypto.randomUUID();
+
+  // Deterministic row reapers for rate_limits and audit_log. Run on every
+  // cron tick, BEFORE the kill switch / operating hours / schedule-due gates
+  // below — unlike enrichment work, unbounded D1 row growth is a storage
+  // risk that must not go unaddressed just because enrichment is paused
+  // (e.g. ENRICHMENT_ENABLED=false during an incident, when requests and
+  // audit rows keep accumulating). Each reaper is independently guarded so
+  // one failing does not block the other or the enrichment sweep.
+  try {
+    const reaped = await reapOldRateLimits(env.DB);
+    if (reaped > 0) {
+      console.log(`[cron] Reaped ${reaped} old rate_limits rows`);
+    }
+  } catch (error) {
+    console.error('[cron] rate_limits reap failed:', error);
+  }
+  try {
+    const reaped = await reapOldAuditLog(env.DB);
+    if (reaped > 0) {
+      console.log(`[cron] Reaped ${reaped} old audit_log rows`);
+    }
+  } catch (error) {
+    console.error('[cron] audit_log reap failed:', error);
+  }
 
   // Layer 3: Kill switch
   if (env.ENRICHMENT_ENABLED === 'false') {

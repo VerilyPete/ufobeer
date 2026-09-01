@@ -191,6 +191,12 @@ function createMockMessage(
       beerName: `Beer ${index}`,
       brewer: `Brewer ${index}`,
       brewDescription: description,
+      // Every UPDATE this consumer issues binds `AND description_hash = ?`;
+      // a message with no hash is treated as stale and acked without
+      // writing (see the Phase 0 filter in handleCleanupBatch). Tests here
+      // exercise the normal/matching-hash path unless testing that filter
+      // directly.
+      descriptionHash: 'test-hash',
     },
     ack: vi.fn(),
     retry: vi.fn(),
@@ -310,6 +316,7 @@ describe('handleCleanupBatch integration', () => {
           beerName,
           brewer: 'Test Brewer',
           brewDescription: description,
+          descriptionHash: 'test-hash',
         },
         ack: vi.fn(),
         retry: vi.fn(),

@@ -116,7 +116,7 @@ function createEnv(db: D1Database): Env {
 describe('handleEnrichmentBatch — enrichment_status', () => {
   it('skips beers with enrichment_status = enriched', async () => {
     const { db } = createTrackingDb({ enrichmentStatus: 'enriched' });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery' });
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
     const batch = createBatch([msg]);
 
     await handleEnrichmentBatch(batch, createEnv(db));
@@ -127,7 +127,7 @@ describe('handleEnrichmentBatch — enrichment_status', () => {
 
   it('skips beers with enrichment_status = not_found', async () => {
     const { db } = createTrackingDb({ enrichmentStatus: 'not_found' });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery' });
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
     const batch = createBatch([msg]);
 
     await handleEnrichmentBatch(batch, createEnv(db));
@@ -138,7 +138,7 @@ describe('handleEnrichmentBatch — enrichment_status', () => {
 
   it('skips beers with enrichment_status = skipped', async () => {
     const { db } = createTrackingDb({ enrichmentStatus: 'skipped' });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery' });
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
     const batch = createBatch([msg]);
 
     await handleEnrichmentBatch(batch, createEnv(db));
@@ -154,7 +154,7 @@ describe('handleEnrichmentBatch — enrichment_status', () => {
       preCount: 0,
       reservationResult: { new_count: 1 },
     });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery' });
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
     const batch = createBatch([msg]);
 
     await handleEnrichmentBatch(batch, createEnv(db));
@@ -174,7 +174,7 @@ describe('handleEnrichmentBatch — enrichment_status', () => {
       preCount: 0,
       reservationResult: { new_count: 1 },
     });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery' });
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
     const batch = createBatch([msg]);
 
     await handleEnrichmentBatch(batch, createEnv(db));
@@ -195,13 +195,90 @@ describe('handleEnrichmentBatch — enrichment_status', () => {
       preCount: 500,
       reservationResult: { new_count: 500 },
     });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery' });
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
     const batch = createBatch([msg]);
 
     await handleEnrichmentBatch(batch, createEnv(db));
 
     expect(msg.ack).toHaveBeenCalled();
     expect(fetchAbvFromPerplexity).not.toHaveBeenCalled();
+  });
+
+  // ==========================================================================
+  // Optimistic concurrency (Cloudflare security review Phase 1, item 2a/5)
+  // ==========================================================================
+  //
+  // EnrichmentMessage carries no authoritative descriptionHash the way
+  // CleanupMessage does (types.ts is not owned by this change), so the
+  // final UPDATE is instead bound to the same enrichment_status='pending'
+  // this iteration already observed, closing the race between that check
+  // and the write.
+
+  it('logs a stale-result warning and does not treat the write as successful when the row changed status before the write', async () => {
+    vi.mocked(fetchAbvFromPerplexity).mockResolvedValueOnce(6.5);
+    const { db, prepareCalls } = createTrackingDb({
+      enrichmentStatus: 'pending',
+      preCount: 0,
+      reservationResult: { new_count: 1 },
+    });
+    // Force the final UPDATE specifically to report 0 rows changed, as if
+    // another writer already moved the row off 'pending'.
+    db.prepare = vi.fn().mockImplementation((sql: string) => {
+      if (sql.includes('UPDATE enriched_beers') && sql.includes("enrichment_status = 'pending'")) {
+        return {
+          bind: vi.fn().mockImplementation((...args: unknown[]) => {
+            prepareCalls.push({ sql, boundArgs: args, runCalled: false });
+            return { run: vi.fn().mockResolvedValue({ meta: { changes: 0 } }) };
+          }),
+        };
+      }
+      // Delegate everything else to the original tracking implementation.
+      return createTrackingDb({
+        enrichmentStatus: 'pending',
+        preCount: 0,
+        reservationResult: { new_count: 1 },
+      }).db.prepare(sql);
+    }) as unknown as typeof db.prepare;
+
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
+    const batch = createBatch([msg]);
+
+    await handleEnrichmentBatch(batch, createEnv(db));
+
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('enrichment.stale_result')
+    );
+    expect(consoleLogSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('Enriched beer-1')
+    );
+    // The message is still acked -- the queue's job (getting an ABV
+    // decision applied) is done regardless of who won the race.
+    expect(msg.ack).toHaveBeenCalled();
+
+    consoleWarnSpy.mockRestore();
+    consoleLogSpy.mockRestore();
+  });
+
+  it('binds the final UPDATE to enrichment_status = pending for optimistic concurrency', async () => {
+    vi.mocked(fetchAbvFromPerplexity).mockResolvedValueOnce(5.5);
+    const { db, prepareCalls } = createTrackingDb({
+      enrichmentStatus: 'pending',
+      preCount: 0,
+      reservationResult: { new_count: 1 },
+    });
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
+    const batch = createBatch([msg]);
+
+    await handleEnrichmentBatch(batch, createEnv(db));
+
+    const updateCall = prepareCalls.find(
+      c => c.sql.includes('UPDATE enriched_beers') && c.sql.includes("enrichment_status = 'enriched'")
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall!.sql).toContain("WHERE id = ? AND enrichment_status = 'pending'");
   });
 
   it('reserves the limit-th slot when the counter is at limit - 1', async () => {
@@ -214,7 +291,7 @@ describe('handleEnrichmentBatch — enrichment_status', () => {
       preCount: 499,
       reservationResult: { new_count: 500 },
     });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery' });
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
     const batch = createBatch([msg]);
 
     await handleEnrichmentBatch(batch, createEnv(db));

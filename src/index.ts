@@ -32,9 +32,9 @@ import {
 } from './auth';
 import type { Env, EnrichmentMessage, CleanupMessage } from './types';
 import { ENABLED_STORE_IDS } from './config';
-import { getCorsHeaders } from './context';
+import { getCorsHeaders, withResponseHeaders } from './context';
 import { checkRateLimit, getEndpointRateLimitKey, getPreAuthRateLimitKey } from './rate-limit';
-import { writeAuditLog, writeAdminAuditLog } from './audit';
+import { writeAuditLog, writeAdminAuditLog, type AdminAuditOutcome } from './audit';
 import {
   handleEnrichmentTrigger,
   handleDlqList,
@@ -48,8 +48,50 @@ import {
   handleScheduledEnrichment,
   handleCleanupTrigger,
 } from './handlers';
+import { handleLiveness } from './handlers/health';
 import { SYNC_CONSTANTS } from './types';
 import { handleEnrichmentBatch, handleCleanupBatch, handleDlqBatch, handleCleanupDlqBatch } from './queue';
+import { CORS_PREFLIGHT_ROUTES, CORS_ALLOWED_REQUEST_HEADERS } from './constants';
+
+// CORS_PREFLIGHT_ROUTES and CORS_ALLOWED_REQUEST_HEADERS now live in
+// src/constants.ts (imported above) as part of the constants consolidation.
+
+function isPreflightHeadersAllowed(requestedHeaders: string | null): boolean {
+  if (!requestedHeaders) return true;
+  return requestedHeaders
+    .split(',')
+    .map(h => h.trim().toLowerCase())
+    .filter(h => h.length > 0)
+    .every(h => CORS_ALLOWED_REQUEST_HEADERS.has(h));
+}
+
+// ============================================================================
+// Admin Audit Outcome Classification
+// ============================================================================
+
+/**
+ * Classify a privileged admin operation's outcome from its HTTP status and
+ * succeeded/failed target counts, for writeAdminAuditLog(). A non-200 status
+ * is always 'failed' regardless of counts; a 200 with both successes and
+ * failures present is 'partial'; a 200 with only failures is 'failed'.
+ */
+function classifyAdminOutcome(status: number, succeeded: number, failed: number): AdminAuditOutcome {
+  if (status !== 200) return 'failed';
+  if (failed > 0 && succeeded > 0) return 'partial';
+  if (failed > 0 && succeeded === 0) return 'failed';
+  return 'success';
+}
+
+/** Extract `error` (string, or `{message}` object) from a parsed response body, if present. */
+function extractErrorMessage(body: Record<string, unknown>): string | undefined {
+  const err = body['error'];
+  if (typeof err === 'string') return err;
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    const message = (err as Record<string, unknown>)['message'];
+    if (typeof message === 'string') return message;
+  }
+  return undefined;
+}
 
 // ============================================================================
 // Admin Response Analytics Helper
@@ -110,15 +152,43 @@ export default {
         upstreamLatencyMs: upstreamLatency,
       });
 
-      if (body === null) return new Response(null, { status, headers });
-      if (typeof body === 'object') return Response.json(body, { status, headers });
-      return new Response(body, { status, headers });
+      const responseHeaders = withResponseHeaders(headers, 'no-store');
+      if (body === null) return new Response(null, { status, headers: responseHeaders });
+      if (typeof body === 'object') return Response.json(body, { status, headers: responseHeaders });
+      return new Response(body, { status, headers: responseHeaders });
     };
 
     // Handle CORS preflight
-    // OPTIONS stays outside try/catch — it has no D1 dependency
+    //
+    // OPTIONS stays outside try/catch: it is validated and answered entirely
+    // from request headers/URL, so it has no reason to depend on auth,
+    // handler logic, or D1 reads. It deliberately does NOT call respond()
+    // (and therefore does not schedule writeAuditLog()): persisting a D1
+    // audit row for every routine preflight is an unauthenticated,
+    // unthrottled write-amplification path — high-volume or invalid OPTIONS
+    // traffic must not be able to create audit rows. trackRequest() (an
+    // Analytics Engine write, not D1) still gives cheap visibility.
     if (request.method === 'OPTIONS') {
-      return respond(null, 204, corsHeaders || {});
+      const requestedMethod = request.headers.get('Access-Control-Request-Method');
+      const requestedHeaders = request.headers.get('Access-Control-Request-Headers');
+
+      const isValidPreflight =
+        corsHeaders !== null && // Origin present and matches env.ALLOWED_ORIGIN
+        requestedMethod !== null &&
+        CORS_PREFLIGHT_ROUTES[url.pathname] === requestedMethod &&
+        isPreflightHeadersAllowed(requestedHeaders);
+
+      const status = isValidPreflight ? 204 : 403;
+      trackRequest(env.ANALYTICS, {
+        endpoint: url.pathname,
+        method: 'OPTIONS',
+        statusCode: status,
+        clientId: requestContext.clientIdentifier,
+        responseTimeMs: Date.now() - requestContext.startTime,
+      });
+
+      const preflightHeaders = withResponseHeaders(isValidPreflight ? (corsHeaders ?? {}) : {}, 'no-store');
+      return new Response(null, { status, headers: preflightHeaders });
     }
 
     try {
@@ -157,9 +227,48 @@ export default {
       );
     }
 
+    // Liveness check (no auth, no D1) — cheap probe distinct from /health;
+    // see handleLiveness() for why it takes no Env at all.
+    if (url.pathname === '/livez') {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return new Response(null, {
+          status: 405,
+          headers: withResponseHeaders({ Allow: 'GET, HEAD' }, 'no-store'),
+        });
+      }
+      return handleLiveness();
+    }
+
     // Health check (no auth required)
     if (url.pathname === '/health') {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return new Response(null, {
+          status: 405,
+          headers: withResponseHeaders({ Allow: 'GET, HEAD' }, 'no-store'),
+        });
+      }
       return handleHealthCheck(env);
+    }
+
+    // Restrict fresh=true (GET /beers cache bypass) to admin-authenticated
+    // callers. A normal — or absent — mobile credential must not be able to
+    // force a Flying Saucer refetch plus D1 write on every request; verified
+    // zero client impact (the mobile app never sends `fresh`). Checked before
+    // the general API-key gate below so a caller with no key at all and a
+    // caller with a plain app key both get the same 403 here, rather than
+    // the no-key case surfacing as a 401 that leaks nothing about `fresh`.
+    // The cron/scheduled path is unaffected — it calls refreshTaplistForStore()
+    // directly and never goes through this HTTP route.
+    if (url.pathname === '/beers' && url.searchParams.get('fresh') === 'true') {
+      const freshAuth = await authorizeAdmin(request, env, requestContext);
+      if (!freshAuth.authorized) {
+        return respond(
+          { error: 'fresh=true requires admin credentials', requestId: requestContext.requestId },
+          403,
+          corsHeaders ?? {},
+          'fresh bypass denied'
+        );
+      }
     }
 
     // Require CORS config for all other routes
@@ -331,8 +440,19 @@ export default {
     // Admin Routes - Require additional ADMIN_SECRET authentication
     // ========================================================================
     if (url.pathname.startsWith('/admin/')) {
+      // Computed before the authorized check so a DENIED attempt can also be
+      // recorded in the admin audit log (previously only the generic
+      // writeAuditLog() saw admin auth failures — the specialized admin
+      // audit trail silently had no row for them at all).
+      const adminSecretHash = await hashApiKey(request.headers.get('X-Admin-Secret') || '');
+
       const adminAuth = await authorizeAdmin(request, env, authedContext);
       if (!adminAuth.authorized) {
+        ctx.waitUntil(writeAdminAuditLog(
+          env.DB, authedContext, `${url.pathname}_denied`, {},
+          adminSecretHash,
+          { statusCode: 403, outcome: 'denied', failureReason: adminAuth.error }
+        ));
         return respond(
           { error: adminAuth.error || 'Unauthorized', requestId: authedContext.requestId },
           403,
@@ -341,21 +461,29 @@ export default {
         );
       }
 
-      const adminSecretHash = await hashApiKey(request.headers.get('X-Admin-Secret') || '');
-
       // Route: GET /admin/dlq
       if (url.pathname === '/admin/dlq' && request.method === 'GET') {
         const operationStart = Date.now();
         const result = await handleDlqList(env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext, url.searchParams);
         let messageCount = 0;
+        let body: Record<string, unknown> = {};
         try {
-          const analytics = await parseResponseAnalytics(result);
-          const data = analytics['data'] as Record<string, unknown> | undefined;
+          body = await parseResponseAnalytics(result);
+          const data = body['data'] as Record<string, unknown> | undefined;
           const messages = data?.['messages'] as unknown[] | undefined;
           messageCount = messages?.length || 0;
         } catch { /* ignore */ }
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_list', success: result.status === 200, messageCount, durationMs: Date.now() - operationStart });
-        ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_list', { message_count: messageCount }, adminSecretHash));
+        ctx.waitUntil(writeAdminAuditLog(
+          env.DB, authedContext, 'dlq_list', { message_count: messageCount }, adminSecretHash,
+          {
+            statusCode: result.status,
+            outcome: result.status === 200 ? 'success' : 'failed',
+            succeededCount: result.status === 200 ? 1 : 0,
+            failedCount: result.status === 200 ? 0 : 1,
+            failureReason: result.status === 200 ? undefined : extractErrorMessage(body),
+          }
+        ));
         return result;
       }
 
@@ -363,8 +491,16 @@ export default {
       if (url.pathname === '/admin/dlq/stats' && request.method === 'GET') {
         const operationStart = Date.now();
         const result = await handleDlqStats(env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
+        const body = result.status === 200 ? {} : await parseResponseAnalytics(result);
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_stats', success: result.status === 200, messageCount: 0, durationMs: Date.now() - operationStart });
-        ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_stats', {}, adminSecretHash));
+        ctx.waitUntil(writeAdminAuditLog(
+          env.DB, authedContext, 'dlq_stats', {}, adminSecretHash,
+          {
+            statusCode: result.status,
+            outcome: result.status === 200 ? 'success' : 'failed',
+            failureReason: result.status === 200 ? undefined : extractErrorMessage(body),
+          }
+        ));
         return result;
       }
 
@@ -373,13 +509,28 @@ export default {
         const operationStart = Date.now();
         const result = await handleDlqReplay(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
         let replayedCount = 0;
+        let requestedCount: number | undefined;
+        let failedCount: number | undefined;
+        let body: Record<string, unknown> = {};
         try {
-          const analytics = await parseResponseAnalytics(result);
-          const data = analytics['data'] as Record<string, unknown> | undefined;
+          body = await parseResponseAnalytics(result);
+          const data = body['data'] as Record<string, unknown> | undefined;
           replayedCount = (data?.['replayed_count'] as number | undefined) || 0;
+          requestedCount = data?.['requested_count'] as number | undefined;
+          failedCount = data?.['failed_count'] as number | undefined;
         } catch { /* ignore */ }
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_replay', success: result.status === 200, messageCount: replayedCount, durationMs: Date.now() - operationStart });
-        ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_replay', { replayed_count: replayedCount }, adminSecretHash));
+        ctx.waitUntil(writeAdminAuditLog(
+          env.DB, authedContext, 'dlq_replay', { replayed_count: replayedCount }, adminSecretHash,
+          {
+            statusCode: result.status,
+            outcome: classifyAdminOutcome(result.status, replayedCount, failedCount ?? 0),
+            requestedCount,
+            succeededCount: replayedCount,
+            failedCount,
+            failureReason: result.status === 200 ? undefined : extractErrorMessage(body),
+          }
+        ));
         return result;
       }
 
@@ -388,13 +539,32 @@ export default {
         const operationStart = Date.now();
         const result = await handleDlqAcknowledge(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
         let acknowledgedCount = 0;
+        let requestedCount: number | undefined;
+        let failedCount: number | undefined;
+        let body: Record<string, unknown> = {};
         try {
-          const analytics = await parseResponseAnalytics(result);
-          const data = analytics['data'] as Record<string, unknown> | undefined;
+          body = await parseResponseAnalytics(result);
+          const data = body['data'] as Record<string, unknown> | undefined;
           acknowledgedCount = (data?.['acknowledged_count'] as number | undefined) || 0;
+          requestedCount = data?.['requested_count'] as number | undefined;
+          failedCount = data?.['failed_count'] as number | undefined;
         } catch { /* ignore */ }
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_acknowledge', success: result.status === 200, messageCount: acknowledgedCount, durationMs: Date.now() - operationStart });
-        ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'dlq_acknowledge', { acknowledged_count: acknowledgedCount }, adminSecretHash));
+        // handleDlqAcknowledge's response now carries requested_count/
+        // failed_count (Cloudflare security review, dlq_acknowledge audit
+        // fidelity), so classifyAdminOutcome can distinguish a partial
+        // acknowledge from a full success the same way dlq_replay already does.
+        ctx.waitUntil(writeAdminAuditLog(
+          env.DB, authedContext, 'dlq_acknowledge', { acknowledged_count: acknowledgedCount }, adminSecretHash,
+          {
+            statusCode: result.status,
+            outcome: classifyAdminOutcome(result.status, acknowledgedCount, failedCount ?? 0),
+            requestedCount,
+            succeededCount: acknowledgedCount,
+            failedCount,
+            failureReason: result.status === 200 ? undefined : extractErrorMessage(body),
+          }
+        ));
         return result;
       }
 
@@ -406,9 +576,10 @@ export default {
         let skipReason: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers' | undefined;
         let dailyRemaining = 0;
         let monthlyRemaining = 0;
+        let body: Record<string, unknown> = {};
         try {
-          const analytics = await parseResponseAnalytics(result);
-          const data = analytics['data'] as Record<string, unknown> | undefined;
+          body = await parseResponseAnalytics(result);
+          const data = body['data'] as Record<string, unknown> | undefined;
           beersQueued = (data?.['beers_queued'] as number | undefined) || 0;
           skipReason = data?.['skip_reason'] as typeof skipReason;
           const quota = data?.['quota'] as Record<string, unknown> | undefined;
@@ -418,7 +589,17 @@ export default {
           monthlyRemaining = (monthly?.['remaining'] as number | undefined) || 0;
         } catch { /* ignore */ }
         trackAdminTrigger(env.ANALYTICS, { beersQueued, dailyRemaining, monthlyRemaining, durationMs: Date.now() - operationStart, success: result.status === 200, skipReason });
-        ctx.waitUntil(writeAdminAuditLog(env.DB, authedContext, 'enrich_trigger', { beers_queued: beersQueued, skip_reason: skipReason, duration_ms: Date.now() - operationStart }, adminSecretHash));
+        ctx.waitUntil(writeAdminAuditLog(
+          env.DB, authedContext, 'enrich_trigger',
+          { beers_queued: beersQueued, skip_reason: skipReason, duration_ms: Date.now() - operationStart },
+          adminSecretHash,
+          {
+            statusCode: result.status,
+            outcome: result.status === 200 ? 'success' : 'failed',
+            succeededCount: beersQueued,
+            failureReason: result.status === 200 ? undefined : extractErrorMessage(body),
+          }
+        ));
         console.log(`[admin] enrich_trigger completed: beersQueued=${beersQueued}, skipReason=${skipReason || 'none'}, durationMs=${Date.now() - operationStart}, requestId=${authedContext.requestId}`);
         return result;
       }
@@ -433,9 +614,10 @@ export default {
         let beersReset = 0;
         let mode = 'unknown';
         let dryRun = false;
+        let body: Record<string, unknown> = {};
         try {
-          const analytics = await parseResponseAnalytics(result);
-          const data = analytics['data'] as Record<string, unknown> | undefined;
+          body = await parseResponseAnalytics(result);
+          const data = body['data'] as Record<string, unknown> | undefined;
           beersQueued = (data?.['beers_queued'] as number | undefined) ?? 0;
           beersReset = (data?.['beers_reset'] as number | undefined) ?? 0;
           mode = (data?.['mode'] as string | undefined) ?? 'unknown';
@@ -456,13 +638,20 @@ export default {
           );
         }
 
-        // Audit log
+        // Audit log. A dry run is classified 'attempted' — nothing was
+        // actually changed — rather than 'success', regardless of status.
         ctx.waitUntil(
-          writeAdminAuditLog(env.DB, authedContext, 'cleanup_trigger', {
-            beers_queued: beersQueued,
-            mode,
-            duration_ms: Date.now() - operationStart,
-          }, adminSecretHash)
+          writeAdminAuditLog(
+            env.DB, authedContext, 'cleanup_trigger',
+            { beers_queued: beersQueued, mode, duration_ms: Date.now() - operationStart },
+            adminSecretHash,
+            {
+              statusCode: result.status,
+              outcome: dryRun ? 'attempted' : (result.status === 200 ? 'success' : 'failed'),
+              succeededCount: beersQueued,
+              failureReason: result.status === 200 ? undefined : extractErrorMessage(body),
+            }
+          )
         );
 
         console.log(`[admin] cleanup_trigger completed: beersQueued=${beersQueued}, mode=${mode}, durationMs=${Date.now() - operationStart}, requestId=${authedContext.requestId}`);
@@ -500,7 +689,7 @@ export default {
         : {};
       return Response.json(
         { error: 'Internal Server Error', requestId: requestContext.requestId },
-        { status: 500, headers: errorHeaders }
+        { status: 500, headers: withResponseHeaders(errorHeaders, 'no-store') }
       );
     }
   },

@@ -16,6 +16,8 @@ import type {
 import { shouldSkipEnrichment } from '../config';
 import { errorResponse } from '../context';
 import { getToday, getMonthEnd } from '../utils/date';
+import { readBoundedJson, boundedJsonErrorResponse } from '../utils/body';
+import { SMALL_JSON_BODY_MAX_BYTES } from '../constants';
 import {
   TriggerEnrichmentRequestSchema,
 } from '../schemas/request';
@@ -47,7 +49,7 @@ export async function selectAndQueuePendingEnrichment(
   options: { limit: number; excludeFailures?: boolean }
 ): Promise<QueuePendingResult> {
   let query = `
-    SELECT id, brew_name, brewer
+    SELECT id, brew_name, brewer, description_hash
     FROM enriched_beers
     WHERE enrichment_status = 'pending'
   `;
@@ -62,7 +64,7 @@ export async function selectAndQueuePendingEnrichment(
 
   const beersToEnrich = await env.DB.prepare(query)
     .bind(options.limit)
-    .all<{ id: string; brew_name: string; brewer: string }>();
+    .all<{ id: string; brew_name: string; brewer: string; description_hash: string | null }>();
 
   if (!beersToEnrich.results || beersToEnrich.results.length === 0) {
     return { beersQueued: 0, blocklistedMarked: 0, noEligibleBeers: true };
@@ -96,6 +98,12 @@ export async function selectAndQueuePendingEnrichment(
         beerId: beer.id,
         beerName: beer.brew_name,
         brewer: beer.brewer,
+        // Stamps the message with the row's current description_hash for
+        // stale-result binding parity with cleanup.ts (Cloudflare security
+        // review Phase 1, item 2a/5). EnrichmentMessage.descriptionHash is
+        // required-but-nullable, so the row's null (no description) is
+        // sent as a literal null, not omitted.
+        descriptionHash: beer.description_hash,
       },
     }))
   );
@@ -134,7 +142,21 @@ export async function handleEnrichmentTrigger(
 
   try {
     // Parse request body - empty body is valid (all fields optional with defaults)
-    const raw = await request.json().catch(() => ({}));
+    const bodyResult = await readBoundedJson(request, SMALL_JSON_BODY_MAX_BYTES);
+    let raw: unknown;
+    if (!bodyResult.ok) {
+      // A genuinely empty body is the documented no-op trigger call; only
+      // that specific failure is tolerated here. Any other failure (wrong
+      // Content-Type, oversized body, or malformed non-empty JSON) is a
+      // real client error and must not be silently treated as "no options".
+      if (bodyResult.code === 'INVALID_JSON' && bodyResult.bytesRead === 0) {
+        raw = {};
+      } else {
+        return boundedJsonErrorResponse(bodyResult, reqCtx.requestId, headers);
+      }
+    } else {
+      raw = bodyResult.data;
+    }
     const isEmpty = typeof raw === 'object' && raw !== null && Object.keys(raw as Record<string, unknown>).length === 0;
     if (!isEmpty) {
       const validation = TriggerEnrichmentRequestSchema.safeParse(raw);

@@ -364,19 +364,39 @@ describe('handleBatchLookup', () => {
       expect(response.status).toBe(400);
     });
 
-    it('should limit batch size to 100', async () => {
-      // Create 150 IDs
+    it('rejects a batch of more than 100 IDs instead of silently truncating it', async () => {
+      // Create 150 IDs -- exceeds BATCH_MAX_IDS (100)
       const ids = Array.from({ length: 150 }, (_, i) => `id-${i}`);
-      // Only first 100 will be queried
-      const first100 = ids.slice(0, 100);
+
+      const mockEnv = {
+        DB: {
+          prepare: vi.fn(),
+        } as unknown as D1Database
+      };
+
+      const request = createBatchRequest(ids);
+
+      const response = await handleBatchLookup(
+        request,
+        mockEnv as Env,
+        {},
+        mockReqCtx
+      );
+
+      expect(response.status).toBe(400);
+      // Rejected at the schema boundary, before any D1 query is issued.
+      expect(mockEnv.DB.prepare).not.toHaveBeenCalled();
+    });
+
+    it('accepts a batch of exactly 100 IDs (the BATCH_MAX_IDS boundary)', async () => {
+      const ids = Array.from({ length: 100 }, (_, i) => `id-${i}`);
 
       const mockEnv = {
         DB: {
           prepare: vi.fn().mockReturnValue({
             bind: vi.fn().mockImplementation((...args: string[]) => {
-              // Verify only 100 IDs are passed
               expect(args.length).toBe(100);
-              expect(args).toEqual(first100);
+              expect(args).toEqual(ids);
               return {
                 all: vi.fn().mockResolvedValue({ results: [] })
               };
@@ -387,14 +407,14 @@ describe('handleBatchLookup', () => {
 
       const request = createBatchRequest(ids);
 
-      await handleBatchLookup(
+      const response = await handleBatchLookup(
         request,
         mockEnv as Env,
         {},
         mockReqCtx
       );
 
-      // Verify prepare was called
+      expect(response.status).toBe(200);
       expect(mockEnv.DB.prepare).toHaveBeenCalled();
     });
   });
