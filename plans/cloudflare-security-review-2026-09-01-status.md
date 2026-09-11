@@ -93,8 +93,9 @@ verification challenges app-side.
 Read the Free-tier rule quota from the dashboard **before** planning the edge rule; the plan names
 this as a prerequisite.
 
-- [ ] Spend the single Free-tier rate-limiting rule on one named path-scoped abuse case; record the
-      exact expression (Free tier: 1 rule, IP-only counting, Path/Verified-Bot fields, 10s window).
+- [ ] **Configure the single Free-tier rate-limiting rule on `/health`.** Expression, threshold and
+      rationale decided 2026-09-11 — see "Edge rate-limiting rule" below. Still to be applied in the
+      dashboard and verified in Security Events.
 - [ ] Optional Free-tier custom rule (5 available, separate quota) for early `Content-Length` rejection.
 - [ ] Cloudflare Access on `/admin/*` — human policy for interactive use, service token for automation.
       Keep `ADMIN_SECRET` as defence in depth during migration. Record the free Zero Trust seat
@@ -111,6 +112,70 @@ this as a prerequisite.
       and retention policy — the Worker logs full request context.
 - [ ] Remaining dashboard checklist in the plan: SSL Full (strict), Always Use HTTPS, min TLS 1.2,
       HSTS, DNSSEC, managed WAF rules, MFA, preview URLs disabled, D1 size vs plan limit, alerting.
+
+## Edge rate-limiting rule — decision, 2026-09-11
+
+The plan requires the single Free-tier rate-limiting rule to be spent on one named abuse case with
+its exact expression recorded. Decided but **not yet applied in the dashboard**.
+
+### What the Free plan allows
+
+1 rate-limiting rule; counting by **IP only**; expression fields **Path and Verified Bot only**;
+10-second counting period; 10-second mitigation timeout. WAF **custom** rules are a separate quota
+of 5.
+
+### Decision
+
+Spend it on `/health`.
+
+```
+Expression:       (http.request.uri.path eq "/health")
+Characteristic:   IP
+Threshold:        10 requests / 10 s
+Action:           Block
+Duration:         10 s
+```
+
+Optionally widen to `(http.request.uri.path in {"/health" "/livez"})`. `/livez` runs no D1 query of
+its own but still incurs the pre-auth `rate_limits` upsert.
+
+### Why `/health`
+
+- It is the only endpoint reachable with **no credential at all**, so the attacker population is
+  everyone rather than only holders of the extractable app key.
+- Every request costs the pre-auth D1 rate-limit upsert **plus** `SELECT 1` plus the daily and
+  monthly quota queries. It is the most expensive unauthenticated request in the system.
+- **Legitimate production traffic is effectively zero.** `checkEnrichmentHealth` and
+  `getEnrichmentHealthDetails` in the mobile client are referenced only from test files — nothing in
+  the shipping app calls `/health`. Real traffic is external uptime monitors plus CI contract runs,
+  so an aggressive threshold carries almost no false-positive risk. **Re-check this before
+  tightening further**, since the mobile detailed-health parser still exists and a future release
+  could start calling it.
+
+### Why not `/beers/sync`
+
+It is the higher-value target in spend terms, but it is authenticated and already bounded by 30
+RPM/IP pre-auth and 10 RPM post-auth, so the marginal edge gain is small. Choosing it would leave
+the only no-credential D1 amplification path unprotected.
+
+### Constraints to remember
+
+- **One rule can match a set of paths, but they share one counter and threshold.** Do not fold
+  `/beers*` in — mixing a high-traffic path with a zero-traffic one forces the threshold up to the
+  busy path's needs and destroys the tight limit that makes this worthwhile.
+- **There is no hostname field.** The rule applies zone-wide to that path.
+- **Method, query string, `Origin` and `Content-Length` are not matchable**, which rules out edge
+  mitigation for OPTIONS floods and oversized POSTs. Those remain Worker-side controls.
+- A 10s window with a 10s block does not stop a distributed or merely patient attacker. The
+  Worker-side durable budget remains the real boundary; this rule is one cheap extra layer whose
+  sole unique value is rejecting traffic **before** Worker invocation and before any D1 write.
+
+### Verification
+
+Burst above the threshold from one IP, then confirm in Security Events that the requests were
+blocked by this rule **and** that they produced no corresponding Worker invocation and no
+`rate_limits` row. The absence is the proof — a rule that fires after the Worker already ran has
+bought nothing.
 
 ## Deferred by decision
 
