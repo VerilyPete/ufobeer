@@ -147,6 +147,16 @@ describe('handleEnrichmentBatch — enrichment_status', () => {
     expect(fetchAbvFromPerplexity).not.toHaveBeenCalled();
   });
 
+  it.each(['http', 'invalid_response', 'configuration'])('retries %s failures without writing not_found', async kind => {
+    vi.mocked(fetchAbvFromPerplexity).mockRejectedValueOnce(Object.assign(new Error(kind), { kind }));
+    const { db, prepareCalls } = createTrackingDb({ enrichmentStatus: 'pending' });
+    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
+    await handleEnrichmentBatch(createBatch([msg]), createEnv(db));
+    expect(msg.retry).toHaveBeenCalledOnce();
+    expect(msg.ack).not.toHaveBeenCalled();
+    expect(prepareCalls.some(call => call.sql.includes('UPDATE enriched_beers'))).toBe(false);
+  });
+
   it('sets enrichment_status to enriched when ABV is found', async () => {
     vi.mocked(fetchAbvFromPerplexity).mockResolvedValueOnce(6.5);
     const { db, prepareCalls } = createTrackingDb({

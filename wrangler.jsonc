@@ -92,12 +92,10 @@
 		],
 	},
 	// secrets.required makes `wrangler deploy` fail if a listed secret is not
-	// set, instead of silently deploying a Worker that will error or fail
-	// closed at request time. Excludes PERPLEXITY_API_KEY: it is genuinely
-	// optional — fetchAbvFromPerplexity() (src/services/perplexity.ts:35)
-	// checks it and returns null with a console.warn when unset, so the
-	// Worker deploys and runs correctly (with paid ABV enrichment disabled)
-	// without it.
+	// set, instead of silently deploying a Worker that will fail at runtime.
+	// PERPLEXITY_API_KEY remains optional for deployments with enrichment
+	// disabled; when enabled, a missing key is a configuration failure and
+	// must never mark beers as not_found.
 	"secrets": {
 		"required": ["API_KEY", "ADMIN_SECRET", "FLYING_SAUCER_API_BASE"],
 	},

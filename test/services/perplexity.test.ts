@@ -150,36 +150,33 @@ describe('fetchAbvFromPerplexity', () => {
       restore();
     });
 
-    it('should handle ABV with surrounding text', async () => {
+    it('should reject ABV with surrounding text', async () => {
       const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(
         createMockResponse('The ABV is approximately 7.2%')
       );
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test IPA',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBe(7.2);
       restore();
     });
 
-    it('should extract first number from response with multiple numbers', async () => {
+    it('should reject ambiguous responses with multiple numbers', async () => {
       const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(
         createMockResponse('The beer has 5.5% ABV. Some versions are 6.0%.')
       );
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test IPA',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      // Should extract the first number (5.5)
-      expect(result).toBe(5.5);
       restore();
     });
 
@@ -197,35 +194,32 @@ describe('fetchAbvFromPerplexity', () => {
       restore();
     });
 
-    it('should return null for empty response', async () => {
+    it('should throw for empty response', async () => {
       const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse(''));
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBeNull();
       restore();
     });
 
-    it('should return null for response with no numbers', async () => {
+    it('should throw for response with no numbers', async () => {
       const { mockFetch, restore } = setupMockFetch();
       const mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       mockFetch.mockResolvedValueOnce(
         createMockResponse('This beer has a moderate alcohol content.')
       );
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBeNull();
-      expect(mockConsoleWarn).toHaveBeenCalled();
       mockConsoleWarn.mockRestore();
       restore();
     });
@@ -264,13 +258,12 @@ describe('fetchAbvFromPerplexity', () => {
       const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('75'));
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBeNull();
       restore();
     });
 
@@ -278,29 +271,25 @@ describe('fetchAbvFromPerplexity', () => {
       const { mockFetch, restore } = setupMockFetch();
       mockFetch.mockResolvedValueOnce(createMockResponse('100'));
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBeNull();
       restore();
     });
 
-    it('should extract positive number from negative input', async () => {
+    it('should reject negative input', async () => {
       const { mockFetch, restore } = setupMockFetch();
-      // The regex /(\d+\.?\d*)/ won't match the minus sign, so -5 extracts "5"
       mockFetch.mockResolvedValueOnce(createMockResponse('-5'));
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      // The regex extracts "5" from "-5", which is valid
-      expect(result).toBe(5);
       restore();
     });
 
@@ -434,7 +423,7 @@ describe('fetchAbvFromPerplexity', () => {
       restore();
     });
 
-    it('should return null when API key not configured (undefined)', async () => {
+    it('should throw when API key not configured (undefined)', async () => {
       const { mockFetch, restore } = setupMockFetch();
       const mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       // Create env without the PERPLEXITY_API_KEY property
@@ -449,32 +438,27 @@ describe('fetchAbvFromPerplexity', () => {
         RATE_LIMIT_RPM: '60',
       } as Env;
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         envWithoutKey,
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'configuration' });
 
-      expect(result).toBeNull();
       expect(mockFetch).not.toHaveBeenCalled();
-      expect(mockConsoleWarn).toHaveBeenCalledWith(
-        'PERPLEXITY_API_KEY not configured'
-      );
       mockConsoleWarn.mockRestore();
       restore();
     });
 
-    it('should return null when API key is empty string', async () => {
+    it('should throw when API key is empty string', async () => {
       const { mockFetch, restore } = setupMockFetch();
       // The implementation checks !env.PERPLEXITY_API_KEY which treats
-      // empty string as falsy, so it should return null
-      const result = await fetchAbvFromPerplexity(
+      // empty string as falsy, so it should throw
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(''),
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'configuration' });
 
-      expect(result).toBeNull();
       expect(mockFetch).not.toHaveBeenCalled();
       restore();
     });
@@ -504,13 +488,12 @@ describe('fetchAbvFromPerplexity', () => {
         json: vi.fn().mockResolvedValue({}),
       });
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBeNull();
       restore();
     });
 
@@ -521,13 +504,12 @@ describe('fetchAbvFromPerplexity', () => {
         json: vi.fn().mockResolvedValue({ choices: [] }),
       });
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBeNull();
       restore();
     });
 
@@ -540,13 +522,12 @@ describe('fetchAbvFromPerplexity', () => {
         }),
       });
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBeNull();
       restore();
     });
 
@@ -559,13 +540,12 @@ describe('fetchAbvFromPerplexity', () => {
         }),
       });
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBeNull();
       restore();
     });
 
@@ -578,13 +558,12 @@ describe('fetchAbvFromPerplexity', () => {
         }),
       });
 
-      const result = await fetchAbvFromPerplexity(
+      await expect(fetchAbvFromPerplexity(
         createMockEnv(),
         'Test Beer',
         'Test Brewery'
-      );
+      )).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBeNull();
       restore();
     });
   });
@@ -937,14 +916,13 @@ describe('fetchAbvFromPerplexity', () => {
         text: vi.fn().mockResolvedValue(hugeBody),
       } as unknown as Response);
 
-      const result = await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
+      await expect(fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery')).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBeNull();
       mockConsoleError.mockRestore();
       restore();
     });
 
-    it('returns null instead of throwing when the response body is not valid JSON', async () => {
+    it('throws when the response body is not valid JSON', async () => {
       const { mockFetch, restore } = setupMockFetch();
       const mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       mockFetch.mockResolvedValueOnce({
@@ -953,14 +931,13 @@ describe('fetchAbvFromPerplexity', () => {
         text: vi.fn().mockResolvedValue('not json{{{'),
       } as unknown as Response);
 
-      const result = await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
+      await expect(fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery')).rejects.toMatchObject({ kind: 'invalid_response' });
 
-      expect(result).toBeNull();
       mockConsoleWarn.mockRestore();
       restore();
     });
 
-    it('truncates a large logged error body independently of the success-path cap', async () => {
+    it('omits raw provider error bodies from logs', async () => {
       const { mockFetch, restore } = setupMockFetch();
       const mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
       const hugeErrorBody = 'x'.repeat(10_000);
@@ -970,11 +947,9 @@ describe('fetchAbvFromPerplexity', () => {
         fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery')
       ).rejects.toThrow('Perplexity API returned 500');
 
-      const loggedBody = mockConsoleError.mock.calls.find(
-        (call) => typeof call[1] === 'string'
-      )?.[1] as string | undefined;
-      expect(loggedBody).toBeDefined();
-      expect(loggedBody!.length).toBeLessThan(hugeErrorBody.length);
+      const logged = JSON.stringify(mockConsoleError.mock.calls);
+      expect(logged).toContain('perplexity.http_error');
+      expect(logged).not.toContain(hugeErrorBody);
       mockConsoleError.mockRestore();
       restore();
     });

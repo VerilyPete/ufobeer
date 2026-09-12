@@ -94,7 +94,7 @@ export async function handleEnrichmentBatch(
     ).bind(beerId).first<{ enrichment_status: string | null }>();
 
     if (existing !== null && existing.enrichment_status !== 'pending') {
-      console.log(`[enrichment] Skipping ${beerId}: already has ABV`);
+      console.log(`[enrichment] Skipping ${beerId}: status=${existing.enrichment_status}`);
       message.ack();
       continue;
     }

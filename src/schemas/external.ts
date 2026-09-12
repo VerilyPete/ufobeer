@@ -40,6 +40,7 @@ export function isFlyingSaucerBeerRecordWithinSizeCap(beer: unknown): boolean {
 export const PerplexityResponseSchema = z.object({
   choices: z.array(
     z.object({
+      finish_reason: z.string().optional(),
       message: z.object({
         content: z.string().optional(),
       }).optional(),

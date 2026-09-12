@@ -417,3 +417,43 @@ describe('producer -> consumer seam (queueBeersForCleanup -> handleCleanupBatch)
     expect(rows.get('beer-8')!.brew_description_cleaned).toBe(description);
   });
 });
+
+describe('deterministic cleanup and honest fallback metrics', () => {
+  it.each(['oversized', 'missing', 'failed', 'accepted', 'quota'])('cleans escaped source text when AI is %s', async outcome => {
+    const metricsLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const raw = "Refreshing Seltzer from Untitled Art\\'s Florida Seltzers with navel oranged and Yuzu\\r\\n";
+    const expected = "Refreshing Seltzer from Untitled Art's Florida Seltzers with navel oranged and Yuzu";
+    const hash = await hashDescription(raw);
+    const { db, rows } = createFakeD1({
+      '19995947': { description_hash: hash, brew_description_cleaned: null, abv: null, cleanup_source: null },
+    });
+    const ai = createMockAI(outcome === 'oversized' ? 'Long invented text. '.repeat(150) : raw);
+    if (outcome === 'missing') ai.run.mockResolvedValue({});
+    if (outcome === 'failed') ai.run.mockRejectedValue(new Error('Inference unavailable'));
+    const env = createEnv(db, ai, outcome === 'quota' ? 0 : 1000);
+    const msg = createMessage({ beerId: '19995947', beerName: 'Florida Seltzer', brewer: 'Untitled Art', brewDescription: raw, descriptionHash: hash });
+    await handleCleanupBatch(createBatch([msg]), env);
+    expect(rows.get('19995947')?.brew_description_cleaned).toBe(expected);
+    expect(rows.get('19995947')?.abv).toBeNull();
+    expect(msg.ack).toHaveBeenCalledOnce();
+    if (['oversized', 'missing', 'failed'].includes(outcome)) {
+      expect(rows.get('19995947')?.cleanup_source).toBe('fallback-ai');
+      const entry = metricsLog.mock.calls.find(call => call[0] === '[cleanup] Batch metrics:');
+      expect(JSON.parse(String(entry?.[1]))).toMatchObject({ ai_success: 0, ai_failure: 1, fallback_used: 1, circuit_breaker: false });
+    }
+    if (outcome !== 'quota') expect(ai.run.mock.calls[0]?.[1]?.prompt).toContain(expected);
+  });
+
+  it('decodes entities and separates HTML blocks without changing source ABV', async () => {
+    const raw = '<p>Brewer&#39;s &amp; citrus</p><p>5.5% ABV&nbsp;&lt;b&gt;bright&lt;/b&gt;</p>\\r\\n';
+    const hash = await hashDescription(raw);
+    const { db, rows } = createFakeD1({
+      beer: { description_hash: hash, brew_description_cleaned: null, abv: null, cleanup_source: null },
+    });
+    const ai = createMockAI('invented '.repeat(300));
+    const msg = createMessage({ beerId: 'beer', beerName: 'Beer', brewer: 'Brewer', brewDescription: raw, descriptionHash: hash });
+    await handleCleanupBatch(createBatch([msg]), createEnv(db, ai));
+    expect(rows.get('beer')?.brew_description_cleaned).toBe("Brewer's & citrus 5.5% ABV bright");
+    expect(rows.get('beer')?.abv).toBe(5.5);
+  });
+});

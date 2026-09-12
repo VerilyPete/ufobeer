@@ -134,12 +134,28 @@ function hasUnsafePromptArtifacts(cleaned: string, original: string): boolean {
  * included, as the "cleaned" value.
  */
 function sanitizeFallbackDescription(text: string): string {
-  const stripped = text
+  // Decode source formatting before stripping tags so encoded markup cannot
+  // bypass sanitization. Unknown entities/escapes remain literal.
+  const entities: Record<string, string> = {
+    amp: '&', nbsp: ' ', quot: '"', apos: "'", lt: '<', gt: '>',
+    rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', ndash: '–', mdash: '—',
+  };
+  const decoded = text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, name: string) => {
+    if (!name.startsWith('#')) return entities[name.toLowerCase()] ?? entity;
+    const hex = name[1]?.toLowerCase() === 'x';
+    const point = Number.parseInt(name.slice(hex ? 2 : 1), hex ? 16 : 10);
+    return point > 0 && point <= 0x10ffff && !(point >= 0xd800 && point <= 0xdfff)
+      ? String.fromCodePoint(point) : entity;
+  });
+  return decoded
+    .replace(/\\r\\n|\\[rnt]/g, ' ')
+    .replace(/\\(['"])/g, '$1')
+    .replace(/<\/?(?:p|div|br)\b[^>]*>/gi, ' ')
     .replace(/<[^>]*>/g, '')
-    .replace(new RegExp(CONTROL_CHAR_PATTERN, 'g'), '');
-  return stripped.length > MAX_CLEANED_OUTPUT_LENGTH
-    ? stripped.slice(0, MAX_CLEANED_OUTPUT_LENGTH)
-    : stripped;
+    .replace(/\s+/g, ' ')
+    .replace(new RegExp(CONTROL_CHAR_PATTERN, 'g'), '')
+    .trim()
+    .slice(0, MAX_CLEANED_OUTPUT_LENGTH);
 }
 
 const CLEANUP_PROMPT = `Clean the text between <TEXT> and </TEXT>. Return ONLY the cleaned text, nothing else.
@@ -402,10 +418,10 @@ async function cleanDescriptionSafely(
   // are a client-facing concern and do not constrain descriptions that
   // originate from Flying Saucer. Used consistently below so ABV
   // extraction and the ratio check operate on what the model actually saw.
-  const boundedOriginal = original.length > MAX_PROMPT_DESCRIPTION_LENGTH
-    ? original.slice(0, MAX_PROMPT_DESCRIPTION_LENGTH)
-    : original;
+  const boundedOriginal = sanitizeFallbackDescription(original.slice(0, MAX_PROMPT_DESCRIPTION_LENGTH));
   const originalAbv = extractABV(boundedOriginal);
+  const fallback: CleanupResult = { cleaned: boundedOriginal, usedOriginal: true, extractedABV: originalAbv };
+  if (!boundedOriginal) return fallback;
 
   let cleaned: string;
   try {
@@ -424,19 +440,11 @@ async function cleanDescriptionSafely(
       cleaned = stripResponsePrefixes(result.response);
     } else {
       console.error('[cleanup] AI response missing text');
-      return {
-        cleaned: sanitizeFallbackDescription(boundedOriginal),
-        usedOriginal: true,
-        extractedABV: originalAbv,
-      };
+      return fallback;
     }
   } catch (e) {
     console.error('[cleanup] Inference failed:', e instanceof Error ? e.message : String(e));
-    return {
-      cleaned: sanitizeFallbackDescription(boundedOriginal),
-      usedOriginal: true,
-      extractedABV: originalAbv,
-    };
+    return fallback;
   }
 
   // Validation 1: reject content-level injection artifacts. The ABV and
@@ -449,11 +457,7 @@ async function cleanDescriptionSafely(
   // model.
   if (hasUnsafePromptArtifacts(cleaned, boundedOriginal)) {
     console.warn('[cleanup] Cleaned output failed content validation, using original');
-    return {
-      cleaned: sanitizeFallbackDescription(boundedOriginal),
-      usedOriginal: true,
-      extractedABV: originalAbv,
-    };
+    return fallback;
   }
 
   // Validation 2: ABV extraction should work the same or better
@@ -461,11 +465,7 @@ async function cleanDescriptionSafely(
 
   if (originalAbv !== null && cleanedAbv === null) {
     console.warn('[cleanup] Cleanup broke ABV extraction, using original');
-    return {
-      cleaned: sanitizeFallbackDescription(boundedOriginal),
-      usedOriginal: true,
-      extractedABV: originalAbv,
-    };
+    return fallback;
   }
 
   // Validation 3: Length shouldn't change much (only removing HTML artifacts)
@@ -473,11 +473,7 @@ async function cleanDescriptionSafely(
   const lengthRatio = cleaned.length / boundedOriginal.length;
   if (lengthRatio < MIN_CLEANUP_LENGTH_RATIO || lengthRatio > MAX_CLEANUP_LENGTH_RATIO) {
     console.warn(`[cleanup] Length changed too much (ratio=${lengthRatio.toFixed(2)}), using original`);
-    return {
-      cleaned: sanitizeFallbackDescription(boundedOriginal),
-      usedOriginal: true,
-      extractedABV: originalAbv,
-    };
+    return fallback;
   }
 
   // AI cleanup successful. Do NOT derive a persisted ABV from model output
@@ -487,7 +483,7 @@ async function cleanDescriptionSafely(
   // string is easily within the length ratio), so this must be enforced
   // explicitly rather than trusting cleanedAbv.
   return {
-    cleaned,
+    cleaned: sanitizeFallbackDescription(cleaned),
     usedOriginal: false,
     extractedABV: originalAbv === null ? null : cleanedAbv,
   };
@@ -718,7 +714,12 @@ function buildBatchOperations(
 
     switch (c.type) {
       case 'success_with_abv':
-        aiSuccessCount++;
+        if (c.usedOriginal) {
+          aiFailureCount++;
+          fallbackUsedCount++;
+        } else {
+          aiSuccessCount++;
+        }
         abvExtractedCount++;
         dbOperations.push({
           beerId: c.beerId,
@@ -735,7 +736,7 @@ function buildBatchOperations(
           `).bind(
             c.cleaned,
             now,
-            c.usedOriginal ? null : 'workers-ai',
+            c.usedOriginal ? 'fallback-ai' : 'workers-ai',
             c.abv,
             c.beerId,
             c.message.body.descriptionHash ?? null
@@ -745,7 +746,12 @@ function buildBatchOperations(
         break;
 
       case 'success_no_abv':
-        aiSuccessCount++;
+        if (c.usedOriginal) {
+          aiFailureCount++;
+          fallbackUsedCount++;
+        } else {
+          aiSuccessCount++;
+        }
         dbOperations.push({
           beerId: c.beerId,
           statement: env.DB.prepare(`
@@ -757,7 +763,7 @@ function buildBatchOperations(
           `).bind(
             c.cleaned,
             now,
-            c.usedOriginal ? null : 'workers-ai',
+            c.usedOriginal ? 'fallback-ai' : 'workers-ai',
             c.beerId,
             c.message.body.descriptionHash ?? null
           ),
@@ -869,10 +875,10 @@ function buildBatchOperations(
  * - total: Total messages in batch
  * - ai_success/ai_failure: AI call results
  * - abv_extracted: How many descriptions had ABV
- * - fallback_used: Circuit breaker fallback count
+ * - fallback_used: Rejected/failed AI and circuit breaker fallback count
  * - avg_latency_ms: Average AI call latency
  * - circuit_breaker: Whether circuit breaker was triggered
- * - abv_rate: Percentage of successful cleanups that had ABV
+ * - abv_rate: Percentage of batch messages with extracted ABV
  */
 function logBatchMetrics(metrics: BatchMetrics): void {
   console.log('[cleanup] Batch metrics:', JSON.stringify({
@@ -883,8 +889,8 @@ function logBatchMetrics(metrics: BatchMetrics): void {
     fallback_used: metrics.fallbackUsedCount,
     avg_latency_ms: metrics.avgLatencyMs,
     circuit_breaker: metrics.circuitBreakerTriggered,
-    abv_rate: metrics.aiSuccessCount > 0
-      ? Math.round((metrics.abvExtractedCount / metrics.aiSuccessCount) * 100)
+    abv_rate: metrics.totalMessages > 0
+      ? Math.round((metrics.abvExtractedCount / metrics.totalMessages) * 100)
       : 0,
   }));
 }

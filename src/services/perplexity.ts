@@ -15,14 +15,11 @@ import {
   PERPLEXITY_TIMEOUT_MS,
   MAX_PROMPT_FIELD_LENGTH,
   MAX_PERPLEXITY_RESPONSE_BYTES,
-  MAX_LOGGED_ERROR_BODY_LENGTH,
 } from '../constants';
 import { PerplexityResponseSchema } from '../schemas/external';
 import { readBoundedText, ResponseTooLargeError } from '../utils/bounded-response';
 
-// MAX_PROMPT_FIELD_LENGTH, MAX_PERPLEXITY_RESPONSE_BYTES, and
-// MAX_LOGGED_ERROR_BODY_LENGTH now live in src/constants.ts (imported
-// above) as part of the constants consolidation.
+// Prompt and response bounds are shared constants.
 
 /**
  * Neutralize characters that could be used to break out of the quoted
@@ -52,8 +49,37 @@ function sanitizeForPrompt(text: string): string {
 }
 
 
-function truncateForLog(text: string, maxLength = MAX_LOGGED_ERROR_BODY_LENGTH): string {
-  return text.length > maxLength ? `${text.slice(0, maxLength)}... [truncated]` : text;
+export class PerplexityError extends Error {
+  constructor(
+    readonly kind: 'configuration' | 'http' | 'invalid_response',
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = 'PerplexityError';
+  }
+}
+
+/** Provider identifiers only: never log prompt text, keys, or response content. */
+function diagnosticIdentifier(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,128}$/.test(value) ? value : undefined;
+}
+
+async function logHttpFailure(response: Response): Promise<void> {
+  let detail: Record<string, unknown> = {};
+  try {
+    const raw = JSON.parse(await readBoundedText(response, MAX_PERPLEXITY_RESPONSE_BYTES));
+    if (raw?.error && typeof raw.error === 'object') detail = raw.error;
+  } catch { /* Missing, oversized or malformed error bodies still retain HTTP status. */ }
+  console.error(JSON.stringify({
+    event: 'perplexity.http_error',
+    status: response.status,
+    model: 'sonar',
+    requestId: diagnosticIdentifier(response.headers?.get('x-request-id')),
+    providerType: diagnosticIdentifier(detail.type),
+    providerCode: typeof detail.code === 'number' ? detail.code : diagnosticIdentifier(detail.code),
+    parameter: diagnosticIdentifier(detail.param),
+  }));
 }
 
 /**
@@ -62,13 +88,13 @@ function truncateForLog(text: string, maxLength = MAX_LOGGED_ERROR_BODY_LENGTH):
  * @param env - Cloudflare Worker environment bindings
  * @param beerName - Name of the beer to look up
  * @param brewer - Brewer/brewery name (can be null)
- * @returns The ABV as a number (e.g., 5.5), or null if not found
+ * @returns The ABV as a number (e.g., 5.5), or null only for an explicit unknown response
  * @throws Error if the API request fails (to trigger retry in queue consumer)
  *
  * @example
  * ```typescript
  * const abv = await fetchAbvFromPerplexity(env, 'Sierra Nevada Pale Ale', 'Sierra Nevada');
- * // Returns: 5.6 (or null if not found)
+ * // Returns: 5.6 (or null only for an explicit unknown response)
  * ```
  */
 export async function fetchAbvFromPerplexity(
@@ -77,8 +103,7 @@ export async function fetchAbvFromPerplexity(
   brewer: string | null
 ): Promise<number | null> {
   if (!env.PERPLEXITY_API_KEY) {
-    console.warn('PERPLEXITY_API_KEY not configured');
-    return null;
+    throw new PerplexityError('configuration', 'PERPLEXITY_API_KEY not configured');
   }
 
   // beerName/brewer can originate from /beers/sync, which lets a caller
@@ -126,12 +151,8 @@ export async function fetchAbvFromPerplexity(
     });
 
     if (!response.ok) {
-      // Truncate independently of the success-path parser cap below -- this
-      // bounds log volume from a misbehaving upstream, not memory, so it
-      // still uses response.text() directly rather than the bounded reader.
-      const errorText = await response.text().catch(() => '[unreadable error body]');
-      console.error(`Perplexity API error (${response.status}):`, truncateForLog(errorText));
-      throw new Error(`Perplexity API returned ${response.status}`);
+      await logHttpFailure(response);
+      throw new PerplexityError('http', `Perplexity API returned ${response.status}`, response.status);
     }
 
     let bodyText: string;
@@ -140,7 +161,7 @@ export async function fetchAbvFromPerplexity(
     } catch (error) {
       if (error instanceof ResponseTooLargeError) {
         console.error(`Perplexity response exceeded ${MAX_PERPLEXITY_RESPONSE_BYTES} byte cap, discarding`);
-        return null;
+        throw new PerplexityError('invalid_response', 'Perplexity response exceeded byte cap');
       }
       throw error;
     }
@@ -149,8 +170,7 @@ export async function fetchAbvFromPerplexity(
     try {
       raw = JSON.parse(bodyText);
     } catch {
-      console.warn('Perplexity response was not valid JSON');
-      return null;
+      throw new PerplexityError('invalid_response', 'Perplexity response was not valid JSON');
     }
 
     // Distrust the response the same way as any other externally-controlled
@@ -160,12 +180,18 @@ export async function fetchAbvFromPerplexity(
     const content = parsed.success
       ? parsed.data.choices[0]?.message?.content?.trim()
       : undefined;
-    if (!content || content.toLowerCase() === 'unknown') {
+    if (parsed.success && parsed.data.choices[0]?.finish_reason === 'length') {
+      throw new PerplexityError('invalid_response', 'Perplexity response was truncated');
+    }
+    if (!content) {
+      throw new PerplexityError('invalid_response', 'Perplexity response missing content');
+    }
+    if (content.toLowerCase() === 'unknown') {
       return null;
     }
 
     // Parse the ABV value
-    const abvMatch = content.match(/(\d+\.?\d*)/);
+    const abvMatch = content.match(/^(\d+(?:\.\d+)?)\s*%?$/);
     const matched = abvMatch?.[1];
     if (matched) {
       const abv = parseFloat(matched);
@@ -175,10 +201,13 @@ export async function fetchAbvFromPerplexity(
       }
     }
 
-    console.warn(`Could not parse ABV from Perplexity response: "${content}"`);
-    return null;
+    throw new PerplexityError('invalid_response', 'Perplexity response did not contain a single valid ABV');
   } catch (error) {
-    console.error('Perplexity API request failed:', error);
+    console.error(JSON.stringify({
+      event: 'perplexity.failure',
+      kind: error instanceof PerplexityError ? error.kind : 'transport',
+      status: error instanceof PerplexityError ? error.status : undefined,
+    }));
     throw error; // Re-throw to trigger retry
   }
 }
