@@ -576,7 +576,7 @@ describe('fetchAbvFromPerplexity', () => {
       await fetchAbvFromPerplexity(createMockEnv(), 'Test IPA', 'Famous Brewery');
 
       expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.perplexity.ai/chat/completions',
+        'https://api.perplexity.ai/v1/sonar',
         expect.objectContaining({
           method: 'POST',
           body: expect.stringContaining('Famous Brewery'),
@@ -700,7 +700,7 @@ describe('fetchAbvFromPerplexity', () => {
       await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
 
       expect(mockFetch).toHaveBeenCalledWith(
-        'https://api.perplexity.ai/chat/completions',
+        'https://api.perplexity.ai/v1/sonar',
         expect.any(Object)
       );
       restore();

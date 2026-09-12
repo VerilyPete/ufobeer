@@ -120,7 +120,7 @@ export async function fetchAbvFromPerplexity(
     : `What is the ABV (alcohol by volume) percentage of the beer "${safeBeerName}"? Search Untappd, BeerAdvocate, or the brewery's website. Reply with ONLY a single number (e.g., 5.5). If multiple versions exist, use the most recent. If unknown, reply "unknown". Do not explain.`;
 
   try {
-    const response = await fetch('https://api.perplexity.ai/chat/completions', {
+    const response = await fetch('https://api.perplexity.ai/v1/sonar', {
       method: 'POST',
       signal: AbortSignal.timeout(PERPLEXITY_TIMEOUT_MS),
       headers: {
