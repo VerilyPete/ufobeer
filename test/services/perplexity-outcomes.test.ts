@@ -22,6 +22,23 @@ describe('Perplexity outcome distinctions', () => {
     await expect(lookup()).rejects.toMatchObject({ kind: 'invalid_response' });
   });
 
+  it('enriches the Yuzu lookup with the completion budget verified against production', async () => {
+    // Captured live comparison: the same full prompt returned HTTP 400 at
+    // 100 tokens, and 200 with "5.0" at both 256 and 512. This fixture
+    // protects the request budget; it does not claim how Sonar uses it.
+    const fetch = vi.fn().mockImplementation(async (_url, init) => {
+      const request = JSON.parse(init.body);
+      return request.max_tokens <= 100
+        ? Response.json({ error: { message: 'invalid request', type: 'invalid_request', code: 400 } }, { status: 400 })
+        : Response.json({ choices: [{ message: { content: '5.0' }, finish_reason: 'stop' }] });
+    });
+    vi.stubGlobal('fetch', fetch);
+    await expect(fetchAbvFromPerplexity(env,
+      'Untitled Art Florida Seltzer Navel Orange Yuzu (CAN)', 'Untitled Art Brewing')).resolves.toBe(5);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(fetch.mock.calls[0]![1].body).max_tokens).toBe(512);
+  });
+
   it('reserves null for an explicit unknown answer', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: ' Unknown ' } }] })));
     await expect(lookup()).resolves.toBeNull();

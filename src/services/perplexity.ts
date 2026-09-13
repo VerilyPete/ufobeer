@@ -13,6 +13,7 @@ import {
   MIN_BEER_ABV,
   MAX_BEER_ABV,
   PERPLEXITY_TIMEOUT_MS,
+  PERPLEXITY_MAX_COMPLETION_TOKENS,
   MAX_PROMPT_FIELD_LENGTH,
   MAX_PERPLEXITY_RESPONSE_BYTES,
 } from '../constants';
@@ -139,7 +140,7 @@ export async function fetchAbvFromPerplexity(
             content: prompt,
           },
         ],
-        max_tokens: 100,
+        max_tokens: PERPLEXITY_MAX_COMPLETION_TOKENS,
         temperature: 0.1,
         // Enable web search with medium context for better results on obscure beers
         // Pricing: $5 per 1K requests (low), $8 (medium), $12 (high)

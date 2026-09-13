@@ -687,7 +687,7 @@ describe('fetchAbvFromPerplexity', () => {
       await fetchAbvFromPerplexity(createMockEnv(), 'Test Beer', 'Test Brewery');
 
       const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(callBody.max_tokens).toBe(100);
+      expect(callBody.max_tokens).toBe(512);
       restore();
     });
   });

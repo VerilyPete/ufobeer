@@ -61,6 +61,14 @@ export const UPSTREAM_TAPLIST_TIMEOUT_MS = 10_000;
  */
 export const PERPLEXITY_TIMEOUT_MS = 30_000;
 
+/**
+ * Bounded Sonar completion budget. Live Yuzu seltzer comparisons on
+ * 2026-09-12 returned HTTP 400 at 100 tokens and 5.0% successfully at
+ * both 256 and 512, with all other request fields unchanged. Leave
+ * headroom for harder lookups; the answer still must be one ABV value.
+ */
+export const PERPLEXITY_MAX_COMPLETION_TOKENS = 512;
+
 // =============================================================================
 // ABV Validation Constants
 // =============================================================================
