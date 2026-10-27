@@ -35,6 +35,8 @@ import {
   reserveCleanupQuotaBatch,
 } from './cleanupHelpers';
 import type { CircuitBreaker } from './circuitBreaker';
+import { checkCleanup } from './cleanupGuard';
+import { log, logWarn } from '../utils/log';
 
 // ============================================================================
 // Constants
@@ -158,33 +160,24 @@ function sanitizeFallbackDescription(text: string): string {
     .slice(0, MAX_CLEANED_OUTPUT_LENGTH);
 }
 
-const CLEANUP_PROMPT = `Clean the text between <TEXT> and </TEXT>. Return ONLY the cleaned text, nothing else.
+// The description reaches the model already stripped of HTML and entities
+// (sanitizeFallbackDescription). The prompt asks only for the fixes the
+// cleanup guard can verify; the guard, not this prompt, is the control.
+const CLEANUP_PROMPT = `Proofread the text between <TEXT> and </TEXT>. Return ONLY the corrected text, nothing else.
 
-REMOVE only these HTML tags:
-- <p>, </p>, <br>, <br />, <span>, </span>
+You may ONLY:
+- Fix an obviously misspelled word (for example "pleasent" becomes "pleasant")
+- Add a missing space after a comma (for example "Citra,Mosaic" becomes "Citra, Mosaic")
+- Add a full stop at the very end if the text has no final punctuation
 
-DECODE HTML entities to normal characters:
-- &amp; becomes &
-- &nbsp; becomes space
-- &lt; becomes <
-- &gt; becomes >
-- &#39; becomes '
-- \\' becomes '
-- \\r\\n becomes newline
+Do NOT:
+- Add, remove, reorder or replace any other word
+- Add, remove or change any other punctuation
+- Change capitalization
+- Change numbers, prices, ABV values, names, hashtags, links or email addresses
+- Add any introduction, explanation or comment
 
-DO NOT:
-- Encode characters (never turn & into &amp;)
-- Change "and" to "&" or vice versa
-- Remove numbers from beer names (keep "Fireman's 4" not "Fireman's")
-- Remove hashtags like #forsuredude
-- Change price indicators (keep $$$$ exactly as written)
-- Rewrite sentences or change grammar (only fix obvious typos)
-
-KEEP EXACTLY as written:
-- All words, sentences, ABV values, prices ($, $$, $$$, $$$$)
-- All capitalization (keep "This" not "this")
-- All punctuation and special characters
-- All hashtags and social media content
+If nothing needs fixing, return the text exactly as written.
 
 <TEXT>
 `;
@@ -198,6 +191,15 @@ KEEP EXACTLY as written:
  * whether the original was used, and the extracted ABV to avoid redundant
  * regex execution in the hot path.
  */
+/**
+ * Identifies the beer being cleaned: its ID for audit logging, and its name
+ * and brewer, which the guard never lets the model alter.
+ */
+export type CleanupContext = {
+  readonly beerId: string;
+  readonly protectedTerms: readonly string[];
+};
+
 export type CleanupResult = {
   readonly cleaned: string;
   readonly usedOriginal: boolean;
@@ -402,10 +404,12 @@ function stripResponsePrefixes(text: string): string {
  * - AI call fails
  * - ABV extraction breaks after cleanup
  * - Length changes dramatically (<0.7x or >1.1x — see MIN/MAX_CLEANUP_LENGTH_RATIO)
+ * - The cleanup guard cannot prove every change is a permitted fix
  */
 async function cleanDescriptionSafely(
   original: string,
-  ai: Ai
+  ai: Ai,
+  context: CleanupContext
 ): Promise<CleanupResult> {
   if (!original) {
     return {
@@ -479,13 +483,23 @@ async function cleanDescriptionSafely(
     return fallback;
   }
 
-  // This service removes formatting, not content. An allowlist of preambles
-  // cannot cover arbitrary model commentary. Require the normalized source
-  // verbatim: this also rejects invented facts, suffixes and subtle rewrites.
+  // This service fixes typos, not content. An allowlist of preambles cannot
+  // cover arbitrary model commentary, so the guard accepts output only when
+  // every difference from the source is a fix it can prove is safe: reviewed
+  // spelling pairs, a space after an existing comma, a final full stop.
+  // Everything else (commentary, rewrites, invented facts) falls back.
   const normalizedOutput = sanitizeFallbackDescription(cleaned);
-  if (normalizedOutput !== boundedOriginal) {
-    console.warn('[cleanup] Model changed source content, using deterministic cleanup');
+  const verdict = checkCleanup({
+    source: boundedOriginal,
+    output: normalizedOutput,
+    protectedTerms: context.protectedTerms,
+  });
+  if (!verdict.ok) {
+    logWarn('cleanup.guard.rejected', { beerId: context.beerId, rule: verdict.rule });
     return fallback;
+  }
+  if (verdict.edits.length > 0) {
+    log('cleanup.guard.accepted', { beerId: context.beerId, edits: verdict.edits });
   }
 
   // AI cleanup successful. Do NOT derive a persisted ABV from model output
@@ -524,7 +538,7 @@ export async function processAIConcurrently(
   ai: Ai,
   maxConcurrent: number,
   options: {
-    cleanFn?: (description: string, ai: Ai) => Promise<CleanupResult>;
+    cleanFn?: (description: string, ai: Ai, context: CleanupContext) => Promise<CleanupResult>;
     timeoutMs?: number;
     breaker?: CircuitBreaker;
   } = {}
@@ -557,7 +571,10 @@ export async function processAIConcurrently(
 
       try {
         const { cleaned, usedOriginal, extractedABV } = await withTimeout(
-          cleanFn(msg.body.brewDescription, ai),
+          cleanFn(msg.body.brewDescription, ai, {
+            beerId,
+            protectedTerms: [msg.body.beerName, msg.body.brewer],
+          }),
           timeoutMs
         );
 

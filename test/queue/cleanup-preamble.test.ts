@@ -38,3 +38,56 @@ describe('cleanup rejects model-authored content', () => {
     expect(result).toMatchObject({success:true,cleaned:original.replace(/\s+/g,' '),usedOriginal:true,extractedABV:null});
   });
 });
+
+describe('cleanup applies only guard-approved model fixes', () => {
+  const source = 'Brewed by Pleasent Valley. A pleasent ale with Citra,Mosaic hops';
+  const run = async (response: string, overrides: { beerName?: string; brewer?: string } = {}) => {
+    const ai = { run: vi.fn().mockResolvedValue({ response }) } as unknown as Ai;
+    const message = {
+      body: { beerId: 'beer-1', beerName: overrides.beerName ?? 'Valley Lager', brewer: overrides.brewer ?? 'Valley Brewing', brewDescription: source },
+      ack: vi.fn(),
+      retry: vi.fn(),
+    } as unknown as Message<CleanupMessage>;
+    const [result] = await processAIConcurrently([message], ai, 1, { breaker: createCircuitBreaker() });
+    return result;
+  };
+  const entries = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.map(([line]) => (typeof line === 'string' && line.startsWith('{') ? JSON.parse(line) : null)).filter(Boolean);
+
+  it('persists reviewed spelling, comma-space and final full stop fixes and logs each edit', async () => {
+    const info = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const fixed = 'Brewed by Pleasant Valley. A pleasant ale with Citra, Mosaic hops.';
+    expect(await run(fixed)).toMatchObject({ success: true, cleaned: fixed, usedOriginal: false });
+    expect(entries(info)).toContainEqual(expect.objectContaining({
+      event: 'cleanup.guard.accepted',
+      beerId: 'beer-1',
+      edits: [
+        { from: 'Pleasent', to: 'Pleasant' },
+        { from: 'pleasent', to: 'pleasant' },
+        { from: 'Citra,Mosaic', to: 'Citra, Mosaic' },
+        { from: 'hops', to: 'hops.' },
+      ],
+    }));
+    info.mockRestore();
+  });
+
+  it.each([
+    ['an added comma', 'Brewed by Pleasent Valley. A pleasent, ale with Citra,Mosaic hops', 'R3'],
+    ['a changed word', 'Brewed by Pleasent Valley. A delightful ale with Citra,Mosaic hops', 'R2'],
+    ['an added word', 'Brewed by Pleasent Valley. A pleasent ale with juicy Citra,Mosaic hops', 'R1'],
+    ['a capitalization change', 'Brewed by Pleasent Valley. A pleasent Ale with Citra,Mosaic hops', 'R4'],
+  ])('falls back to deterministic cleanup for %s and logs the rule', async (_case, response, rule) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await run(response)).toMatchObject({ success: true, cleaned: source, usedOriginal: true });
+    expect(entries(warn)).toContainEqual(expect.objectContaining({ event: 'cleanup.guard.rejected', beerId: 'beer-1', rule }));
+    warn.mockRestore();
+  });
+
+  it('never corrects a word in the beer name or brewer', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const response = 'Brewed by Pleasant Valley. A pleasent ale with Citra,Mosaic hops';
+    expect(await run(response, { brewer: 'Pleasent Valley Brewing' })).toMatchObject({ cleaned: source, usedOriginal: true });
+    expect(await run(response)).toMatchObject({ cleaned: response, usedOriginal: false });
+    vi.restoreAllMocks();
+  });
+});
