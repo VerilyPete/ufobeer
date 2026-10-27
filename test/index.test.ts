@@ -16,6 +16,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import worker from '../src/index';
 import { validateApiKey } from '../src/auth';
 import type { Env } from '../src/types';
@@ -217,7 +218,7 @@ describe('fetch handler top-level error boundary', () => {
  * Creates a mock Env DB whose rate-limit `.first()` results can be sequenced
  * per call (pre-auth limiter, post-auth limiter, sync limiter, ...).
  */
-function createSequencedDbMock(): { db: D1Database; first: ReturnType<typeof vi.fn> } {
+function createSequencedDbMock(): { db: D1Database; first: Mock } {
   const first = vi.fn();
   const db = {
     prepare: vi.fn().mockReturnValue({

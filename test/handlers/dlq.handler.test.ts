@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import {
   handleDlqList,
   handleDlqReplay,
@@ -348,8 +349,8 @@ describe('handleDlqReplay', () => {
     expect(resetSql).toContain('UPDATE enriched_beers');
     expect(resetSql).toContain("enrichment_status = 'pending'");
     // The reset must execute before the queue send
-    const resetBind = (db.prepare.mock.results[2]?.value as { bind: ReturnType<typeof vi.fn> }).bind;
-    const sendMock = (env.ENRICHMENT_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send;
+    const resetBind = (db.prepare.mock.results[2]?.value as { bind: Mock }).bind;
+    const sendMock = (env.ENRICHMENT_QUEUE as unknown as { send: Mock }).send;
     expect(resetBind.mock.invocationCallOrder[0]).toBeLessThan(
       sendMock.mock.invocationCallOrder[0]
     );
@@ -376,8 +377,8 @@ describe('handleDlqReplay', () => {
     const response = await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
     const body = await response.json() as { data: { replayed_count: number; queued_to?: string; queued_counts: { enrichment: number; cleanup: number } } };
 
-    const cleanupSend = (env.CLEANUP_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send;
-    const enrichmentSend = (env.ENRICHMENT_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send;
+    const cleanupSend = (env.CLEANUP_QUEUE as unknown as { send: Mock }).send;
+    const enrichmentSend = (env.ENRICHMENT_QUEUE as unknown as { send: Mock }).send;
     expect(cleanupSend).toHaveBeenCalledTimes(1);
     expect(cleanupSend.mock.calls[0]?.[0]).toEqual({
       beerId: 'beer-002',
@@ -434,8 +435,8 @@ describe('handleDlqReplay', () => {
 
     expect(body.data.failed_count).toBe(1);
     expect(body.data.replayed_count).toBe(0);
-    expect((env.CLEANUP_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send).not.toHaveBeenCalled();
-    expect((env.ENRICHMENT_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send).not.toHaveBeenCalled();
+    expect((env.CLEANUP_QUEUE as unknown as { send: Mock }).send).not.toHaveBeenCalled();
+    expect((env.ENRICHMENT_QUEUE as unknown as { send: Mock }).send).not.toHaveBeenCalled();
 
     vi.restoreAllMocks();
   });
@@ -448,7 +449,7 @@ describe('handleDlqReplay', () => {
       { runResult: { meta: { changes: 1 } } },
     ]);
     const env = getMockEnv(db);
-    (env.ENRICHMENT_QUEUE as unknown as { send: ReturnType<typeof vi.fn> }).send = vi.fn().mockRejectedValue(new Error('Queue send failed'));
+    (env.ENRICHMENT_QUEUE as unknown as { send: Mock }).send = vi.fn().mockRejectedValue(new Error('Queue send failed'));
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
       body: JSON.stringify({ ids: [1] }),
