@@ -1,0 +1,7 @@
+# Placeholder values, not secrets. Fingerprints are commit:file:rule:line.
+# Docs example curl with a placeholder API key
+98824e98f222571bc63f5544c5d7a52cbdcddadb:.claude/api-endpoints.md:curl-auth-header:8
+# Redaction tests use fake API tokens
+e64e89e1f39382afb89c07c8f164d237d2333119:workers/error-alerts/test/redact.test.ts:stripe-access-token:11
+e64e89e1f39382afb89c07c8f164d237d2333119:workers/error-alerts/test/redact.test.ts:stripe-access-token:12
+e64e89e1f39382afb89c07c8f164d237d2333119:workers/error-alerts/test/redact.test.ts:generic-api-key:30
