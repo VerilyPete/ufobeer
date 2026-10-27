@@ -9,8 +9,8 @@
  * Rules (see plans/pr44-review-fixes.md):
  * - R1: the word sequence is unchanged — no word added, removed, merged or split
  * - R2: a changed word must be a reviewed misspelling -> correction pair
- * - R3: a changed gap between words must be a permitted punctuation fix:
- *       only adding a missing comma, full stop, or space after one
+ * - R3: a changed gap must only add a missing space after an existing comma
+ *       or full stop, or a final full stop
  * - R4: a case change must be capitalizing a word after a sentence-ending ". "
  * - R5: at most MAX_CLEANUP_GUARD_EDITS edits in total
  */
@@ -91,11 +91,14 @@ function isPermittedSpellingFix(options: {
   return APPROVED_SPELLING_CORRECTIONS.get(lookupKey(from)) === lookupKey(to);
 }
 
-// Gap fixes are only ever additions of a missing comma, full stop or space,
-// and only between plain words: never inside numbers, prices, domains or
-// identifiers, and never removing or swapping existing punctuation.
+// Gap fixes never add, remove or swap punctuation, since a new comma or full
+// stop can reverse meaning ("No alcohol is added" -> "No, alcohol is
+// added"). Only a missing space after an existing comma or full stop, or a
+// final full stop, may be added. The joined pair must be two plain words
+// standing alone, and a full stop only splits before a Capitalized word, so
+// numbers, prices, domains, emails and handles are never split.
 const PLAIN_WORD = /^[\p{L}'’]+$/u;
-const CAPITALIZED_WORD = /^\p{Lu}/u;
+const CAPITALIZED_WORD = /^\p{Lu}[\p{Ll}'’]*$/u;
 const SENTENCE_END = '. ';
 
 function isPermittedGapFix(options: {
@@ -103,25 +106,38 @@ function isPermittedGapFix(options: {
   readonly to: string;
   readonly before: string | undefined;
   readonly after: string | undefined;
+  readonly outerBefore: string;
+  readonly outerAfter: string;
+  readonly beforeIsFirst: boolean;
+  readonly afterIsLast: boolean;
+  readonly protectedWords: ReadonlySet<string>;
 }): boolean {
-  const { from, to, before, after } = options;
-  if (before === undefined || !PLAIN_WORD.test(before)) return false;
+  const { from, to, before, after, protectedWords } = options;
+  if (before === undefined || !PLAIN_WORD.test(before) || protectedWords.has(lookupKey(before))) return false;
   if (after === undefined) return from === '' && to === '.';
-  if (!PLAIN_WORD.test(after)) return false;
-  if (from === ' ') return to === ', ' || to === SENTENCE_END;
+  if (!PLAIN_WORD.test(after) || protectedWords.has(lookupKey(after))) return false;
+  const pairStandsAlone = standsAlone({
+    precedingGap: options.outerBefore,
+    followingGap: options.outerAfter,
+    isFirst: options.beforeIsFirst,
+    isLast: options.afterIsLast,
+  });
+  if (!pairStandsAlone) return false;
   if (from === ',') return to === ', ';
   if (from === '.') return to === SENTENCE_END && CAPITALIZED_WORD.test(after);
   return false;
 }
 
-// R3 has already verified every ". " in the output: it was in the source or
-// replaced a space, so only the following word's first letter may change.
+// R3 has already verified every ". " in the output, so only the following
+// word's first letter may change, and never in a beer name or brewer.
 function isPermittedCaseFix(options: {
   readonly from: string;
   readonly to: string;
   readonly outputGap: string;
+  readonly protectedWords: ReadonlySet<string>;
 }): boolean {
   const { from, to } = options;
+  if (options.protectedWords.has(lookupKey(from))) return false;
   return to === from.charAt(0).toUpperCase() + from.slice(1) && options.outputGap.endsWith(SENTENCE_END);
 }
 
@@ -162,13 +178,17 @@ export function checkCleanup(options: {
     to: output.gaps[index] ?? '',
     before: source.words[index - 1],
     after: source.words[index],
+    outerBefore: source.gaps[index - 1] ?? '',
+    outerAfter: source.gaps[index + 1] ?? '',
+    beforeIsFirst: index - 1 === 0,
+    afterIsLast: index === source.words.length - 1,
   }));
   const gapFixes = gaps.filter(({ from, to }) => from !== to);
-  if (!gapFixes.every(isPermittedGapFix)) return { ok: false, rule: 'R3' };
+  if (!gapFixes.every(gap => isPermittedGapFix({ ...gap, protectedWords }))) return { ok: false, rule: 'R3' };
 
   const caseFixes = words.filter(({ from, to }) => isCaseOnly(from, to));
   const casePermitted = caseFixes.every(({ index, from, to }) =>
-    isPermittedCaseFix({ from, to, outputGap: output.gaps[index] ?? '' }));
+    isPermittedCaseFix({ from, to, outputGap: output.gaps[index] ?? '', protectedWords }));
   if (!casePermitted) return { ok: false, rule: 'R4' };
 
   const edits = [
