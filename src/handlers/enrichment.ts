@@ -38,9 +38,9 @@ export type QueuePendingResult = {
  *
  * Shared by POST /admin/enrich/trigger and the cron enrichment sweep, which
  * previously carried two divergent copies of this logic. Quota checks and
- * response building stay at the call sites. Mirrors the original ordering
- * quirk: when every selected beer is blocklisted, none are marked skipped
- * (the early return precedes the marking batch).
+ * response building stay at the call sites. Blocklisted beers are marked
+ * skipped even when nothing is left to queue, so they cannot fill every
+ * future selection and starve eligible beers beyond the limit.
  */
 export async function selectAndQueuePendingEnrichment(
   env: Env,
@@ -73,10 +73,6 @@ export async function selectAndQueuePendingEnrichment(
     beer => !shouldSkipEnrichment(beer.brew_name)
   );
 
-  if (eligibleBeers.length === 0) {
-    return { beersQueued: 0, blocklistedMarked: 0, noEligibleBeers: true };
-  }
-
   // Mark blocklisted beers as skipped so they don't appear in future queries
   const blocklistedBeers = beersToEnrich.results.filter(
     beer => shouldSkipEnrichment(beer.brew_name)
@@ -88,6 +84,10 @@ export async function selectAndQueuePendingEnrichment(
       ).bind(beer.id)
     );
     await env.DB.batch(skipStatements);
+  }
+
+  if (eligibleBeers.length === 0) {
+    return { beersQueued: 0, blocklistedMarked: blocklistedBeers.length, noEligibleBeers: true };
   }
 
   await env.ENRICHMENT_QUEUE.sendBatch(
