@@ -297,7 +297,6 @@ describe('batchUpdateWithRetry', () => {
 
   it('uses exponential backoff between retries', async () => {
     vi.useFakeTimers();
-    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
 
     const mockBatch = vi.fn()
       .mockRejectedValueOnce(new Error('error 1'))
@@ -322,7 +321,6 @@ describe('batchUpdateWithRetry', () => {
     expect(mockBatch).toHaveBeenCalledTimes(3);
 
     vi.useRealTimers();
-    setTimeoutSpy.mockRestore();
   });
 
   it('handles empty statement array', async () => {
