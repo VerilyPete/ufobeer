@@ -158,6 +158,28 @@ describe('handleScheduledEnrichment', () => {
     }
   });
 
+  it('marks blocklisted beers skipped even when every selected beer is blocklisted', async () => {
+    const db = buildSequencedDb([
+      ...SCHEDULE_DUE_CONFIGS,
+      { firstResult: { total: 0 } },
+      { firstResult: { request_count: 0 } },
+      { allResults: [
+        { id: 'beer-1', brew_name: 'Texas Flight', brewer: 'Brewery' },
+        { id: 'beer-2', brew_name: '', brewer: '' },
+      ]},
+    ]);
+    const env = createScheduledEnv({ DB: db as unknown as D1Database });
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    const skipped = db.preparedStatements
+      .filter(s => s.sql.includes("enrichment_status = 'skipped'"))
+      .map(s => s.boundArgs);
+    expect(skipped).toEqual([['beer-1'], ['beer-2']]);
+    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(env.ENRICHMENT_QUEUE.sendBatch).not.toHaveBeenCalled();
+  });
+
   // ============================================================================
   // Taplist refresh phase
   // ============================================================================
