@@ -16,7 +16,6 @@
 		"migrate:local": "wrangler d1 migrations apply beer-db --local",
 		"migrate:list": "wrangler d1 migrations list beer-db --remote",
 		"cf-typegen": "wrangler types",
-		"generate:tlds": "node scripts/generate-top-level-domains.mjs",
 		"spelling:candidates": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/find-spelling-candidates.mjs"
 	},
 	"devDependencies": {

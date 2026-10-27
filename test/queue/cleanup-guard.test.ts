@@ -141,7 +141,6 @@ describe('cleanup guard: spelling fixes (R2)', () => {
 
 describe('cleanup guard: punctuation fixes (R3)', () => {
   it.each([
-    ['a missing space after a full stop', 'Some bitterness.Medium body.', 'Some bitterness. Medium body.', 'bitterness.Medium', 'bitterness. Medium'],
     ['a missing space after a comma', 'Citra,Mosaic hops.', 'Citra, Mosaic hops.', 'Citra,Mosaic', 'Citra, Mosaic'],
     ['a missing final full stop', 'Very crisp', 'Very crisp.', 'crisp', 'crisp.'],
   ])('accepts %s and reports it in context', (_case, source, output, from, to) => {
@@ -166,6 +165,8 @@ describe('cleanup guard: punctuation fixes (R3)', () => {
     ['a split price', 'Only $5.00 today.', 'Only $5. 00 today.'],
     ['a split domain', 'See example.com today.', 'See example. com today.'],
     ['a split all-caps domain', 'See example.COM today.', 'See example. COM today.'],
+    ['a space after a full stop between words', 'Some bitterness.Medium body.', 'Some bitterness. Medium body.'],
+    ['a split filename', 'Download Menu.Pdf today.', 'Download Menu. Pdf today.'],
     ['a split title-case domain', 'See example.Com today.', 'See example. Com today.'],
     ['a split title-case beer domain', 'Visit hops.Beer today.', 'Visit hops. Beer today.'],
     ['a split non-ASCII domain', 'Visit beer.Рф today.', 'Visit beer. Рф today.'],
@@ -185,11 +186,11 @@ describe('cleanup guard: punctuation fixes (R3)', () => {
   });
 
   it('rejects punctuation edits beside a beer name or brewer', () => {
-    expect(check('Brewed by Great Heights. Medium body.', { source: 'Brewed by Great Heights.Medium body.', protectedTerms: ['Great Heights'] }))
+    expect(check('Brewed by Great Heights, Medium body.', { source: 'Brewed by Great Heights,Medium body.', protectedTerms: ['Great Heights'] }))
       .toEqual({ ok: false, rule: 'R3' });
     expect(check('Brewed by Great Heights.', { source: 'Brewed by Great Heights', protectedTerms: ['Great Heights'] }))
       .toEqual({ ok: false, rule: 'R3' });
-    expect(check('A strong ale. Great Heights brews it.', { source: 'A strong ale.Great Heights brews it.', protectedTerms: ['Great Heights'] }))
+    expect(check('A strong ale, Great Heights brews it.', { source: 'A strong ale,Great Heights brews it.', protectedTerms: ['Great Heights'] }))
       .toEqual({ ok: false, rule: 'R3' });
   });
 });
@@ -212,11 +213,11 @@ describe('cleanup guard: capitalization (R4)', () => {
 
 describe('cleanup guard: combined fixes', () => {
   it('reports spelling and punctuation edits in text order', () => {
-    expect(check('A pleasant ale. Very crisp, dry finish.', { source: 'A pleasent ale.Very crisp,dry finish' })).toEqual({
+    expect(check('A pleasant ale, very crisp, dry finish.', { source: 'A pleasent ale,very crisp,dry finish' })).toEqual({
       ok: true,
       edits: [
         { from: 'pleasent', to: 'pleasant' },
-        { from: 'ale.Very', to: 'ale. Very' },
+        { from: 'ale,very', to: 'ale, very' },
         { from: 'crisp,dry', to: 'crisp, dry' },
         { from: 'finish', to: 'finish.' },
       ],

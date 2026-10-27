@@ -9,14 +9,13 @@
  * Rules (see plans/pr44-review-fixes.md):
  * - R1: the word sequence is unchanged — no word added, removed, merged or split
  * - R2: a changed word must be a reviewed misspelling -> correction pair
- * - R3: a changed gap must only add a missing space after an existing comma
- *       or full stop, or a final full stop
+ * - R3: a changed gap must only add a missing space after an existing comma,
+ *       or a final full stop
  * - R4: capitalization never changes
  * - R5: at most MAX_CLEANUP_GUARD_EDITS edits in total
  */
 
 import { APPROVED_SPELLING_CORRECTIONS } from './dictionary/spellingCorrections';
-import { TOP_LEVEL_DOMAINS } from './dictionary/topLevelDomains.generated';
 import { MAX_CLEANUP_GUARD_EDITS } from '../constants';
 
 export type CleanupEdit = {
@@ -94,15 +93,13 @@ function isPermittedSpellingFix(options: {
 
 // Gap fixes never add, remove or swap punctuation, since a new comma or full
 // stop can reverse meaning ("No alcohol is added" -> "No, alcohol is
-// added"). Only a missing space after an existing comma or full stop, or a
-// final full stop, may be added. The joined pair must be two plain words
-// standing alone, and a full stop only splits before a Capitalized ASCII word
-// that is not a top-level domain, so numbers, prices, domains (example.Com),
-// emails and handles are never split. A final full stop is only appended to
-// a standalone word, never to a path or address.
+// added"). Only a missing space after an existing comma, or a final full
+// stop, may be added. A missing space after a full stop is never fixed: it
+// cannot be told apart from a dotted name (example.Com, Menu.Pdf, U.S). The
+// comma pair must be two plain words standing alone, so numbers, lists and
+// identifiers are never split, and a final full stop is only appended to a
+// standalone word, never to a path or address.
 const PLAIN_WORD = /^[\p{L}'’]+$/u;
-const CAPITALIZED_ASCII_WORD = /^[A-Z][a-z]+$/;
-const SENTENCE_END = '. ';
 
 function isPermittedGapFix(options: {
   readonly from: string;
@@ -129,11 +126,7 @@ function isPermittedGapFix(options: {
     isLast: options.afterIsLast,
   });
   if (!pairStandsAlone) return false;
-  if (from === ',') return to === ', ';
-  if (from === '.') {
-    return to === SENTENCE_END && CAPITALIZED_ASCII_WORD.test(after) && !TOP_LEVEL_DOMAINS.has(lookupKey(after));
-  }
-  return false;
+  return from === ',' && to === ', ';
 }
 
 const isCaseOnly = (from: string, to: string): boolean => from !== to && from.toLowerCase() === to.toLowerCase();
