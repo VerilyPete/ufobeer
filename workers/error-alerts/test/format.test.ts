@@ -4,8 +4,13 @@ import {
   buildBody,
   buildRawEmail,
   MAX_TRACES_PER_EMAIL,
+  MAX_EXCEPTION_MESSAGE_LENGTH,
+  MAX_LOG_MESSAGE_LENGTH,
+  MAX_EMAIL_BODY_LENGTH,
+  DEGRADED_COOLDOWN_MARKER,
   FROM_ADDRESS,
 } from '../src/format';
+import { TRUNCATION_MARKER } from '../src/redact';
 
 // ---------------------------------------------------------------------------
 // Factory helpers
@@ -79,13 +84,13 @@ function makeLog(level: string, message: unknown, timestamp = 1700000000000): Tr
 // ---------------------------------------------------------------------------
 
 describe('buildSubject', () => {
-  it('includes outcome and request path for fetch events', () => {
+  it('includes outcome and request path for fetch events, without the query string', () => {
     const trace = makeTrace({
       outcome: 'exception',
       event: makeFetchEvent('GET', 'https://api.ufobeer.app/beers?store_id=13'),
     });
 
-    expect(buildSubject(trace)).toBe('[UFO Beer] exception — GET /beers?store_id=13');
+    expect(buildSubject(trace)).toBe('[UFO Beer] exception — GET /beers');
   });
 
   it('includes queue name for queue events', () => {
@@ -259,6 +264,115 @@ describe('buildBody', () => {
     expect(body).toContain('========================================');
     expect(body).toContain('worker-a');
     expect(body).toContain('worker-b');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildBody: query stripping, redaction, truncation
+// ---------------------------------------------------------------------------
+
+describe('buildBody: request URLs', () => {
+  it('strips the query string from the request line', () => {
+    const trace = makeTrace({
+      event: makeFetchEvent('GET', 'https://api.ufobeer.app/beers?sid=13&fresh=true'),
+    });
+
+    const body = buildBody([trace]);
+
+    expect(body).toContain('Request: GET https://api.ufobeer.app/beers');
+    expect(body).not.toContain('sid=13');
+    expect(body).not.toContain('fresh=true');
+  });
+});
+
+describe('buildBody: redaction', () => {
+  it('redacts secret-shaped values out of exception messages', () => {
+    const trace = makeTrace({
+      exceptions: [makeException({ message: 'upstream call failed: Authorization: Bearer sekrit-abcdef' })],
+    });
+
+    const body = buildBody([trace]);
+
+    expect(body).not.toContain('sekrit-abcdef');
+    expect(body).toContain('Authorization: [redacted]');
+  });
+
+  it('redacts secret-shaped values out of log messages', () => {
+    const trace = makeTrace({
+      logs: [makeLog('error', 'contact user@example.com, cookie was Cookie: session=abc123')],
+    });
+
+    const body = buildBody([trace]);
+
+    expect(body).not.toContain('user@example.com');
+    expect(body).not.toContain('session=abc123');
+    expect(body).toContain('[redacted-email]');
+    expect(body).toContain('Cookie: [redacted]');
+  });
+});
+
+describe('buildBody: truncation', () => {
+  it('truncates an exception message independently at MAX_EXCEPTION_MESSAGE_LENGTH', () => {
+    const trace = makeTrace({
+      exceptions: [makeException({ message: 'x'.repeat(MAX_EXCEPTION_MESSAGE_LENGTH + 200) })],
+    });
+
+    const body = buildBody([trace]);
+
+    expect(body).toContain(TRUNCATION_MARKER);
+    expect(body).toContain('x'.repeat(MAX_EXCEPTION_MESSAGE_LENGTH));
+    expect(body).not.toContain('x'.repeat(MAX_EXCEPTION_MESSAGE_LENGTH + 1));
+  });
+
+  it('truncates a log message independently at MAX_LOG_MESSAGE_LENGTH', () => {
+    const trace = makeTrace({
+      logs: [makeLog('error', 'y'.repeat(MAX_LOG_MESSAGE_LENGTH + 200))],
+    });
+
+    const body = buildBody([trace]);
+
+    expect(body).toContain(TRUNCATION_MARKER);
+    expect(body).toContain('y'.repeat(MAX_LOG_MESSAGE_LENGTH));
+    expect(body).not.toContain('y'.repeat(MAX_LOG_MESSAGE_LENGTH + 1));
+  });
+
+  it('truncates the overall email body independently at MAX_EMAIL_BODY_LENGTH', () => {
+    // Many exceptions per trace, across many traces, each message
+    // individually under the per-field limit — only the total-body cap
+    // can catch this.
+    const manyExceptions = Array.from({ length: 20 }, () =>
+      makeException({ message: 'z'.repeat(MAX_EXCEPTION_MESSAGE_LENGTH) }),
+    );
+    const traces = Array.from({ length: MAX_TRACES_PER_EMAIL }, () => makeTrace({ exceptions: manyExceptions }));
+
+    const body = buildBody(traces);
+
+    expect(body.length).toBeLessThanOrEqual(MAX_EMAIL_BODY_LENGTH + TRUNCATION_MARKER.length);
+    expect(body).toContain(TRUNCATION_MARKER);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildBody: degraded marker
+// ---------------------------------------------------------------------------
+
+describe('buildBody: degraded marker', () => {
+  it('includes the degraded marker when degraded is true', () => {
+    const trace = makeTrace();
+    const body = buildBody([trace], undefined, true);
+    expect(body).toContain(DEGRADED_COOLDOWN_MARKER);
+  });
+
+  it('omits the degraded marker when degraded is false', () => {
+    const trace = makeTrace();
+    const body = buildBody([trace], undefined, false);
+    expect(body).not.toContain(DEGRADED_COOLDOWN_MARKER);
+  });
+
+  it('omits the degraded marker when degraded is not passed', () => {
+    const trace = makeTrace();
+    const body = buildBody([trace]);
+    expect(body).not.toContain(DEGRADED_COOLDOWN_MARKER);
   });
 });
 

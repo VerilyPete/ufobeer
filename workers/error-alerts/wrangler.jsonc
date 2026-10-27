@@ -9,6 +9,19 @@
 	},
 	// Tail consumers receive no HTTP traffic; keep the *.workers.dev URL off.
 	"workers_dev": false,
+	// Durable alert cooldown store, also backing the total-volume email cap
+	// (src/cooldown.ts, src/emailCap.ts). Tail Workers run per-isolate and
+	// per-location, so an in-memory cooldown only holds within one warm
+	// isolate; KV makes it hold across all of them. Both modules degrade to
+	// an in-isolate fallback (not full suppression) if this store is down.
+	//
+	// Namespace "ufobeer-error-alerts-cooldown", provisioned 2026-09-01.
+	"kv_namespaces": [
+		{
+			"binding": "COOLDOWN_KV",
+			"id": "17b1265c5e704ff883700aceed8a8808"
+		}
+	],
 	"send_email": [
 		{
 			"name": "SEND_EMAIL",

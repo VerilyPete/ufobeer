@@ -12,6 +12,7 @@
 
 import type { Env, EnrichmentMessage, CleanupMessage } from '../types';
 import { shouldSkipEnrichment } from '../config';
+import { hashDescription } from '../utils/hash';
 
 const BATCH_SIZE = 100; // Cloudflare Queues sendBatch limit
 
@@ -22,6 +23,13 @@ const BATCH_SIZE = 100; // Cloudflare Queues sendBatch limit
  * (Cloudflare Queues sendBatch limit). Continues processing on per-batch
  * errors - partial success is acceptable.
  *
+ * Every message is stamped with `descriptionHash`, self-computed with a
+ * `?? null` fallback the same way queueBeersForCleanup self-computes its
+ * own (see EnrichmentMessage.descriptionHash in ../types for why this
+ * field is required-but-nullable rather than optional): a caller that
+ * doesn't supply one gets `null` ("no hash to bind," e.g. a beer with no
+ * description at all), not a silently omitted key.
+ *
  * @param env - Cloudflare Worker environment bindings
  * @param beers - Array of beers needing enrichment
  * @param requestId - Request ID for logging correlation
@@ -29,7 +37,12 @@ const BATCH_SIZE = 100; // Cloudflare Queues sendBatch limit
  */
 export async function queueBeersForEnrichment(
   env: Env,
-  beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string }>,
+  beers: ReadonlyArray<{
+    readonly id: string;
+    readonly brew_name: string;
+    readonly brewer: string;
+    readonly descriptionHash?: string | null;
+  }>,
   requestId: string
 ): Promise<{ queued: number; skipped: number }> {
   const eligible = beers.filter(b => !shouldSkipEnrichment(b.brew_name));
@@ -53,6 +66,7 @@ export async function queueBeersForEnrichment(
         beerId: beer.id,
         beerName: beer.brew_name,
         brewer: beer.brewer,
+        descriptionHash: beer.descriptionHash ?? null,
       } satisfies EnrichmentMessage,
     }));
 
@@ -90,6 +104,17 @@ export async function queueBeersForEnrichment(
  * filtering for Perplexity forwarding happens downstream in the cleanup
  * queue consumer (buildBatchOperations / handleFallbackBatch).
  *
+ * Every message is stamped with `descriptionHash`, the hash of
+ * `brew_description` at enqueue time, so the cleanup consumer can bind its
+ * terminal UPDATE to `WHERE id = ? AND description_hash = ?` (optimistic
+ * concurrency against a stale or replayed result -- see
+ * src/queue/cleanup.ts). Callers may pass a pre-computed `descriptionHash`
+ * per beer (e.g. one already computed for their own `enriched_beers.description_hash`
+ * write) to avoid a redundant hash; when omitted it is computed here from
+ * `brew_description` using the same `hashDescription` function the
+ * `description_hash` column is written with, so it matches without the
+ * caller needing to thread it through.
+ *
  * Callers MUST only mark beers as queued (queued_for_cleanup_at, cleanup
  * resets) AFTER this resolves and only for the returned queuedIds — a
  * mark-then-send order strands un-sent beers behind the requeue cooldown.
@@ -102,7 +127,13 @@ export async function queueBeersForEnrichment(
  */
 export async function queueBeersForCleanup(
   env: Env,
-  beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string; readonly brew_description: string }>,
+  beers: ReadonlyArray<{
+    readonly id: string;
+    readonly brew_name: string;
+    readonly brewer: string;
+    readonly brew_description: string;
+    readonly descriptionHash?: string;
+  }>,
   requestId: string
 ): Promise<{ queued: number; queuedIds: string[] }> {
   if (beers.length === 0) {
@@ -114,18 +145,22 @@ export async function queueBeersForCleanup(
     return { queued: 0, queuedIds: [] };
   }
 
+  const messageBodies = await Promise.all(
+    beers.map(async (beer): Promise<CleanupMessage> => ({
+      beerId: beer.id,
+      beerName: beer.brew_name,
+      brewer: beer.brewer,
+      brewDescription: beer.brew_description,
+      descriptionHash: beer.descriptionHash ?? await hashDescription(beer.brew_description),
+    }))
+  );
+
   let queued = 0;
   const queuedIds: string[] = [];
   for (let i = 0; i < beers.length; i += BATCH_SIZE) {
     const chunk = beers.slice(i, i + BATCH_SIZE);
-    const messages = chunk.map(beer => ({
-      body: {
-        beerId: beer.id,
-        beerName: beer.brew_name,
-        brewer: beer.brewer,
-        brewDescription: beer.brew_description,
-      } satisfies CleanupMessage,
-    }));
+    const chunkBodies = messageBodies.slice(i, i + BATCH_SIZE);
+    const messages = chunkBodies.map(body => ({ body }));
 
     try {
       await env.CLEANUP_QUEUE.sendBatch(messages);

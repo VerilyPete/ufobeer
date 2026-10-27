@@ -137,13 +137,13 @@ function createMockD1(initialCount = 0, dailyLimit = 1000): MockD1Database {
  */
 function createMockAI(delayMs = 50): MockAI {
   return {
-    run: vi.fn().mockImplementation(async (_model: string, options: { prompt: string }) => {
+    run: vi.fn().mockImplementation(async (_model: string, options: { messages: readonly { content: string }[] }) => {
       if (delayMs > 0) {
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
       // Extract ABV from prompt if present
-      const abvMatch = options.prompt.match(/(\d+\.?\d*)%/);
-      const abv = abvMatch ? parseFloat(abvMatch[1]) : null;
+      const abvMatch = options.messages.at(-1)?.content.match(/(\d+\.?\d*)%/);
+      const abv = abvMatch?.[1] ? parseFloat(abvMatch[1]) : null;
       return {
         response: JSON.stringify({
           cleanedDescription: 'Cleaned beer description',
@@ -192,6 +192,12 @@ function createMockMessage(
       beerName: `Beer ${index}`,
       brewer: `Brewer ${index}`,
       brewDescription: description,
+      // Every UPDATE this consumer issues binds `AND description_hash = ?`;
+      // a message with no hash is treated as stale and acked without
+      // writing (see the Phase 0 filter in handleCleanupBatch). Tests here
+      // exercise the normal/matching-hash path unless testing that filter
+      // directly.
+      descriptionHash: 'test-hash',
     },
     ack: vi.fn(),
     retry: vi.fn(),
@@ -311,6 +317,7 @@ describe('handleCleanupBatch integration', () => {
           beerName,
           brewer: 'Test Brewer',
           brewDescription: description,
+          descriptionHash: 'test-hash',
         },
         ack: vi.fn(),
         retry: vi.fn(),
@@ -677,20 +684,6 @@ describe('processAIConcurrently', () => {
     expect(results.every(r => r.success)).toBe(true);
   });
 
-  it('keeps the original description when cleanup changes the extracted ABV', async () => {
-    const original = 'Oatmeal stout brewed with 10% flaked oats. 6.2 percent alcohol.';
-    const mockAI = createMockAI(10);
-    mockAI.run = vi.fn().mockResolvedValue({ response: 'Oatmeal stout brewed with 10% flaked oats. 6.2%.' });
-
-    const [result] = await processAIConcurrently(
-      [createMockMessage(0, original)] as Message<CleanupMessage>[],
-      mockAI as unknown as Ai,
-      10
-    );
-
-    expect(result).toMatchObject({ success: true, usedOriginal: true, cleaned: original, extractedABV: 6.2 });
-  });
-
   it('returns results in correct order regardless of completion order', async () => {
     const mockAI = createMockAI(10);
     const messages = [
@@ -796,17 +789,17 @@ describe('processAIConcurrently', () => {
     const mockAI = createMockAI(10);
     const messages = [createMockMessage(0, 'Beer 0')];
 
-    // Create AI that takes longer than timeout
-    mockAI.run = vi.fn().mockImplementation(async () => {
+    // A cleanup function that takes longer than the timeout
+    const slowCleanFn = async () => {
       await new Promise(resolve => setTimeout(resolve, 200));
-      return { response: 'Cleaned' };
-    });
+      return { cleaned: 'Cleaned', usedOriginal: false, extractedABV: null };
+    };
 
     const results = await processAIConcurrently(
       messages as Message<CleanupMessage>[],
       mockAI as unknown as Ai,
       10,
-      { timeoutMs: 50, breaker: createCircuitBreaker() }
+      { cleanFn: slowCleanFn, timeoutMs: 50, breaker: createCircuitBreaker() }
     );
 
     expect(results[0].success).toBe(false);

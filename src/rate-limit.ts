@@ -10,6 +10,8 @@
  * consider using Durable Objects for token bucket rate limiting.
  */
 
+import { RATE_LIMIT_REAP_LIMIT } from './constants';
+
 /**
  * Generate a rate limit key for a specific endpoint.
  * This enables per-endpoint rate limiting where different endpoints
@@ -44,6 +46,9 @@ export function getEndpointRateLimitKey(clientIdentifier: string, endpoint: stri
 export function getPreAuthRateLimitKey(clientIdentifier: string): string {
   return `preauth:${clientIdentifier}`;
 }
+
+// RATE_LIMIT_REAP_LIMIT now lives in src/constants.ts (imported below) as
+// part of the constants consolidation.
 
 /**
  * Result of a rate limit check.
@@ -123,11 +128,12 @@ export async function checkRateLimit(
       return { allowed: false, remaining: 0, resetAt, degraded: false };
     }
 
-    // Occasional cleanup (1% of requests)
-    if (Math.random() < 0.01) {
-      await db.prepare('DELETE FROM rate_limits WHERE minute_bucket < ?')
-        .bind(minuteBucket - 60).run();
-    }
+    // Row-growth cleanup is NOT performed here — see reapOldRateLimits(),
+    // which is called deterministically from the cron handler instead of
+    // probabilistically (1% of requests) from the request path. A
+    // distributed source rotating client identifiers could otherwise
+    // accumulate rows freely within the rolling 60-minute window without
+    // ever tripping the random sample.
 
     return { allowed: true, remaining: Math.max(0, limitPerMinute - count), resetAt, degraded: false };
   } catch (error) {
@@ -139,4 +145,25 @@ export async function checkRateLimit(
     console.error('Rate limit check failed:', error);
     return { allowed: false, remaining: 0, resetAt, degraded: true };
   }
+}
+
+/**
+ * Delete rate_limits rows outside the rolling 60-minute window the limiter
+ * actually consults, bounded per call.
+ *
+ * Called deterministically from the cron handler (scheduled.ts) instead of
+ * probabilistically (1% of requests) from checkRateLimit(). Idempotent;
+ * safe to call repeatedly.
+ *
+ * @returns number of rows deleted
+ */
+export async function reapOldRateLimits(
+  db: D1Database,
+  now: number = Date.now()
+): Promise<number> {
+  const minuteBucket = Math.floor(now / 60000);
+  const result = await db.prepare(
+    'DELETE FROM rate_limits WHERE minute_bucket < ? LIMIT ?'
+  ).bind(minuteBucket - 60, RATE_LIMIT_REAP_LIMIT).run();
+  return result.meta.changes;
 }

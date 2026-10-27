@@ -9,7 +9,8 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { getEndpointRateLimitKey, getPreAuthRateLimitKey, checkRateLimit } from '../src/rate-limit';
+import { getEndpointRateLimitKey, getPreAuthRateLimitKey, checkRateLimit, reapOldRateLimits } from '../src/rate-limit';
+import { RATE_LIMIT_REAP_LIMIT } from '../src/constants';
 
 describe('getPreAuthRateLimitKey', () => {
   it('should create a preauth-prefixed key', () => {
@@ -455,22 +456,13 @@ describe('checkRateLimit', () => {
   });
 
   describe('cleanup logic', () => {
-    it('should trigger cleanup when random value is below 0.01', async () => {
+    // Row-growth cleanup was previously probabilistic (1% of requests) and
+    // ran inline here. It has moved to reapOldRateLimits(), called
+    // deterministically from the cron handler — see the describe block
+    // below. checkRateLimit() itself never issues a second prepare call now.
+    it('never issues a second (cleanup) prepare call regardless of Math.random', async () => {
       const mockDb = createMockDb();
-      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.005);
-      mockDb.first.mockResolvedValueOnce({ request_count: 1 });
-      mockDb.run.mockResolvedValueOnce({});
-
-      await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(mockDb.prepare).toHaveBeenCalledTimes(2);
-
-      randomSpy.mockRestore();
-    });
-
-    it('should not trigger cleanup when random value is 0.01 or above', async () => {
-      const mockDb = createMockDb();
-      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.01);
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0); // would have tripped the old 1% probabilistic cleanup
       mockDb.first.mockResolvedValueOnce({ request_count: 1 });
 
       await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
@@ -480,46 +472,56 @@ describe('checkRateLimit', () => {
       randomSpy.mockRestore();
     });
 
-    it('should not trigger cleanup when random value is high', async () => {
-      const mockDb = createMockDb();
-      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.99);
-      mockDb.first.mockResolvedValueOnce({ request_count: 1 });
-
-      await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(mockDb.prepare).toHaveBeenCalledTimes(1);
-
-      randomSpy.mockRestore();
-    });
-
-    it('should clean up records from more than 60 minutes ago', async () => {
+    it('still computes the correct allowed/remaining result now that cleanup is out-of-band', async () => {
       const mockDb = createMockDb();
       const testTime = new Date('2025-06-01T14:30:00.000Z').getTime();
       const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(testTime);
-      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.001);
       mockDb.first.mockResolvedValueOnce({ request_count: 3 });
-      mockDb.run.mockResolvedValueOnce({});
 
       const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
 
-      expect(mockDb.prepare).toHaveBeenCalledTimes(2);
+      expect(mockDb.prepare).toHaveBeenCalledTimes(1);
       expect(result.allowed).toBe(true);
       expect(result.remaining).toBe(97);
 
       dateNowSpy.mockRestore();
-      randomSpy.mockRestore();
     });
 
-    it('should not trigger cleanup when request is rejected', async () => {
+    it('does not issue a cleanup prepare call when the request is rejected', async () => {
       const mockDb = createMockDb();
-      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.001);
       mockDb.first.mockResolvedValueOnce({ request_count: 101 });
 
       await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
 
       expect(mockDb.prepare).toHaveBeenCalledTimes(1);
+    });
+  });
 
-      randomSpy.mockRestore();
+  describe('reapOldRateLimits', () => {
+    it('deletes rows outside the rolling 60-minute window, bounded by RATE_LIMIT_REAP_LIMIT', async () => {
+      const run = vi.fn().mockResolvedValue({ meta: { changes: 17 } });
+      const bind = vi.fn().mockReturnValue({ run });
+      const prepare = vi.fn().mockReturnValue({ bind });
+      const db = { prepare };
+
+      const now = new Date('2025-06-01T14:30:00.000Z').getTime();
+      const deleted = await reapOldRateLimits(db as unknown as D1Database, now);
+
+      expect(deleted).toBe(17);
+      const sql = prepare.mock.calls[0]![0] as string;
+      expect(sql).toContain('DELETE FROM rate_limits');
+      expect(sql).toContain('LIMIT');
+      const [cutoffBucket, limit] = bind.mock.calls[0] as [number, number];
+      expect(cutoffBucket).toBe(Math.floor(now / 60000) - 60);
+      expect(limit).toBe(RATE_LIMIT_REAP_LIMIT);
+    });
+
+    it('propagates a rejection when the delete fails', async () => {
+      const run = vi.fn().mockRejectedValue(new Error('D1 unavailable'));
+      const bind = vi.fn().mockReturnValue({ run });
+      const db = { prepare: vi.fn().mockReturnValue({ bind }) };
+
+      await expect(reapOldRateLimits(db as unknown as D1Database)).rejects.toThrow('D1 unavailable');
     });
   });
 

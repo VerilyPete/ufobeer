@@ -281,6 +281,7 @@ describe('handleDlqReplay', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [1] }),
     });
 
@@ -301,6 +302,7 @@ describe('handleDlqReplay', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [1] }),
     });
 
@@ -320,6 +322,7 @@ describe('handleDlqReplay', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [1] }),
     });
 
@@ -340,6 +343,7 @@ describe('handleDlqReplay', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [1] }),
     });
 
@@ -371,6 +375,7 @@ describe('handleDlqReplay', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [2] }),
     });
 
@@ -405,6 +410,7 @@ describe('handleDlqReplay', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [1, 2] }),
     });
 
@@ -425,6 +431,7 @@ describe('handleDlqReplay', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [2] }),
     });
 
@@ -452,6 +459,7 @@ describe('handleDlqReplay', () => {
     (env.ENRICHMENT_QUEUE as unknown as { send: Mock }).send = vi.fn().mockRejectedValue(new Error('Queue send failed'));
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [1] }),
     });
 
@@ -474,6 +482,7 @@ describe('handleDlqReplay', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [999] }),
     });
 
@@ -485,20 +494,40 @@ describe('handleDlqReplay', () => {
     expect(body.data.message).toContain('No pending messages');
   });
 
-  it('limits batch to 50 IDs even if more are provided', async () => {
+  it('rejects a request with more than 50 IDs (DLQ_REPLAY_MAX_IDS) instead of silently truncating', async () => {
     const manyIds = Array.from({ length: 60 }, (_, i) => i + 1);
+    const db = buildSequencedDb([]);
+    const env = getMockEnv(db);
+    const request = new Request('http://localhost/admin/dlq/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: manyIds }),
+    });
+
+    const response = await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { success: boolean; error: { code: string } };
+
+    expect(response.status).toBe(400);
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe('INVALID_REQUEST');
+  });
+
+  it('accepts a request with exactly 50 IDs (the DLQ_REPLAY_MAX_IDS boundary)', async () => {
+    const fiftyIds = Array.from({ length: 50 }, (_, i) => i + 1);
     const db = buildSequencedDb([
       { runResult: { meta: { changes: 0 } } },
     ]);
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
-      body: JSON.stringify({ ids: manyIds }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: fiftyIds }),
     });
 
     const response = await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
     const body = await response.json() as { data: { requested_count: number } };
 
+    expect(response.status).toBe(200);
     expect(body.data.requested_count).toBe(50);
   });
 
@@ -507,6 +536,7 @@ describe('handleDlqReplay', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ wrong: 'shape' }),
     });
 
@@ -520,6 +550,7 @@ describe('handleDlqReplay', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [1] }),
     });
 
@@ -542,6 +573,7 @@ describe('handleDlqReplay', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/replay', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [1] }),
     });
 
@@ -569,6 +601,7 @@ describe('handleDlqAcknowledge', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/acknowledge', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [1, 2, 3] }),
     });
 
@@ -586,6 +619,7 @@ describe('handleDlqAcknowledge', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/acknowledge', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [1] }),
     });
 
@@ -595,15 +629,34 @@ describe('handleDlqAcknowledge', () => {
     expect(body.data.acknowledged_count).toBe(1);
   });
 
-  it('limits to 100 IDs even if more are provided', async () => {
+  it('rejects a request with more than 100 IDs (DLQ_ACKNOWLEDGE_MAX_IDS) instead of silently truncating', async () => {
     const manyIds = Array.from({ length: 120 }, (_, i) => i + 1);
+    const db = buildSequencedDb([]);
+    const env = getMockEnv(db);
+    const request = new Request('http://localhost/admin/dlq/acknowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: manyIds }),
+    });
+
+    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { success: boolean; error: { code: string } };
+
+    expect(response.status).toBe(400);
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe('INVALID_REQUEST');
+  });
+
+  it('accepts a request with exactly 100 IDs (the DLQ_ACKNOWLEDGE_MAX_IDS boundary)', async () => {
+    const hundredIds = Array.from({ length: 100 }, (_, i) => i + 1);
     const db = buildSequencedDb([
       { runResult: { meta: { changes: 100 } } },
     ]);
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/acknowledge', {
       method: 'POST',
-      body: JSON.stringify({ ids: manyIds }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: hundredIds }),
     });
 
     const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
@@ -614,7 +667,7 @@ describe('handleDlqAcknowledge', () => {
 
     const sql = db.prepare.mock.calls[0]?.[0] as string;
     const placeholderCount = (sql.match(/\?/g) ?? []).length;
-    // 1 for `now` timestamp + 100 for the limited IDs
+    // 1 for `now` timestamp + 100 IDs
     expect(placeholderCount).toBe(101);
   });
 
@@ -623,6 +676,7 @@ describe('handleDlqAcknowledge', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/acknowledge', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ wrong: 'shape' }),
     });
 
@@ -636,6 +690,7 @@ describe('handleDlqAcknowledge', () => {
     const env = getMockEnv(db);
     const request = new Request('http://localhost/admin/dlq/acknowledge', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [1] }),
     });
 
@@ -646,6 +701,70 @@ describe('handleDlqAcknowledge', () => {
     expect(response.status).toBe(500);
 
     vi.restoreAllMocks();
+  });
+
+  // ==========================================================================
+  // requested_count / failed_count (Cloudflare security review,
+  // "dlq_acknowledge audit fidelity" -- so index.ts's classifyAdminOutcome
+  // can distinguish a partial acknowledge from a full success, matching
+  // dlq_replay's existing requested_count/failed_count fields).
+  // ==========================================================================
+
+  it('includes requested_count and failed_count alongside acknowledged_count on a full success', async () => {
+    const db = buildSequencedDb([
+      { runResult: { meta: { changes: 3 } } },
+    ]);
+    const env = getMockEnv(db);
+    const request = new Request('http://localhost/admin/dlq/acknowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [1, 2, 3] }),
+    });
+
+    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as {
+      data: { acknowledged_count: number; requested_count: number; failed_count: number };
+    };
+
+    expect(body.data).toEqual({ acknowledged_count: 3, requested_count: 3, failed_count: 0 });
+  });
+
+  it('reports a nonzero failed_count when fewer rows change than were requested (partial acknowledge)', async () => {
+    const db = buildSequencedDb([
+      { runResult: { meta: { changes: 2 } } },
+    ]);
+    const env = getMockEnv(db);
+    const request = new Request('http://localhost/admin/dlq/acknowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [1, 2, 3] }),
+    });
+
+    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as {
+      data: { acknowledged_count: number; requested_count: number; failed_count: number };
+    };
+
+    expect(body.data).toEqual({ acknowledged_count: 2, requested_count: 3, failed_count: 1 });
+  });
+
+  it('reports failed_count equal to requested_count when nothing matches', async () => {
+    const db = buildSequencedDb([
+      { runResult: { meta: { changes: 0 } } },
+    ]);
+    const env = getMockEnv(db);
+    const request = new Request('http://localhost/admin/dlq/acknowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [1, 2] }),
+    });
+
+    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as {
+      data: { acknowledged_count: number; requested_count: number; failed_count: number };
+    };
+
+    expect(body.data).toEqual({ acknowledged_count: 0, requested_count: 2, failed_count: 2 });
   });
 });
 
@@ -705,5 +824,103 @@ describe('cleanupOldDlqMessages', () => {
 
     // Exactly 2 calls: one for acknowledged (10 < 1000), one for replayed (5 < 1000)
     expect(db.prepare.mock.calls.length).toBe(2);
+  });
+});
+
+// ============================================================================
+// Bounded body guard — /admin/dlq/replay and /admin/dlq/acknowledge
+// ============================================================================
+
+describe('DLQ handlers bounded body guard', () => {
+  it('handleDlqReplay returns 415 when Content-Type is not application/json', async () => {
+    const env = getMockEnv(buildSequencedDb([]));
+    const request = new Request('http://localhost/admin/dlq/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ ids: [1] }),
+    });
+
+    const response = await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { error: { code: string } };
+
+    expect(response.status).toBe(415);
+    expect(body.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
+  });
+
+  it('handleDlqReplay returns 413 when the body exceeds SMALL_JSON_BODY_MAX_BYTES', async () => {
+    const env = getMockEnv(buildSequencedDb([]));
+    const oversized = JSON.stringify({ ids: [1], note: 'x'.repeat(100_000) });
+    const request = new Request('http://localhost/admin/dlq/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: oversized,
+    });
+
+    const response = await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { error: { code: string } };
+
+    expect(response.status).toBe(413);
+    expect(body.error.code).toBe('PAYLOAD_TOO_LARGE');
+  });
+
+  it('handleDlqReplay returns 400 for malformed JSON', async () => {
+    const env = getMockEnv(buildSequencedDb([]));
+    const request = new Request('http://localhost/admin/dlq/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not valid json',
+    });
+
+    const response = await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { error: { code: string } };
+
+    expect(response.status).toBe(400);
+    expect(body.error.code).toBe('INVALID_JSON');
+  });
+
+  it('handleDlqAcknowledge returns 415 when Content-Type is not application/json', async () => {
+    const env = getMockEnv(buildSequencedDb([]));
+    const request = new Request('http://localhost/admin/dlq/acknowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ ids: [1] }),
+    });
+
+    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { error: { code: string } };
+
+    expect(response.status).toBe(415);
+    expect(body.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
+  });
+
+  it('handleDlqAcknowledge returns 413 when the body exceeds SMALL_JSON_BODY_MAX_BYTES', async () => {
+    const env = getMockEnv(buildSequencedDb([]));
+    const oversized = JSON.stringify({ ids: [1], note: 'x'.repeat(100_000) });
+    const request = new Request('http://localhost/admin/dlq/acknowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: oversized,
+    });
+
+    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { error: { code: string } };
+
+    expect(response.status).toBe(413);
+    expect(body.error.code).toBe('PAYLOAD_TOO_LARGE');
+  });
+
+  it('handleDlqAcknowledge returns 400 for malformed JSON', async () => {
+    const env = getMockEnv(buildSequencedDb([]));
+    const request = new Request('http://localhost/admin/dlq/acknowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not valid json',
+    });
+
+    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
+    const body = await response.json() as { error: { code: string } };
+
+    expect(response.status).toBe(400);
+    expect(body.error.code).toBe('INVALID_JSON');
   });
 });

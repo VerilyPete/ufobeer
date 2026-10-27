@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { getCorsHeaders, errorResponse } from '../src/context';
+import { getCorsHeaders, errorResponse, withResponseHeaders, SECURITY_HEADERS } from '../src/context';
 import type { Env, ErrorResponseOptions } from '../src/types';
 
 // ============================================================================
@@ -95,6 +95,58 @@ describe('getCorsHeaders', () => {
     expect(result).not.toBeNull();
     expect(result!['Access-Control-Allow-Headers']).not.toContain('X-Client-ID');
   });
+
+  it('does not include X-Admin-Secret in Access-Control-Allow-Headers — browser-based admin tooling is not supported', () => {
+    const env = getMockEnv();
+    const result = getCorsHeaders(env, 'https://ufobeer.app');
+    expect(result).not.toBeNull();
+    expect(result!['Access-Control-Allow-Headers']).not.toContain('X-Admin-Secret');
+  });
+
+  it('does not include DELETE in Access-Control-Allow-Methods — no route uses it', () => {
+    const env = getMockEnv();
+    const result = getCorsHeaders(env, 'https://ufobeer.app');
+    expect(result).not.toBeNull();
+    expect(result!['Access-Control-Allow-Methods']).not.toContain('DELETE');
+  });
+});
+
+// ============================================================================
+// Shared Security Headers Tests
+// ============================================================================
+
+describe('withResponseHeaders', () => {
+  it('merges X-Content-Type-Options: nosniff into the given headers', () => {
+    const result = withResponseHeaders({}, 'no-store');
+    expect(result['X-Content-Type-Options']).toBe('nosniff');
+  });
+
+  it('merges a Referrer-Policy header', () => {
+    const result = withResponseHeaders({}, 'no-store');
+    expect(result['Referrer-Policy']).toBeTruthy();
+  });
+
+  it('sets Cache-Control to the provided directive', () => {
+    const result = withResponseHeaders({}, 'private, max-age=300');
+    expect(result['Cache-Control']).toBe('private, max-age=300');
+  });
+
+  it('preserves caller-supplied headers alongside the security headers', () => {
+    const result = withResponseHeaders({ 'X-Request-ID': 'req-1' }, 'no-store');
+    expect(result['X-Request-ID']).toBe('req-1');
+    expect(result['X-Content-Type-Options']).toBe('nosniff');
+  });
+
+  it('does not set Strict-Transport-Security (HSTS is a zone setting, not a Worker header)', () => {
+    const result = withResponseHeaders({}, 'no-store');
+    expect(result['Strict-Transport-Security']).toBeUndefined();
+  });
+});
+
+describe('SECURITY_HEADERS', () => {
+  it('includes nosniff', () => {
+    expect(SECURITY_HEADERS['X-Content-Type-Options']).toBe('nosniff');
+  });
 });
 
 // ============================================================================
@@ -156,5 +208,24 @@ describe('errorResponse', () => {
     const body = await result.json() as { retryAfter: number; limit: number };
     expect(body.retryAfter).toBe(60);
     expect(body.limit).toBe(100);
+  });
+
+  it('sets X-Content-Type-Options: nosniff', () => {
+    const options = getErrorResponseOptions();
+    const result = errorResponse('Bad request', 'BAD_REQUEST', options);
+    expect(result.headers.get('X-Content-Type-Options')).toBe('nosniff');
+  });
+
+  it('sets Cache-Control: no-store', () => {
+    const options = getErrorResponseOptions();
+    const result = errorResponse('Bad request', 'BAD_REQUEST', options);
+    expect(result.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('preserves caller-supplied headers alongside the security headers', () => {
+    const options = getErrorResponseOptions({ headers: { 'X-Request-ID': 'req-1' } });
+    const result = errorResponse('Bad request', 'BAD_REQUEST', options);
+    expect(result.headers.get('X-Request-ID')).toBe('req-1');
+    expect(result.headers.get('X-Content-Type-Options')).toBe('nosniff');
   });
 });

@@ -20,6 +20,8 @@ import { CLEANUP_TRIGGER_CONSTANTS } from '../types';
 import { errorResponse } from '../context';
 import { queueBeersForCleanup } from '../queue';
 import { hashDescription } from '../utils/hash';
+import { readBoundedJson, boundedJsonErrorResponse } from '../utils/body';
+import { SMALL_JSON_BODY_MAX_BYTES } from '../constants';
 import { TriggerCleanupRequestSchema } from '../schemas/request';
 import { mapZodIssueToErrorCode, extractZodErrorMessage } from '../schemas/errors';
 
@@ -282,17 +284,12 @@ export async function handleCleanupTrigger(
   const dailyLimit = parseInt(env.DAILY_CLEANUP_LIMIT || '1000', 10);
 
   try {
-    // 1. Parse request body
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return errorResponse(
-        'Invalid JSON body',
-        'INVALID_PARAMS',
-        { requestId: reqCtx.requestId, headers, status: 400 }
-      );
+    // 1. Read and parse the bounded request body
+    const bodyResult = await readBoundedJson(request, SMALL_JSON_BODY_MAX_BYTES);
+    if (!bodyResult.ok) {
+      return boundedJsonErrorResponse(bodyResult, reqCtx.requestId, headers);
     }
+    const body: unknown = bodyResult.data;
 
     // 2. Validate request body
     const validation = validateCleanupTriggerRequest(body);
@@ -431,11 +428,18 @@ export async function handleCleanupTrigger(
     // recovery). Send-then-mark's failure mode (marked-but-duplicated
     // cleanup) is benign because cleanup writes are idempotent.
     const now = Date.now();
+    const hashById = new Map(beersWithHashes.map(beer => [beer.id, beer.descriptionHash]));
     const beersToQueue = beers.map(beer => ({
       id: beer.id,
       brew_name: beer.brew_name,
       brewer: beer.brewer || '',
       brew_description: beer.brew_description_original,
+      // Same hash already computed above for the D1 write (step 9) --
+      // binds the outgoing cleanup message to the exact description version
+      // it was built from. NOTE: queueBeersForCleanup (src/queue/helpers.ts)
+      // does not yet read or forward this field onto the CleanupMessage it
+      // sends -- see the security review's "stale-result binding" item.
+      descriptionHash: hashById.get(beer.id) as string,
     }));
 
     const queueResult = await queueBeersForCleanup(env, beersToQueue, reqCtx.requestId);

@@ -1,5 +1,25 @@
+import { redact, truncate, stripQueryString, pathOnly } from './redact';
+
 export const MAX_TRACES_PER_EMAIL = 10;
 export const FROM_ADDRESS = 'alerts@ufobeer.app';
+
+// Cap on a single exception message, applied before the rest of the email
+// is assembled, so one huge (or adversarially long) message can't dominate
+// the body on its own.
+export const MAX_EXCEPTION_MESSAGE_LENGTH = 500;
+
+// Same idea, for a single error-level log message.
+export const MAX_LOG_MESSAGE_LENGTH = 500;
+
+// Overall email body cap, enforced last and independently of the per-field
+// limits above — many small fields together still can't grow the email
+// without bound.
+export const MAX_EMAIL_BODY_LENGTH = 20_000;
+
+// Prepended when the cooldown or email-volume cap fell back to its
+// in-isolate tier (see cooldown.ts / emailCap.ts), so a reader knows
+// dedup is weaker than usual and volume may be higher than the normal cap.
+export const DEGRADED_COOLDOWN_MARKER = '[cooldown: degraded — KV unavailable; dedup and volume limits are weaker than usual]';
 
 // ---------------------------------------------------------------------------
 // Type narrowing helpers
@@ -49,7 +69,7 @@ function formatTrace(trace: TraceItem): string {
   }
 
   if (isFetchEvent(trace.event)) {
-    lines.push(`Request: ${trace.event.request.method} ${trace.event.request.url}`);
+    lines.push(`Request: ${trace.event.request.method} ${stripQueryString(trace.event.request.url)}`);
   }
 
   lines.push('');
@@ -59,7 +79,7 @@ function formatTrace(trace: TraceItem): string {
   if (trace.exceptions.length > 0) {
     lines.push('--- Exceptions ---');
     for (const exc of trace.exceptions) {
-      lines.push(`${exc.name}: ${exc.message}`);
+      lines.push(`${exc.name}: ${truncate(redact(exc.message), MAX_EXCEPTION_MESSAGE_LENGTH)}`);
     }
     lines.push('');
   }
@@ -67,7 +87,8 @@ function formatTrace(trace: TraceItem): string {
   if (errorLogs.length > 0) {
     lines.push('--- Error Logs ---');
     for (const log of errorLogs) {
-      lines.push(`[${formatTimestamp(log.timestamp)}] ${safeStringify(log.message)}`);
+      const message = truncate(redact(safeStringify(log.message)), MAX_LOG_MESSAGE_LENGTH);
+      lines.push(`[${formatTimestamp(log.timestamp)}] ${message}`);
     }
     lines.push('');
   }
@@ -91,8 +112,7 @@ export function buildSubject(trace: TraceItem): string {
   const { event } = trace;
 
   if (isFetchEvent(event)) {
-    const parsed = new URL(event.request.url);
-    const path = parsed.pathname + parsed.search;
+    const path = pathOnly(event.request.url);
     return `${prefix} — ${event.request.method} ${path}`;
   }
 
@@ -107,11 +127,15 @@ export function buildSubject(trace: TraceItem): string {
   return prefix;
 }
 
-export function buildBody(traces: readonly TraceItem[], suppressedCount?: number): string {
+export function buildBody(traces: readonly TraceItem[], suppressedCount?: number, degraded?: boolean): string {
   const cappedTraces = traces.slice(0, MAX_TRACES_PER_EMAIL);
   const omittedCount = traces.length - cappedTraces.length;
 
   const parts: string[] = [];
+
+  if (degraded === true) {
+    parts.push(`${DEGRADED_COOLDOWN_MARKER}\n`);
+  }
 
   if (suppressedCount !== undefined && suppressedCount > 0) {
     parts.push(`${suppressedCount} alerts were suppressed since last notification\n`);
@@ -123,7 +147,7 @@ export function buildBody(traces: readonly TraceItem[], suppressedCount?: number
     parts.push(`\n... and ${omittedCount} more errors in this batch (omitted).`);
   }
 
-  return parts.join('\n');
+  return truncate(parts.join('\n'), MAX_EMAIL_BODY_LENGTH);
 }
 
 export function buildRawEmail(subject: string, body: string, toAddress: string): string {

@@ -1,15 +1,17 @@
 /**
  * Health Check Handler
  *
- * Provides a health check endpoint for monitoring service status.
+ * Provides health/liveness endpoints for monitoring service status.
  * Includes:
  * - handleHealthCheck() - GET /health - Returns service health with quota status
+ * - handleLiveness()    - GET/HEAD /livez - Minimal liveness probe, no D1 query
  *
  * Extracted from index.ts as part of Phase 7 refactoring.
  */
 
 import type { Env } from '../types';
 import { getToday } from '../utils/date';
+import { withResponseHeaders } from '../context';
 
 // ============================================================================
 // Health Check Handler
@@ -24,6 +26,11 @@ import { getToday } from '../utils/date';
  * contract harness enforces them). Exposure is limited to usage counts and
  * limits — no secrets. Gating these fields is a coordinated cross-repo
  * contract change, not a unilateral edit.
+ *
+ * The response body SHAPE is unchanged from before this security pass —
+ * only response headers (security headers, explicit no-store) were added.
+ * Removing fields is explicitly deferred to Phase 2; see handleLiveness()
+ * for a cheap D1-free alternative for uptime probes.
  *
  * Returns:
  * - Service status (ok/error)
@@ -79,12 +86,33 @@ export async function handleHealthCheck(env: Env): Promise<Response> {
           remaining: Math.max(0, monthlyLimit - monthlyUsed),
         },
       },
-    });
+    }, { headers: withResponseHeaders({}, 'no-store') });
   } catch (error) {
     console.error('Health check DB error:', error);
     return Response.json(
       { status: 'error', database: 'disconnected', error: 'Database connection failed' },
-      { status: 503 }
+      { status: 503, headers: withResponseHeaders({}, 'no-store') }
     );
   }
+}
+
+// ============================================================================
+// Liveness Handler
+// ============================================================================
+
+/**
+ * GET/HEAD /livez - Minimal liveness probe.
+ *
+ * Deliberately does NOT touch env/D1 at all (the function takes no Env
+ * parameter, so a D1 query is not merely avoided by convention — it isn't
+ * reachable from here). Exists so uptime monitors and load balancers can
+ * probe liveness without incurring the SELECT 1 + quota queries /health
+ * performs, and without exposing quota details. /health remains the
+ * readiness/quota endpoint used by the Golden Taproom contract.
+ */
+export function handleLiveness(): Response {
+  return Response.json(
+    { status: 'ok' },
+    { headers: withResponseHeaders({}, 'no-store') }
+  );
 }

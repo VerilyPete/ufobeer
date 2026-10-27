@@ -78,7 +78,7 @@ describe('interface-to-type conversion compile checks', () => {
   // ============================================================================
 
   it('readonly prevents mutation of EnrichmentMessage', () => {
-    const msg: EnrichmentMessage = { beerId: '1', beerName: 'IPA', brewer: 'Test' };
+    const msg: EnrichmentMessage = { beerId: '1', beerName: 'IPA', brewer: 'Test', descriptionHash: null };
     // @ts-expect-error — readonly property cannot be assigned
     msg.beerId = '2';
   });

@@ -143,12 +143,29 @@ export type InsertPlaceholdersResult = {
     readonly id: string;
     readonly brew_name: string;
     readonly brewer: string;
+    /**
+     * Hash of brew_description (null when the beer has no description at
+     * all), computed the same way categorizeBeer computes it. Carried so
+     * queueBeersForEnrichment can stamp the outgoing EnrichmentMessage with
+     * it, for parity with needsCleanup's descriptionHash below (Cloudflare
+     * security review Phase 1, item 2a/5).
+     */
+    readonly descriptionHash: string | null;
   }>;
   readonly needsCleanup: ReadonlyArray<{
     readonly id: string;
     readonly brew_name: string;
     readonly brewer: string;
     readonly brew_description: string;
+    /**
+     * Hash of brew_description above, computed the same way categorizeBeer
+     * computes it (via hashMap, itself built from hashDescription()).
+     * Carried so a cleanup-message producer can bind the outgoing message
+     * to the exact description version it was built from.
+     * queueBeersForCleanup (src/queue/helpers.ts) reads and forwards this
+     * field onto the CleanupMessage it sends.
+     */
+    readonly descriptionHash: string;
   }>;
   /** Beers that failed to process during placeholder insertion */
   readonly failed: ReadonlyArray<{
@@ -328,8 +345,8 @@ export async function insertPlaceholders(
   const now = Date.now();
 
   let withAbv = 0;
-  const needsEnrichment: Array<{ id: string; brew_name: string; brewer: string }> = [];
-  const needsCleanup: Array<{ id: string; brew_name: string; brewer: string; brew_description: string }> = [];
+  const needsEnrichment: Array<{ id: string; brew_name: string; brewer: string; descriptionHash: string | null }> = [];
+  const needsCleanup: Array<{ id: string; brew_name: string; brewer: string; brew_description: string; descriptionHash: string }> = [];
   const failed: Array<{ id: string; error: string }> = [];
 
   // ============================================================================
@@ -397,6 +414,10 @@ export async function insertPlaceholders(
           brew_name: beer.brew_name,
           brewer: beer.brewer,
           brew_description: beer.brew_description!,
+          // Non-null: this branch is only reached when beer.brew_description
+          // is truthy, in which case hashMap.get(beer.id) (the source of
+          // descriptionHash in categorizeBeer) is always a real hash.
+          descriptionHash: descriptionHash as string,
         });
         writeStatements.push(
           db
@@ -420,7 +441,7 @@ export async function insertPlaceholders(
         break;
 
       case 'needs_enrichment':
-        needsEnrichment.push({ id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer });
+        needsEnrichment.push({ id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer, descriptionHash });
         writeStatements.push(
           db
             .prepare(
@@ -465,6 +486,10 @@ export async function insertPlaceholders(
           brew_name: beer.brew_name,
           brewer: beer.brewer,
           brew_description: beer.brew_description!,
+          // Non-null: this branch is only reached when beer.brew_description
+          // is truthy, in which case hashMap.get(beer.id) (the source of
+          // descriptionHash in categorizeBeer) is always a real hash.
+          descriptionHash: descriptionHash as string,
         });
         writeStatements.push(
           db
@@ -477,7 +502,7 @@ export async function insertPlaceholders(
         break;
 
       case 'new_needs_enrichment':
-        needsEnrichment.push({ id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer });
+        needsEnrichment.push({ id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer, descriptionHash });
         writeStatements.push(
           db
             .prepare(
