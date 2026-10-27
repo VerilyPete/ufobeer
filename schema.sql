@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS enriched_beers (
     brew_description_cleaned TEXT,                 -- Cleaned version after LLM processing
     description_hash TEXT,                         -- SHA-256 hash (truncated) for change detection
     description_cleaned_at INTEGER,                -- Timestamp when cleanup was performed
-    cleanup_source TEXT,                           -- 'workers-ai' | 'groq' | NULL (not yet cleaned)
+    cleanup_source TEXT,                           -- 'deterministic' | 'fallback-*' | legacy 'workers-ai' | 'groq' | NULL (not yet cleaned)
     queued_for_cleanup_at INTEGER                  -- When beer was queued for cleanup (prevents re-queueing)
 );
 
@@ -157,7 +157,7 @@ CREATE INDEX IF NOT EXISTS idx_dlq_status_failed_id ON dlq_messages(status, fail
 -- brew_description_cleaned: Cleaned version after LLM processing
 -- description_hash: SHA-256 hash for change detection
 -- description_cleaned_at: Timestamp when cleanup was performed
--- cleanup_source: 'workers-ai' | 'groq' | NULL (not yet cleaned)
+-- cleanup_source: 'deterministic' | 'fallback-*' | legacy 'workers-ai' | 'groq' | NULL (not yet cleaned)
 
 -- Note: Run these ALTER TABLE statements manually for existing databases:
 -- ALTER TABLE enriched_beers ADD COLUMN brew_description_original TEXT;

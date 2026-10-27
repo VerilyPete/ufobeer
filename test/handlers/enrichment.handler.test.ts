@@ -59,6 +59,7 @@ const buildSequencedDb = (configs: readonly DbCallConfig[]) => {
         run: vi.fn().mockResolvedValue(config?.runResult ?? { meta: { changes: 0 } }),
       };
     }),
+    batch: vi.fn().mockResolvedValue([]),
   };
 };
 

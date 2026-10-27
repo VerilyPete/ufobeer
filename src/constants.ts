@@ -359,3 +359,15 @@ export const CORS_PREFLIGHT_ROUTES: Readonly<Record<string, string>> = {
 
 /** Mirrors the Access-Control-Allow-Headers contract in src/context.ts. */
 export const CORS_ALLOWED_REQUEST_HEADERS = new Set(['content-type', 'x-api-key']);
+
+/** Explicit provider unknowns may recover; retry through quota-checked sweeps. */
+export const ABV_LOOKUP_MISS_RETRY_MS = 24 * 60 * 60 * 1000;
+/** Avoid spending lookup quota on beers no longer present in recent taplists. */
+export const ABV_LOOKUP_RECENTLY_SEEN_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Most edits the cleanup guard accepts from the model in one description.
+ * Each edit is individually verified, but a model making many changes is
+ * rewriting rather than fixing typos, so larger edit sets fall back.
+ */
+export const MAX_CLEANUP_GUARD_EDITS = 5;

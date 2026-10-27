@@ -136,13 +136,13 @@ function createMockD1(initialCount = 0, dailyLimit = 1000): MockD1Database {
  */
 function createMockAI(delayMs = 50): MockAI {
   return {
-    run: vi.fn().mockImplementation(async (_model: string, options: { prompt: string }) => {
+    run: vi.fn().mockImplementation(async (_model: string, options: { messages: readonly { content: string }[] }) => {
       if (delayMs > 0) {
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
       // Extract ABV from prompt if present
-      const abvMatch = options.prompt.match(/(\d+\.?\d*)%/);
-      const abv = abvMatch ? parseFloat(abvMatch[1]) : null;
+      const abvMatch = options.messages.at(-1)?.content.match(/(\d+\.?\d*)%/);
+      const abv = abvMatch?.[1] ? parseFloat(abvMatch[1]) : null;
       return {
         response: JSON.stringify({
           cleanedDescription: 'Cleaned beer description',
@@ -788,17 +788,17 @@ describe('processAIConcurrently', () => {
     const mockAI = createMockAI(10);
     const messages = [createMockMessage(0, 'Beer 0')];
 
-    // Create AI that takes longer than timeout
-    mockAI.run = vi.fn().mockImplementation(async () => {
+    // A cleanup function that takes longer than the timeout
+    const slowCleanFn = async () => {
       await new Promise(resolve => setTimeout(resolve, 200));
-      return { response: 'Cleaned' };
-    });
+      return { cleaned: 'Cleaned', usedOriginal: false, extractedABV: null };
+    };
 
     const results = await processAIConcurrently(
       messages as Message<CleanupMessage>[],
       mockAI as unknown as Ai,
       10,
-      { timeoutMs: 50, breaker: createCircuitBreaker() }
+      { cleanFn: slowCleanFn, timeoutMs: 50, breaker: createCircuitBreaker() }
     );
 
     expect(results[0].success).toBe(false);

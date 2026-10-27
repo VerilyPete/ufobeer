@@ -128,7 +128,7 @@ function createMockCtx(): ExecutionContext {
 // ============================================================================
 
 describe('handleScheduledEnrichment', () => {
-  it('queries enriched_beers WHERE enrichment_status = pending', async () => {
+  it('queries pending work and bounded expired lookup misses', async () => {
     const db = buildSequencedDb([
       ...SCHEDULE_DUE_CONFIGS,
       { firstResult: { total: 0 } },
@@ -145,7 +145,8 @@ describe('handleScheduledEnrichment', () => {
     expect(selectCall).toBeDefined();
     expect(selectCall!.sql).toContain('enrichment_status');
     expect(selectCall!.sql).toContain('pending');
-    expect(selectCall!.sql).not.toContain('abv IS NULL');
+    expect(selectCall!.sql).toContain("enrichment_status = 'not_found' AND abv IS NULL AND updated_at <=");
+    expect(selectCall!.sql).toContain('last_seen_at >=');
   });
 
   it('batch-updates blocklisted beers to enrichment_status = skipped', async () => {
