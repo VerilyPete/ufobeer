@@ -1,4 +1,4 @@
-import { applyD1Migrations, createExecutionContext, env, fetchMock, waitOnExecutionContext } from 'cloudflare:test';
+import { applyD1Migrations, createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
 import type { Env } from '../src/types';
@@ -131,11 +131,22 @@ async function seedGoldenQuota(): Promise<void> {
     .run();
 }
 
+type GoldenInterception = { readonly url: string; readonly statusCode: number; readonly body: object };
+
+// The worker runs in the test isolate, so stubbing global fetch intercepts its
+// upstream calls. Each interception answers one GET; anything else is refused.
+const pendingInterceptions: GoldenInterception[] = [];
+
 function interceptGoldenTaplist(statusCode: number, body: object): void {
-  fetchMock
-    .get(TEST_ORIGIN)
-    .intercept({ path: `/?sid=${GOLDEN_STORE_ID}`, method: 'GET' })
-    .reply(statusCode, body);
+  pendingInterceptions.push({ url: `${TEST_ORIGIN}/?sid=${GOLDEN_STORE_ID}`, statusCode, body });
+}
+
+async function answerGoldenFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const request = new Request(input, init);
+  const index = pendingInterceptions.findIndex(i => request.method === 'GET' && request.url === i.url);
+  if (index === -1) throw new Error(`Unexpected outbound request: ${request.method} ${request.url}`);
+  const [match] = pendingInterceptions.splice(index, 1);
+  return Response.json(match!.body, { status: match!.statusCode });
 }
 
 function goldenRequest(headers: Record<string, string> = {}): Request {
@@ -200,8 +211,7 @@ async function invokeGoldenRequest(request: Request): Promise<Response> {
 beforeAll(() => {
   vi.useFakeTimers();
   vi.setSystemTime(GOLDEN_NOW);
-  fetchMock.activate();
-  fetchMock.disableNetConnect();
+  vi.spyOn(globalThis, 'fetch').mockImplementation(answerGoldenFetch);
 });
 
 beforeEach(async () => {
@@ -210,7 +220,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  fetchMock.assertNoPendingInterceptors();
+  const unused = pendingInterceptions.splice(0);
+  expect(unused.map(i => i.url)).toEqual([]);
 });
 
 afterAll(() => {
