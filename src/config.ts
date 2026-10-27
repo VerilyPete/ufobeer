@@ -54,6 +54,7 @@ export const ENRICHMENT_BLOCKLIST = new Set([
   'Hummingbird H20',
   'Irish Car Bomb',
   'Michelada',
+  "Pub 'n Pudding Pairing",
   'Texas Flight',
 ]);
 
@@ -66,18 +67,17 @@ export const ENRICHMENT_BLOCKLIST = new Set([
  * - "Root Beer"
  * - "Beer and Cheese Pairing"
  * - "2026 Valentine's Day Glass SL", "Murray Christmas Mug 2025 + ..."
- * - "Oktoberfest Class SL 1"
+ * - "Oktoberfest Class SL 1", "Around the World Beer Class Chit 2"
  * - "Mystery Beer Cans (CAN)", "Underberg Bitter Add On"
  */
 export const ENRICHMENT_BLOCKLIST_PATTERNS = [
   /\bflight\b/i,           // Any item containing "flight"
   /\broot beer\b/i,        // Root beer (non-alcoholic)
   /\bbeer and cheese\b/i,  // Beer and cheese pairings
-  /\bpairing\b/i,          // Food pairings
   /\b(?:glass|mug)\b.*(?:\bSL\b|\bft\.|\bw\/|\+)/i, // Promo glassware: "Glass SL", "Glass ft. Guinness", "Mug 2025 + ..."
   /\bprize glass\b/i,      // Contest glassware
-  /\bclass SL\b/i,         // Beer classes: "Oktoberfest Class SL 1"
-  /\bmystery\b/i,          // Blind cans: nothing identifiable to look up
+  /\bclass(?:\s+SL)?(?:\s+chit)?\s+\d+\b/i, // Numbered beer-class sessions: "Class SL 1", "Class Chit 2"
+  /\bmystery (?:beer|cans?)\b/i, // Blind cans: nothing identifiable to look up
   /\badd[- ]?on\b/i,       // Spirit add-ons such as Underberg
 ];
 
