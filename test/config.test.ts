@@ -76,8 +76,37 @@ describe('shouldSkipEnrichment', () => {
     expect(shouldSkipEnrichment('Budweiser')).toBe(false);
   });
 
-  it('returns false for an empty string', () => {
-    expect(shouldSkipEnrichment('')).toBe(false);
+  it.each(['', '   '])('returns true for a blank name %j (nothing to look up)', (name) => {
+    expect(shouldSkipEnrichment(name)).toBe(true);
+  });
+
+  // ========================================================================
+  // Non-beer taplist items that production paid Perplexity for
+  // ========================================================================
+
+  it.each([
+    "2026 Valentine's Day Glass SL",
+    "St Patrick's Day Glass ft. Guinness SL",
+    '2026 420 Glass w/ Equal Parts Mr. Nice Guy',
+    'World Cup Grand Prize Glass',
+    'Murray Christmas Mug 2025 + Galveston Island Coastal Christmas Ale',
+    'Around the World Beer Class SL Chit 1',
+    'Oktoberfest Class SL 2',
+    "Pub 'n Pudding Pairing",
+    'Mystery Beer Cans (CAN)',
+    'Underberg Bitter Add On',
+  ])('returns true for non-beer item %j', (name) => {
+    expect(shouldSkipEnrichment(name)).toBe(true);
+  });
+
+  it.each([
+    'Clausthaler Classic N/A (BTL)',
+    'Glasstown Pale Ale',
+    'World Class IPA',
+    'Hopadillo Glass Half Full',
+    'Saint Arnold Pumpkinator 2026 Glass Night',
+  ])('returns false for beer %j that only resembles a non-beer word', (name) => {
+    expect(shouldSkipEnrichment(name)).toBe(false);
   });
 
   it('returns false for a brew name containing "light" but not "flight"', () => {

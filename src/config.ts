@@ -65,11 +65,20 @@ export const ENRICHMENT_BLOCKLIST = new Set([
  * - "Sour Flight"
  * - "Root Beer"
  * - "Beer and Cheese Pairing"
+ * - "2026 Valentine's Day Glass SL", "Murray Christmas Mug 2025 + ..."
+ * - "Oktoberfest Class SL 1"
+ * - "Mystery Beer Cans (CAN)", "Underberg Bitter Add On"
  */
 export const ENRICHMENT_BLOCKLIST_PATTERNS = [
   /\bflight\b/i,           // Any item containing "flight"
   /\broot beer\b/i,        // Root beer (non-alcoholic)
   /\bbeer and cheese\b/i,  // Beer and cheese pairings
+  /\bpairing\b/i,          // Food pairings
+  /\b(?:glass|mug)\b.*(?:\bSL\b|\bft\.|\bw\/|\+)/i, // Promo glassware: "Glass SL", "Glass ft. Guinness", "Mug 2025 + ..."
+  /\bprize glass\b/i,      // Contest glassware
+  /\bclass SL\b/i,         // Beer classes: "Oktoberfest Class SL 1"
+  /\bmystery\b/i,          // Blind cans: nothing identifiable to look up
+  /\badd[- ]?on\b/i,       // Spirit add-ons such as Underberg
 ];
 
 // ============================================================================
@@ -79,7 +88,8 @@ export const ENRICHMENT_BLOCKLIST_PATTERNS = [
 /**
  * Check if a beer name should be skipped for enrichment.
  *
- * Returns true if the beer matches:
+ * Returns true if the beer:
+ * - Has a blank name
  * - Exact match in ENRICHMENT_BLOCKLIST
  * - Pattern match in ENRICHMENT_BLOCKLIST_PATTERNS
  *
@@ -87,6 +97,10 @@ export const ENRICHMENT_BLOCKLIST_PATTERNS = [
  * @returns true if the beer should be skipped, false otherwise
  */
 export function shouldSkipEnrichment(brewName: string): boolean {
+  // A blank name gives Perplexity nothing to look up
+  if (brewName.trim() === '') {
+    return true;
+  }
   // Check exact matches
   if (ENRICHMENT_BLOCKLIST.has(brewName)) {
     return true;
