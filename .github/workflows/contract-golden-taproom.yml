@@ -19,13 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout API
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: ufobeer
           persist-credentials: false
 
       - name: Checkout mobile app
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: VerilyPete/BeerSelector
           ref: main
@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '20.19.1'
           cache: npm
