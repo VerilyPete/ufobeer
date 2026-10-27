@@ -9,8 +9,8 @@
  * Rules (see plans/pr44-review-fixes.md):
  * - R1: the word sequence is unchanged — no word added, removed, merged or split
  * - R2: a changed word must be a reviewed misspelling -> correction pair
- * - R3: a changed gap must only add a missing space after an existing comma,
- *       or a final full stop
+ * - R3: a changed gap must only add a missing space after an existing comma
+ *       or between a percentage and ABV, or a final full stop
  * - R4: capitalization never changes
  * - R5: at most MAX_CLEANUP_GUARD_EDITS edits in total
  */
@@ -94,12 +94,14 @@ function isPermittedSpellingFix(options: {
 // Gap fixes never add, remove or swap punctuation, since a new comma or full
 // stop can reverse meaning ("No alcohol is added" -> "No, alcohol is
 // added"). Only a missing space after an existing comma, or a final full
-// stop, may be added. A missing space after a full stop is never fixed: it
+// stop, may be added, plus the space in "9.2%ABV" -> "9.2% ABV". A missing
+// space after a full stop is never fixed: it
 // cannot be told apart from a dotted name (example.Com, Menu.Pdf, U.S). The
 // comma pair must be two plain words standing alone, so numbers, lists and
 // identifiers are never split, and a final full stop is only appended to a
 // standalone word, never to a path or address.
 const PLAIN_WORD = /^[\p{L}'’]+$/u;
+const NUMBER = /^\p{N}+$/u;
 
 function isPermittedGapFix(options: {
   readonly from: string;
@@ -113,6 +115,7 @@ function isPermittedGapFix(options: {
   readonly protectedWords: ReadonlySet<string>;
 }): boolean {
   const { from, to, before, after, protectedWords } = options;
+  if (from === '%') return to === '% ' && before !== undefined && NUMBER.test(before) && after?.toLowerCase() === 'abv';
   if (before === undefined || !PLAIN_WORD.test(before) || protectedWords.has(lookupKey(before))) return false;
   if (after === undefined) {
     return from === '' && to === '.'

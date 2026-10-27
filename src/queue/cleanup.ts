@@ -152,6 +152,7 @@ const CLEANUP_INSTRUCTIONS = `You proofread beer descriptions. Reply with the co
 You may ONLY:
 - Fix an obviously misspelled word (for example "pleasent" becomes "pleasant")
 - Add a missing space after a comma (for example "Citra,Mosaic" becomes "Citra, Mosaic")
+- Add a missing space between a percentage and ABV (for example "9.2%ABV" becomes "9.2% ABV")
 - Add a full stop at the very end if the text has no final punctuation
 
 Do NOT add, remove, reorder or replace any other word; add, remove or change any other punctuation; change capitalization; or change numbers, prices, ABV values, names, hashtags, links or email addresses.

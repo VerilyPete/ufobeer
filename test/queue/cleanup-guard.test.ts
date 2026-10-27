@@ -143,6 +143,8 @@ describe('cleanup guard: punctuation fixes (R3)', () => {
   it.each([
     ['a missing space after a comma', 'Citra,Mosaic hops.', 'Citra, Mosaic hops.', 'Citra,Mosaic', 'Citra, Mosaic'],
     ['a missing final full stop', 'Very crisp', 'Very crisp.', 'crisp', 'crisp.'],
+    ['a missing space between a percentage and ABV', 'Strong at 9.2%ABV today.', 'Strong at 9.2% ABV today.', '2%ABV', '2% ABV'],
+    ['a missing space between a percentage and lowercase abv', 'Strong at 9%abv today.', 'Strong at 9% abv today.', '9%abv', '9% abv'],
   ])('accepts %s and reports it in context', (_case, source, output, from, to) => {
     expect(check(output, { source })).toEqual({ ok: true, edits: [{ from, to }] });
   });
@@ -179,6 +181,9 @@ describe('cleanup guard: punctuation fixes (R3)', () => {
     ['a full stop added after a number', 'ABV 5', 'ABV 5.'],
     ['an added space before a comma', 'A crisp, dry finish.', 'A crisp , dry finish.'],
     ['a comma swapped for a full stop', 'Citra,Mosaic hops.', 'Citra. Mosaic hops.'],
+    ['a space after a percentage before another word', 'A 100%Citra hop bill.', 'A 100% Citra hop bill.'],
+    ['a space after a percent sign not preceded by a number', 'Rated A%ABV today.', 'Rated A% ABV today.'],
+    ['a space before the percent sign', 'Strong at 9.2%ABV today.', 'Strong at 9.2 %ABV today.'],
     ['a space added after a comma before a number', 'Batch,2 today.', 'Batch, 2 today.'],
     ['a pair joined to a preceding word by a bracket', 'Malt(crisp,dry) ale.', 'Malt(crisp, dry) ale.'],
   ])('rejects %s', (_case, source, output) => {
