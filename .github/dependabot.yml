@@ -4,11 +4,19 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Only propose releases at least two weeks old, so a compromised or
+    # broken publish has time to be caught and yanked first.
+    cooldown:
+      default-days: 14
   - package-ecosystem: npm
     directory: /workers/error-alerts
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
