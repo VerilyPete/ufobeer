@@ -81,6 +81,43 @@ describe('cleanup guard: spelling fixes (R2)', () => {
     expect(check('Tag @pleasant now', { source: 'Tag @pleasent now' })).toEqual({ ok: false, rule: 'R2' });
   });
 
+  it.each([
+    ['French', 'Un jaune brillant.', 'Un jaune brilliant.'],
+    ['German', 'Im Stil eines Pilsners.', 'Im Still eines Pilsners.'],
+  ])('rejects changing a valid %s word', (_language, source, output) => {
+    expect(check(output, { source })).toEqual({ ok: false, rule: 'R2' });
+  });
+
+  it.each([
+    ['an email address', 'Mail pleasent@example.com now', 'Mail pleasant@example.com now'],
+    ['a URL path', 'See www.example.com/pleasent-ale now', 'See www.example.com/pleasant-ale now'],
+    ['a dotted handle', 'Follow @brew.pleasent now', 'Follow @brew.pleasant now'],
+    ['a hyphenated compound', 'A pleasent-tasting ale', 'A pleasant-tasting ale'],
+    ['a slash-joined word', 'Malt/pleasent finish', 'Malt/pleasant finish'],
+    ['a word followed by a symbol', 'A pleasent* finish', 'A pleasant* finish'],
+    ['a word joined by a bracket', 'Malt(pleasent) finish', 'Malt(pleasant) finish'],
+    ['a comma with no following space', 'A pleasent,dry finish', 'A pleasant,dry finish'],
+  ])('rejects a fix inside %s', (_case, source, output) => {
+    expect(check(output, { source })).toEqual({ ok: false, rule: 'R2' });
+  });
+
+  it.each([
+    ['comma', 'A pleasent, dry finish.', 'A pleasant, dry finish.'],
+    ['brackets', 'A (pleasent) finish.', 'A (pleasant) finish.'],
+    ['quotes', 'A "pleasent" finish.', 'A "pleasant" finish.'],
+    ['sentence end', 'Very pleasent.', 'Very pleasant.'],
+    ['first word', 'Pleasent aroma.', 'Pleasant aroma.'],
+    ['last word without punctuation', 'Very pleasent', 'Very pleasant'],
+    ['first word after an opening quote', '"Pleasent" aroma.', '"Pleasant" aroma.'],
+  ])('accepts a fix next to ordinary punctuation (%s)', (_case, source, output) => {
+    expect(check(output, { source }).ok).toBe(true);
+  });
+
+  it('protects the bare form of a possessive beer name or brewer', () => {
+    expect(check('Pleasant brews this ale.', { source: 'Pleasent brews this ale.', protectedTerms: ["Pleasent's Brewing"] })).toEqual({ ok: false, rule: 'R2' });
+    expect(check('Pleasant brews this ale.', { source: 'Pleasent brews this ale.', protectedTerms: ['Pleasent’s Brewing'] })).toEqual({ ok: false, rule: 'R2' });
+  });
+
   it('rejects a fix anywhere inside an underscored hashtag, handle or identifier', () => {
     expect(check('Tag #so_pleasant now', { source: 'Tag #so_pleasent now' })).toEqual({ ok: false, rule: 'R2' });
     expect(check('Tag @pleasant_brewers now', { source: 'Tag @pleasent_brewers now' })).toEqual({ ok: false, rule: 'R2' });

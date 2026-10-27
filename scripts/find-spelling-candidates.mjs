@@ -30,6 +30,8 @@ const PLAIN_WORD = /^[a-z]+$/;
 const REJECTED = new Map([
   ['tripel', 'Belgian beer style, not a typo of "triple"'],
   ['tripels', 'plural of the tripel beer style'],
+  ['brillant', 'valid French word ("brilliant"), common in Belgian descriptions'],
+  ['stil', 'valid German word ("style"), common in German descriptions'],
 ]);
 
 async function download(url) {

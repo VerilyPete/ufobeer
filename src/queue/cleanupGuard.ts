@@ -31,10 +31,12 @@ type Tokens = {
 };
 
 const WORD_PATTERN = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu;
-// A word joined to a tag marker or underscore is part of a hashtag, handle or
-// identifier (#fresh_pinapple, pinapple_ipa) and is never edited.
-const TAG_BEFORE_PATTERN = /[#@_]$/;
-const TAG_AFTER_PATTERN = /^_/;
+// Only a word standing alone between spaces, with at most ordinary
+// punctuation or brackets beside it, is correctable. Anything joined to it
+// makes it part of a hashtag, handle, email, URL, path, identifier or
+// compound (#so_pleasent, pleasent@example.com, pleasent-tasting).
+const OPENING_PUNCTUATION = /^[("'“‘[]*$/;
+const CLOSING_PUNCTUATION = /^[)"'”’\].,;:!?]*$/;
 
 function tokenize(text: string): Tokens {
   return {
@@ -45,9 +47,6 @@ function tokenize(text: string): Tokens {
 
 const lookupKey = (word: string): string => word.toLowerCase().replace(/’/g, "'");
 
-// A word absent from a dictionary is not necessarily misspelled ("hoppier",
-// the "Loral" hop, the "tripel" style), so the guard never infers a
-// correction. It accepts only pairs a person has reviewed.
 type CaseShape = 'lower' | 'capitalized' | 'other';
 function caseShape(word: string): CaseShape {
   if (word === word.toLowerCase()) return 'lower';
@@ -56,17 +55,34 @@ function caseShape(word: string): CaseShape {
   return 'other';
 }
 
+function standsAlone(options: {
+  readonly precedingGap: string;
+  readonly followingGap: string;
+  readonly isFirst: boolean;
+  readonly isLast: boolean;
+}): boolean {
+  const before = (options.isFirst ? /(?:^|\s)(\S*)$/ : /\s(\S*)$/).exec(options.precedingGap)?.[1];
+  const after = (options.isLast ? /^(\S*)(?:\s|$)/ : /^(\S*)\s/).exec(options.followingGap)?.[1];
+  return before !== undefined && after !== undefined
+    && OPENING_PUNCTUATION.test(before) && CLOSING_PUNCTUATION.test(after);
+}
+
+// A word absent from a dictionary is not necessarily misspelled ("hoppier",
+// the "Loral" hop, the "tripel" style), so the guard never infers a
+// correction. It accepts only pairs a person has reviewed.
 function isPermittedSpellingFix(options: {
   readonly from: string;
   readonly to: string;
   readonly precedingGap: string;
   readonly followingGap: string;
+  readonly isFirst: boolean;
+  readonly isLast: boolean;
   readonly protectedWords: ReadonlySet<string>;
 }): boolean {
   const { from, to } = options;
   const shape = caseShape(from);
   if (shape === 'other' || caseShape(to) !== shape) return false;
-  if (TAG_BEFORE_PATTERN.test(options.precedingGap) || TAG_AFTER_PATTERN.test(options.followingGap)) return false;
+  if (!standsAlone(options)) return false;
   if (options.protectedWords.has(lookupKey(from))) return false;
   return APPROVED_SPELLING_CORRECTIONS.get(lookupKey(from)) === lookupKey(to);
 }
@@ -82,10 +98,19 @@ export function checkCleanup(options: {
   if (source.words.length !== output.words.length) return { ok: false, rule: 'R1' };
 
   const protectedWords = new Set(
-    options.protectedTerms.flatMap(term => tokenize(term).words.map(lookupKey)),
+    options.protectedTerms
+      .flatMap(term => tokenize(term).words.map(lookupKey))
+      .flatMap(word => [word, word.replace(/'s$/, '')]),
   );
   const changed = source.words
-    .map((from, index) => ({ from, to: output.words[index] ?? '', precedingGap: source.gaps[index] ?? '', followingGap: source.gaps[index + 1] ?? '' }))
+    .map((from, index) => ({
+      from,
+      to: output.words[index] ?? '',
+      precedingGap: source.gaps[index] ?? '',
+      followingGap: source.gaps[index + 1] ?? '',
+      isFirst: index === 0,
+      isLast: index === source.words.length - 1,
+    }))
     .filter(({ from, to }) => from !== to);
   if (!changed.every(edit => isPermittedSpellingFix({ ...edit, protectedWords }))) {
     return { ok: false, rule: 'R2' };

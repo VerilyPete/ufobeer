@@ -11,6 +11,10 @@
  * 3.0 License (https://creativecommons.org/licenses/by-sa/3.0/). This list is
  * released under the same licence.
  *
+ * A pair applies everywhere, so a misspelling that is a real word in any
+ * language beer descriptions use (French "brillant", German "Stil") is
+ * rejected even when it was an English typo where it was found.
+ *
  * Keys are lowercase misspellings; values are lowercase corrections.
  */
 export const APPROVED_SPELLING_CORRECTIONS: ReadonlyMap<string, string> = new Map([
@@ -18,7 +22,6 @@ export const APPROVED_SPELLING_CORRECTIONS: ReadonlyMap<string, string> = new Ma
   ['alchohol', 'alcohol'],
   ['artifical', 'artificial'],
   ['ballanced', 'balanced'],
-  ['brillant', 'brilliant'],
   ['conjuntion', 'conjunction'],
   ['endevour', 'endeavour'],
   ['enought', 'enough'],
@@ -32,5 +35,4 @@ export const APPROVED_SPELLING_CORRECTIONS: ReadonlyMap<string, string> = new Ma
   ['pleasent', 'pleasant'],
   ['proprotions', 'proportions'],
   ['slighty', 'slightly'],
-  ['stil', 'still'],
 ]);
