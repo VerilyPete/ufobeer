@@ -5,9 +5,6 @@
 	// *.workers.dev preview URL so zone-level rules cover all traffic.
 	"workers_dev": false,
 	"compatibility_date": "2025-01-01",
-	"ai": {
-		"binding": "AI"
-	},
 	"analytics_engine_datasets": [
 		{
 			"binding": "ANALYTICS",
@@ -83,8 +80,6 @@
 		"DAILY_ENRICHMENT_LIMIT": "500",
 		"MONTHLY_ENRICHMENT_LIMIT": "2000",
 		"ENRICHMENT_ENABLED": "true",
-		"MAX_CLEANUP_CONCURRENCY": "10",
-		"DAILY_CLEANUP_LIMIT": "1000",
 	},
 	"triggers": {
 		"crons": [
@@ -101,14 +96,12 @@
 	},
 	"limits": {
 		// Lowered from the platform maximum (60000). cpu_ms bills/limits actual
-		// CPU time, not wall-clock time spent awaiting I/O (fetch, the AI
-		// binding, D1, and Queue calls do not count against it) — so the
-		// number should track synchronous work, not request/queue-batch
-		// duration. The heaviest synchronous paths are the cleanup queue
-		// consumer (up to 25 messages/batch, MAX_CLEANUP_CONCURRENCY=10,
-		// per-call AI_TIMEOUT_MS=10_000 in src/queue/cleanupHelpers.ts — the
-		// timeout itself is I/O wait, not CPU) and JSON/Zod validation of
-		// inbound bodies (src/queue/cleanup.ts, src/queue/enrichment.ts).
+		// CPU time, not wall-clock time spent awaiting I/O (fetch, D1, and
+		// Queue calls do not count against it) — so the number should track
+		// synchronous work, not request/queue-batch duration. The heaviest
+		// synchronous paths are the cleanup queue consumer's deterministic
+		// fixes (up to 25 messages/batch, src/queue/cleanup.ts) and JSON/Zod
+		// validation of inbound bodies (src/queue/enrichment.ts).
 		// None of that synchronous work is expected to approach a second of
 		// actual CPU time. 10000 leaves an order of magnitude of headroom
 		// over that expectation while cutting an attacker's worst-case

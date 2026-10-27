@@ -13,11 +13,8 @@ export type Env = {
   // Queue (from Phase 1) - used for enrichment and DLQ replay
   readonly ENRICHMENT_QUEUE: Queue<EnrichmentMessage>;
 
-  // Queue for description cleanup (LLM-based)
+  // Queue for description cleanup
   readonly CLEANUP_QUEUE: Queue<CleanupMessage>;
-
-  // Workers AI binding for description cleanup
-  readonly AI: Ai;
 
   // Analytics Engine (optional - graceful degradation if not configured)
   readonly ANALYTICS?: AnalyticsEngineDataset | undefined;
@@ -40,10 +37,6 @@ export type Env = {
   readonly DAILY_ENRICHMENT_LIMIT?: string | undefined;
   readonly MONTHLY_ENRICHMENT_LIMIT?: string | undefined;
   readonly ENRICHMENT_ENABLED?: string | undefined;
-
-  // Cleanup limits (optional)
-  readonly DAILY_CLEANUP_LIMIT?: string | undefined;
-  readonly MAX_CLEANUP_CONCURRENCY?: string | undefined;
 };
 
 // ============================================================================
@@ -416,15 +409,6 @@ export type TriggerCleanupData = {
   readonly dry_run: boolean;
   /** Present if no beers queued */
   readonly skip_reason?: 'no_eligible_beers' | undefined;
-  /** Quota information */
-  readonly quota: {
-    readonly daily: {
-      readonly used: number;
-      readonly limit: number;
-      readonly remaining: number;
-      readonly projected_after: number;
-    };
-  };
 };
 
 /**

@@ -94,10 +94,6 @@ Health check with quota status.
       "daily_limit": 500,
       "monthly_used": 1200,
       "monthly_limit": 2000
-    },
-    "cleanup": {
-      "daily_used": 100,
-      "daily_limit": 1000
     }
   },
   "rate_limit": {

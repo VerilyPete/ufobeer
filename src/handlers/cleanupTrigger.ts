@@ -143,18 +143,6 @@ async function getPreviewCounts(db: D1Database): Promise<CleanupPreview> {
 }
 
 /**
- * Get current daily quota usage.
- */
-async function getDailyQuotaUsage(db: D1Database): Promise<number> {
-  const parts = new Date().toISOString().split('T');
-  const today = parts[0] ?? '';
-  const result = await db.prepare(
-    `SELECT request_count FROM cleanup_limits WHERE date = ?`
-  ).bind(today).first<{ request_count: number }>();
-  return result?.request_count ?? 0;
-}
-
-/**
  * Query eligible beers based on mode.
  */
 async function queryEligibleBeers(
@@ -281,7 +269,6 @@ export async function handleCleanupTrigger(
 ): Promise<Response> {
   const operationId = `cleanup-trigger-${Date.now()}`;
   const { MAX_LIMIT, DEFAULT_LIMIT, D1_BATCH_SIZE } = CLEANUP_TRIGGER_CONSTANTS;
-  const dailyLimit = parseInt(env.DAILY_CLEANUP_LIMIT || '1000', 10);
 
   try {
     // 1. Read and parse the bounded request body
@@ -327,9 +314,6 @@ export async function handleCleanupTrigger(
       }, { status: 400, headers });
     }
 
-    // 5. Get current quota usage
-    const quotaUsed = await getDailyQuotaUsage(env.DB);
-
     // 6. Query eligible beers
     let beers: BeerRow[];
     let totalCount: number;
@@ -355,38 +339,11 @@ export async function handleCleanupTrigger(
         mode,
         dry_run: dryRun,
         skip_reason: 'no_eligible_beers',
-        quota: {
-          daily: {
-            used: quotaUsed,
-            limit: dailyLimit,
-            remaining: Math.max(0, dailyLimit - quotaUsed),
-            projected_after: quotaUsed,
-          },
-        },
       };
       return Response.json({ success: true, data, requestId: reqCtx.requestId }, { headers });
     }
 
     const remainingCount = Math.max(0, totalCount - beers.length);
-
-    // 7. Check quota before processing (skip for dry run - allows preview)
-    const projectedAfter = quotaUsed + beers.length;
-    if (!dryRun && projectedAfter > dailyLimit) {
-      return errorResponse(
-        `Operation would exceed daily quota. Limit: ${dailyLimit}, Current: ${quotaUsed}, Requested: ${beers.length}`,
-        'QUOTA_EXCEEDED',
-        { requestId: reqCtx.requestId, headers, status: 429, extra: {
-          quota: {
-            daily: {
-              used: quotaUsed,
-              limit: dailyLimit,
-              remaining: Math.max(0, dailyLimit - quotaUsed),
-              requested: beers.length,
-            },
-          },
-        }}
-      );
-    }
 
     // 8. Dry run - return what would happen without making changes
     if (dryRun) {
@@ -397,14 +354,6 @@ export async function handleCleanupTrigger(
         beers_remaining: remainingCount,
         mode,
         dry_run: true,
-        quota: {
-          daily: {
-            used: quotaUsed,
-            limit: dailyLimit,
-            remaining: Math.max(0, dailyLimit - quotaUsed),
-            projected_after: projectedAfter,
-          },
-        },
       };
       return Response.json({ success: true, data, requestId: reqCtx.requestId }, { headers });
     }
@@ -472,7 +421,6 @@ export async function handleCleanupTrigger(
     await updateCooldown(env.DB);
 
     // 13. Build and return response
-    const projectedAfterQueued = quotaUsed + queueResult.queued;
     const data: TriggerCleanupData = {
       operation_id: operationId,
       beers_queued: queueResult.queued,
@@ -480,14 +428,6 @@ export async function handleCleanupTrigger(
       beers_remaining: remainingCount,
       mode,
       dry_run: false,
-      quota: {
-        daily: {
-          used: quotaUsed,
-          limit: dailyLimit,
-          remaining: Math.max(0, dailyLimit - quotaUsed),
-          projected_after: projectedAfterQueued,
-        },
-      },
     };
 
     console.log(JSON.stringify({
