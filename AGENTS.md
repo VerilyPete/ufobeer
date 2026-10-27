@@ -71,7 +71,6 @@ D1 SQLite database. Schema is fully documented in `schema.sql`.
 - `enriched_beers` - Core beer data with ABV and cleaned descriptions
 - `rate_limits` - Per-client request tracking
 - `enrichment_limits` - Daily/monthly Perplexity quota tracking
-- `cleanup_limits` - Unused since cleanup stopped calling a model; to be dropped
 - `dlq_messages` - Failed queue messages for admin inspection
 - `audit_log` - Request audit trail
 - `system_state` - Locks and configuration

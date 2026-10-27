@@ -56,9 +56,3 @@ CREATE TABLE IF NOT EXISTS enrichment_limits (
   request_count INTEGER NOT NULL DEFAULT 0,
   last_updated INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
 );
-
-CREATE TABLE IF NOT EXISTS cleanup_limits (
-  date TEXT PRIMARY KEY,
-  request_count INTEGER NOT NULL DEFAULT 0,
-  last_updated INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
-);

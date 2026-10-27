@@ -3,8 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCleanupBatch } from '../../src/queue/cleanup';
 import type { CleanupMessage, Env } from '../../src/types';
 
-const today = () => new Date().toISOString().split('T')[0] ?? '';
-
 type Beer = { readonly beerName?: string; readonly brewer?: string };
 
 async function seedBeer(id: string, description: string, beer: Beer = {}): Promise<void> {
@@ -104,15 +102,5 @@ describe('description cleanup consumer (real D1)', () => {
   it('stores the sanitized source unchanged when nothing needs fixing', async () => {
     const { row } = await clean('A crisp &amp; dry finish!');
     expect(row).toMatchObject({ brew_description_cleaned: 'A crisp & dry finish!' });
-  });
-
-  it('applies the deterministic fixes however many descriptions were cleaned today', async () => {
-    await env.DB.prepare(
-      'INSERT OR REPLACE INTO cleanup_limits (date, request_count, last_updated) VALUES (?, ?, ?)'
-    ).bind(today(), 1000000, Date.now()).run();
-    const { row, message } = await clean('A pleasent ale');
-
-    expect(row).toEqual({ brew_description_cleaned: 'A pleasant ale.', cleanup_source: 'deterministic', abv: null });
-    expect(message.ack).toHaveBeenCalled();
   });
 });
