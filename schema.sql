@@ -167,9 +167,9 @@ CREATE INDEX IF NOT EXISTS idx_dlq_status_failed_id ON dlq_messages(status, fail
 -- ALTER TABLE enriched_beers ADD COLUMN cleanup_source TEXT;
 
 -- ============================================================================
--- cleanup_limits: Quota tracking for Workers AI cleanup calls
+-- cleanup_limits: Unused. Tracked Workers AI cleanup calls before cleanup
+-- became deterministic; to be dropped in a follow-up migration.
 -- ============================================================================
--- Tracks daily request counts to enforce spending limits on LLM inference
 CREATE TABLE IF NOT EXISTS cleanup_limits (
     date TEXT PRIMARY KEY,          -- "2025-01-15" format
     request_count INTEGER NOT NULL DEFAULT 0,

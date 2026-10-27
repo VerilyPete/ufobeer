@@ -5,24 +5,6 @@
  * the codebase. Each constant includes documentation explaining its purpose.
  */
 
-// =============================================================================
-// AI Cleanup Constants
-// =============================================================================
-
-/**
- * Minimum ratio of cleaned description length to original.
- * Prevents AI from over-summarizing descriptions.
- * Example: If original is 100 chars, cleaned must be at least 70 chars.
- */
-export const MIN_CLEANUP_LENGTH_RATIO = 0.7;
-
-/**
- * Maximum ratio of cleaned description length to original.
- * Prevents AI from adding excessive content.
- * Example: If original is 100 chars, cleaned can be at most 110 chars.
- */
-export const MAX_CLEANUP_LENGTH_RATIO = 1.1;
-
 /**
  * Confidence values indicate ABV source, not quality.
  * - 0.9 = ABV extracted from beer description parsing
@@ -32,12 +14,6 @@ export const MAX_CLEANUP_LENGTH_RATIO = 1.1;
  */
 export const ABV_CONFIDENCE_FROM_DESCRIPTION = 0.9;
 export const ABV_CONFIDENCE_FROM_PERPLEXITY = 0.7;
-/**
- * 0.8 = ABV extracted from the original description when the AI cleanup path
- * was unavailable (quota exceeded / circuit breaker open). Same extraction
- * method as 0.9 but recorded via the fallback path.
- */
-export const ABV_CONFIDENCE_FROM_DESCRIPTION_FALLBACK = 0.8;
 
 // =============================================================================
 // Outbound Fetch Timeouts
@@ -214,19 +190,16 @@ export const CRON_OPERATING_HOUR_END = 23;   // 11pm CT (last poll ~10:40pm)
 // =============================================================================
 
 /**
- * Hard cap on description length before it is assembled into the Workers AI
- * prompt. Applied regardless of source -- request-schema bounds on
+ * Hard cap on description length before cleanup. Applied regardless of
+ * source -- request-schema bounds on
  * brew_description are a client-facing concern (src/schemas/request.ts) and
  * do not constrain descriptions that originate from Flying Saucer. Generous
  * relative to real beer descriptions (a few hundred characters).
  */
-export const MAX_PROMPT_DESCRIPTION_LENGTH = 3000;
+export const MAX_DESCRIPTION_LENGTH = 3000;
 
 /**
- * Absolute cap on cleaned output length, independent of
- * MIN_/MAX_CLEANUP_LENGTH_RATIO. The ratio check alone is not a barrier:
- * an attacker who controls `original` also controls the denominator, so
- * the ratio can be sized to pass any desired output length.
+ * Absolute cap on cleaned output length.
  */
 export const MAX_CLEANED_OUTPUT_LENGTH = 3200;
 

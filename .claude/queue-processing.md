@@ -4,7 +4,7 @@
 
 UFO Beer uses Cloudflare Queues for async processing of two main pipelines:
 1. **Enrichment** - ABV lookup via Perplexity API
-2. **Cleanup** - Description cleaning via Workers AI
+2. **Cleanup** - Deterministic description cleaning (no model call)
 
 Each pipeline has a main queue and a dead letter queue (DLQ).
 
@@ -23,8 +23,8 @@ Each pipeline has a main queue and a dead letter queue (DLQ).
              │                                  │
              ▼                                  ▼
     ┌──────────────────┐              ┌──────────────────┐
-    │ Perplexity API   │              │ Workers AI       │
-    │ (ABV lookup)     │              │ (Llama cleanup)  │
+    │ Perplexity API   │              │ Deterministic    │
+    │ (ABV lookup)     │              │ fixes            │
     └────────┬─────────┘              └────────┬─────────┘
              │                                  │
       ┌──────┴──────┐                   ┌──────┴──────┐
@@ -66,17 +66,15 @@ All queue config is in `wrangler.jsonc`.
   "queue": "description-cleanup",
   "max_batch_size": 25,       // Batch for efficiency
   "max_batch_timeout": 30,
-  "max_retries": 2,           // Fewer retries (Workers AI is reliable)
-  "max_concurrency": 1,       // Parallelism via p-limit internally
+  "max_retries": 2,
+  "max_concurrency": 1,
   "retry_delay": 30,
   "dead_letter_queue": "description-cleanup-dlq"
 }
 ```
 
 **Why these settings:**
-- `max_batch_size: 25` - Workers AI handles batches well
-- `max_concurrency: 1` - Internal parallelism via `p-limit` (MAX_CLEANUP_CONCURRENCY)
-- Uses `p-limit` library for controlled concurrent LLM calls within batch
+- `max_batch_size: 25` - Cleanup is cheap CPU work, so one D1 batch covers 25 descriptions
 
 ### DLQ Consumers
 
@@ -156,22 +154,12 @@ export async function handleCleanupBatch(
   batch: MessageBatch<CleanupMessage>,
   env: Env
 ): Promise<void> {
-  const limit = pLimit(env.MAX_CLEANUP_CONCURRENCY || 10);
-
-  // Process batch with controlled concurrency
-  await Promise.all(
-    batch.messages.map(message =>
-      limit(async () => {
-        try {
-          const cleaned = await cleanDescription(env.AI, message.body);
-          await updateCleanedDescription(env.DB, message.body.beerId, cleaned);
-          message.ack();
-        } catch (error) {
-          message.retry();
-        }
-      })
-    )
-  );
+  // 1. Ack messages with no descriptionHash without writing
+  // 2. Clean each description (applyCleanupFixes) and extract its ABV
+  // 3. One D1 batch, each UPDATE bound to the message's description_hash
+  // 4. Queue beers without an ABV for Perplexity (skipping stale writes
+  //    and blocklisted beers)
+  // 5. Ack every message; a D1 failure retries the whole batch
 }
 ```
 
@@ -194,16 +182,12 @@ Admin can then:
 
 ## Quota Protection
 
-Both pipelines have quota limits to control costs:
+Enrichment has quota limits to control Perplexity costs. Cleanup calls no model, so it has none.
 
 ### Enrichment Quotas
 - `DAILY_ENRICHMENT_LIMIT` (500) - Perplexity calls/day
 - `MONTHLY_ENRICHMENT_LIMIT` (2000) - Perplexity calls/month
 - Tracked in `enrichment_limits` table
-
-### Cleanup Quotas
-- `DAILY_CLEANUP_LIMIT` (1000) - Workers AI calls/day
-- Tracked in `cleanup_limits` table
 
 When quota is exhausted:
 1. Consumer delays message retry (5+ minutes)

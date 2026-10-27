@@ -8,8 +8,6 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  MIN_CLEANUP_LENGTH_RATIO,
-  MAX_CLEANUP_LENGTH_RATIO,
   ABV_CONFIDENCE_FROM_DESCRIPTION,
   ABV_CONFIDENCE_FROM_PERPLEXITY,
   MAX_BEER_ABV,
@@ -22,7 +20,7 @@ import {
   D1_MAX_STATEMENTS_PER_BATCH,
   SYNC_BODY_MAX_BYTES,
   SMALL_JSON_BODY_MAX_BYTES,
-  MAX_PROMPT_DESCRIPTION_LENGTH,
+  MAX_DESCRIPTION_LENGTH,
   MAX_CLEANED_OUTPUT_LENGTH,
   MAX_PROMPT_FIELD_LENGTH,
   MAX_PERPLEXITY_RESPONSE_BYTES,
@@ -38,15 +36,7 @@ import {
 import { SYNC_CONSTANTS } from '../src/types';
 import { BATCH_MAX_IDS, BATCH_ID_MAX_LENGTH } from '../src/schemas/request';
 
-describe('AI cleanup constants', () => {
-  it('should set MIN_CLEANUP_LENGTH_RATIO to 0.7', () => {
-    expect(MIN_CLEANUP_LENGTH_RATIO).toBe(0.7);
-  });
-
-  it('should set MAX_CLEANUP_LENGTH_RATIO to 1.1', () => {
-    expect(MAX_CLEANUP_LENGTH_RATIO).toBe(1.1);
-  });
-
+describe('ABV confidence constants', () => {
   it('should set ABV_CONFIDENCE_FROM_DESCRIPTION to 0.9', () => {
     expect(ABV_CONFIDENCE_FROM_DESCRIPTION).toBe(0.9);
   });
@@ -85,8 +75,8 @@ describe('audit and cleanup constants', () => {
 });
 
 describe('AI cleanup prompt/output bounds', () => {
-  it('should set MAX_PROMPT_DESCRIPTION_LENGTH to 3000', () => {
-    expect(MAX_PROMPT_DESCRIPTION_LENGTH).toBe(3000);
+  it('should set MAX_DESCRIPTION_LENGTH to 3000', () => {
+    expect(MAX_DESCRIPTION_LENGTH).toBe(3000);
   });
 
   it('should set MAX_CLEANED_OUTPUT_LENGTH to 3200', () => {

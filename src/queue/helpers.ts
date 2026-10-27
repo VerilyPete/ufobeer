@@ -102,7 +102,7 @@ export async function queueBeersForEnrichment(
  * Batches messages in chunks of 100 (Cloudflare Queues sendBatch limit).
  * No blocklist filtering — all beers are queued for cleanup. Blocklist
  * filtering for Perplexity forwarding happens downstream in the cleanup
- * queue consumer (buildBatchOperations / handleFallbackBatch).
+ * queue consumer (buildBatchOperations).
  *
  * Every message is stamped with `descriptionHash`, the hash of
  * `brew_description` at enqueue time, so the cleanup consumer can bind its

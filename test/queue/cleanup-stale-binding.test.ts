@@ -14,14 +14,13 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { handleCleanupBatch, handleFallbackBatch } from '../../src/queue/cleanup';
-import { defaultCircuitBreaker } from '../../src/queue/cleanupHelpers';
+import { handleCleanupBatch } from '../../src/queue/cleanup';
 import { queueBeersForCleanup } from '../../src/queue/helpers';
 import { hashDescription } from '../../src/utils/hash';
 import type { Env, CleanupMessage } from '../../src/types';
 
 // ============================================================================
-// Fake D1: an in-memory enriched_beers + cleanup_limits store that actually
+// Fake D1: an in-memory enriched_beers store that actually
 // applies the `WHERE id = ? AND description_hash = ?` gate, so a hash
 // mismatch genuinely reports 0 changes instead of a mock that always
 // succeeds regardless of arguments.
@@ -38,7 +37,6 @@ type PreparedCall = { readonly sql: string; readonly args: unknown[] };
 
 function createFakeD1(initialRows: Record<string, FakeBeerRow>) {
   const rows = new Map<string, FakeBeerRow>(Object.entries(initialRows));
-  let cleanupLimitCount = 0;
 
   function bindArgsFor(sql: string) {
     return (...args: unknown[]): PreparedCall => ({ sql, args });
@@ -46,10 +44,6 @@ function createFakeD1(initialRows: Record<string, FakeBeerRow>) {
 
   function runOne(call: PreparedCall): { success: true; meta: { changes: number } } {
     const { sql, args } = call;
-
-    if (sql.includes('INSERT INTO cleanup_limits')) {
-      return { success: true, meta: { changes: 0 } };
-    }
 
     if (sql.includes('UPDATE enriched_beers')) {
       // Every UPDATE this module issues binds (..., beerId, descriptionHash)
@@ -62,13 +56,14 @@ function createFakeD1(initialRows: Record<string, FakeBeerRow>) {
       }
 
       // Apply the write. Only the columns these tests care about are
-      // modeled; SET clause order matches the source (cleaned, timestamp,
-      // source[, abv]).
+      // modeled; SET clause order matches the source (cleaned, timestamp[,
+      // abv]), and cleanup_source is a literal in the SQL.
+      const source = /cleanup_source = '([^']+)'/.exec(sql)?.[1] ?? null;
       if (sql.includes('abv = ?')) {
-        const [cleaned, , source, abv] = args as [string, number, string | null, number];
+        const [cleaned, , abv] = args as [string, number, number];
         rows.set(beerId, { ...row, brew_description_cleaned: cleaned, cleanup_source: source, abv });
       } else {
-        const [cleaned, , source] = args as [string, number, string | null];
+        const [cleaned] = args as [string];
         rows.set(beerId, { ...row, brew_description_cleaned: cleaned, cleanup_source: source });
       }
       return { success: true, meta: { changes: 1 } };
@@ -79,34 +74,12 @@ function createFakeD1(initialRows: Record<string, FakeBeerRow>) {
 
   const db = {
     prepare: vi.fn().mockImplementation((sql: string) => {
-      if (sql.includes('SELECT request_count FROM cleanup_limits')) {
-        return { bind: vi.fn().mockReturnValue({ first: vi.fn().mockResolvedValue({ request_count: cleanupLimitCount }) }) };
-      }
-      if (sql.includes('UPDATE cleanup_limits') && sql.includes('RETURNING')) {
-        return {
-          bind: vi.fn().mockImplementation((requested: number, dailyLimit: number) => ({
-            first: vi.fn().mockImplementation(() => {
-              if (cleanupLimitCount + requested <= dailyLimit) {
-                cleanupLimitCount += requested;
-              }
-              return Promise.resolve({ new_count: cleanupLimitCount });
-            }),
-          })),
-        };
-      }
-      if (sql.includes('INSERT INTO cleanup_limits')) {
-        return { bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({ success: true }) }) };
-      }
       return { bind: vi.fn().mockImplementation(bindArgsFor(sql)) };
     }),
     batch: vi.fn().mockImplementation(async (statements: PreparedCall[]) => statements.map(runOne)),
   };
 
   return { db: db as unknown as D1Database, rows };
-}
-
-function createMockAI(cleanedResponse: string) {
-  return { run: vi.fn().mockResolvedValue({ response: cleanedResponse }) };
 }
 
 function createMessage(body: CleanupMessage): Message<CleanupMessage> {
@@ -128,32 +101,27 @@ function createBatch(messages: Message<CleanupMessage>[]): MessageBatch<CleanupM
   } as unknown as MessageBatch<CleanupMessage>;
 }
 
-function createEnv(db: D1Database, ai: ReturnType<typeof createMockAI>, dailyLimit = 1000): Env {
+function createEnv(db: D1Database): Env {
   return {
     DB: db,
-    AI: ai as unknown as Ai,
     ENRICHMENT_QUEUE: { sendBatch: vi.fn().mockResolvedValue(undefined) },
     CLEANUP_QUEUE: { sendBatch: vi.fn().mockResolvedValue(undefined) },
-    DAILY_CLEANUP_LIMIT: String(dailyLimit),
-    MAX_CLEANUP_CONCURRENCY: '10',
   } as unknown as Env;
 }
 
 beforeEach(() => {
-  defaultCircuitBreaker.reset();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 describe('consumer-side stale-result binding', () => {
-  it('acks without writing when the message descriptionHash does not match the current row (AI success path)', async () => {
+  it('acks without writing when the message descriptionHash does not match the current row', async () => {
     const description = 'A hoppy IPA from Testville with citrus notes';
     const { db, rows } = createFakeD1({
       'beer-1': { description_hash: 'hash-CURRENT', brew_description_cleaned: null, abv: null, cleanup_source: null },
     });
-    const ai = createMockAI(description);
-    const env = createEnv(db, ai);
+    const env = createEnv(db);
 
     // This message was produced from an older description version --
     // its hash does not match the row's current (post-change) hash.
@@ -177,8 +145,7 @@ describe('consumer-side stale-result binding', () => {
     const { db, rows } = createFakeD1({
       'beer-2': { description_hash: 'hash-match', brew_description_cleaned: null, abv: null, cleanup_source: null },
     });
-    const ai = createMockAI(description);
-    const env = createEnv(db, ai);
+    const env = createEnv(db);
 
     const buildMessage = () => createMessage({
       beerId: 'beer-2',
@@ -208,32 +175,6 @@ describe('consumer-side stale-result binding', () => {
     expect(duplicate.retry).not.toHaveBeenCalled();
   });
 
-  it('acks without writing when a message enqueued before an upstream description change reaches the fallback (quota-exceeded) path', async () => {
-    const description = 'A hoppy IPA from Testville with citrus notes';
-    const { db, rows } = createFakeD1({
-      'beer-3': { description_hash: 'hash-AFTER-CHANGE', brew_description_cleaned: null, abv: null, cleanup_source: null },
-    });
-    const ai = createMockAI(description);
-    // dailyLimit: 0 forces every message through handleFallbackBatch
-    // (quota-exceeded), exercising that UPDATE's hash gate specifically,
-    // distinct from the AI-success path covered above.
-    const env = createEnv(db, ai, 0);
-
-    const message = createMessage({
-      beerId: 'beer-3',
-      beerName: 'Test IPA',
-      brewer: 'Test Brewery',
-      brewDescription: description,
-      descriptionHash: 'hash-BEFORE-CHANGE',
-    });
-
-    await handleCleanupBatch(createBatch([message]), env);
-
-    expect(rows.get('beer-3')!.brew_description_cleaned).toBeNull();
-    expect(message.ack).toHaveBeenCalledOnce();
-    expect(message.retry).not.toHaveBeenCalled();
-  });
-
   it('acks without writing when a DLQ-replayed message is older than the current row', async () => {
     const staleDescription = 'A hoppy IPA (original, pre-edit description)';
     const currentDescription = 'A hoppy IPA (already cleaned by a newer run)';
@@ -246,8 +187,7 @@ describe('consumer-side stale-result binding', () => {
         cleanup_source: 'workers-ai',
       },
     });
-    const ai = createMockAI(staleDescription);
-    const env = createEnv(db, ai);
+    const env = createEnv(db);
 
     // Simulates handlers/dlq.ts replaying a dlq_messages.raw_message that
     // was captured (and failed) back when the row was still at hash-v1.
@@ -275,8 +215,7 @@ describe('consumer-side stale-result binding', () => {
     const { db, rows } = createFakeD1({
       'beer-5': { description_hash: 'hash-CURRENT', brew_description_cleaned: null, abv: null, cleanup_source: null },
     });
-    const ai = createMockAI(description);
-    const env = createEnv(db, ai);
+    const env = createEnv(db);
 
     const message = createMessage({
       beerId: 'beer-5',
@@ -291,11 +230,10 @@ describe('consumer-side stale-result binding', () => {
     expect(rows.get('beer-5')!.brew_description_cleaned).toBeNull();
     expect(message.ack).toHaveBeenCalledOnce();
     expect(message.retry).not.toHaveBeenCalled();
-    expect(ai.run).not.toHaveBeenCalled();
   });
 });
 
-describe('handleFallbackBatch stale-result binding (unit level)', () => {
+describe('Perplexity forwarding after a stale write', () => {
   it('does not enqueue Perplexity work for a beer whose write was stale', async () => {
     const { db, rows } = createFakeD1({
       'beer-6': { description_hash: 'hash-CURRENT', brew_description_cleaned: null, abv: null, cleanup_source: null },
@@ -314,7 +252,7 @@ describe('handleFallbackBatch stale-result binding (unit level)', () => {
       descriptionHash: 'hash-STALE',
     });
 
-    await handleFallbackBatch(env, [message], 'fallback-quota-exceeded');
+    await handleCleanupBatch(createBatch([message]), env);
 
     expect(rows.get('beer-6')!.brew_description_cleaned).toBeNull();
     expect(sendBatch).not.toHaveBeenCalled();
@@ -336,7 +274,6 @@ describe('producer -> consumer seam (queueBeersForCleanup -> handleCleanupBatch)
     const { db, rows } = createFakeD1({
       'beer-7': { description_hash: currentHash, brew_description_cleaned: null, abv: null, cleanup_source: null },
     });
-    const ai = createMockAI(description);
 
     // The producer side (src/handlers/beers.ts, src/db/helpers.ts -- not
     // owned by this test) calls queueBeersForCleanup with the same
@@ -369,7 +306,7 @@ describe('producer -> consumer seam (queueBeersForCleanup -> handleCleanupBatch)
     // Feed the exact message the producer sent onto the queue into the
     // consumer, as Cloudflare Queues would deliver it.
     const deliveredMessage = createMessage(capturedMessages[0]!.body);
-    const consumerEnv = createEnv(db, ai);
+    const consumerEnv = createEnv(db);
 
     await handleCleanupBatch(createBatch([deliveredMessage]), consumerEnv);
 
@@ -388,7 +325,6 @@ describe('producer -> consumer seam (queueBeersForCleanup -> handleCleanupBatch)
     const { db, rows } = createFakeD1({
       'beer-8': { description_hash: currentHash, brew_description_cleaned: null, abv: null, cleanup_source: null },
     });
-    const ai = createMockAI(description);
 
     let capturedMessages: Array<{ body: CleanupMessage }> = [];
     const producerEnv = {
@@ -409,32 +345,27 @@ describe('producer -> consumer seam (queueBeersForCleanup -> handleCleanupBatch)
     expect(capturedMessages[0]!.body.descriptionHash).toBeDefined();
 
     const deliveredMessage = createMessage(capturedMessages[0]!.body);
-    await handleCleanupBatch(createBatch([deliveredMessage]), createEnv(db, ai));
+    await handleCleanupBatch(createBatch([deliveredMessage]), createEnv(db));
 
     // If the in-flight-drop path had fired, the row would stay unwritten.
     expect(rows.get('beer-8')!.brew_description_cleaned).toBe(`${description}.`);
   });
 });
 
-describe('deterministic cleanup and honest fallback metrics', () => {
+describe('deterministic cleanup', () => {
   const raw = "Refreshing Seltzer from Untitled Art\\'s Florida Seltzers with navel oranged and Yuzu\\r\\n";
   const sanitized = "Refreshing Seltzer from Untitled Art's Florida Seltzers with navel oranged and Yuzu";
 
-  it.each([
-    ['within quota', 1000, `${sanitized}.`, 'deterministic'],
-    ['over quota', 0, sanitized, 'fallback-quota-exceeded'],
-  ])('cleans escaped source text %s without calling the model', async (_case, dailyLimit, expected, source) => {
+  it('cleans escaped source text', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const hash = await hashDescription(raw);
     const { db, rows } = createFakeD1({
       '19995947': { description_hash: hash, brew_description_cleaned: null, abv: null, cleanup_source: null },
     });
-    const ai = createMockAI('Invented model text.');
     const msg = createMessage({ beerId: '19995947', beerName: 'Florida Seltzer', brewer: 'Untitled Art', brewDescription: raw, descriptionHash: hash });
-    await handleCleanupBatch(createBatch([msg]), createEnv(db, ai, dailyLimit));
-    expect(rows.get('19995947')).toMatchObject({ brew_description_cleaned: expected, abv: null, cleanup_source: source });
+    await handleCleanupBatch(createBatch([msg]), createEnv(db));
+    expect(rows.get('19995947')).toMatchObject({ brew_description_cleaned: `${sanitized}.`, abv: null, cleanup_source: 'deterministic' });
     expect(msg.ack).toHaveBeenCalledOnce();
-    expect(ai.run).not.toHaveBeenCalled();
   });
 
   it('decodes entities and separates HTML blocks without changing source ABV', async () => {
@@ -443,9 +374,8 @@ describe('deterministic cleanup and honest fallback metrics', () => {
     const { db, rows } = createFakeD1({
       beer: { description_hash: hash, brew_description_cleaned: null, abv: null, cleanup_source: null },
     });
-    const ai = createMockAI('invented '.repeat(300));
     const msg = createMessage({ beerId: 'beer', beerName: 'Beer', brewer: 'Brewer', brewDescription: raw, descriptionHash: hash });
-    await handleCleanupBatch(createBatch([msg]), createEnv(db, ai));
+    await handleCleanupBatch(createBatch([msg]), createEnv(db));
     expect(rows.get('beer')?.brew_description_cleaned).toBe("Brewer's & citrus 5.5% ABV bright.");
     expect(rows.get('beer')?.abv).toBe(5.5);
   });

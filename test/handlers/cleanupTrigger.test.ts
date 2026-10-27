@@ -38,11 +38,9 @@ interface MockBeer {
 
 function createMockEnv(options: {
   beers?: MockBeer[];
-  dailyUsed?: number;
   lastCooldownRun?: number | null;
 }): Env {
   const beers = options.beers || [];
-  const dailyUsed = options.dailyUsed || 0;
   const lastCooldownRun = options.lastCooldownRun ?? null;
 
   const mockPrepare = vi.fn().mockImplementation((sql: string) => {
@@ -62,15 +60,6 @@ function createMockEnv(options: {
       return {
         bind: vi.fn().mockReturnValue({
           run: vi.fn().mockResolvedValue({ success: true }),
-        }),
-      };
-    }
-
-    // Quota check (SELECT from cleanup_limits)
-    if (sql.includes('cleanup_limits')) {
-      return {
-        bind: vi.fn().mockReturnValue({
-          first: vi.fn().mockResolvedValue({ request_count: dailyUsed }),
         }),
       };
     }
@@ -136,7 +125,6 @@ function createMockEnv(options: {
     CLEANUP_QUEUE: {
       sendBatch: vi.fn().mockResolvedValue({ successful: true }),
     } as unknown as Queue,
-    DAILY_CLEANUP_LIMIT: '1000',
   } as unknown as Env;
 }
 
@@ -593,128 +581,37 @@ describe('handleCleanupTrigger', () => {
   // Quota Tests
   // --------------------------------------------------------------------------
 
-  describe('quota', () => {
-    it('includes projected_after in response', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-        ],
-        dailyUsed: 100,
-      });
-      const request = createMockRequest({ mode: 'missing', dry_run: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { quota: { daily: { projected_after: number } } } };
-
-      expect(body.data.quota.daily.projected_after).toBe(101); // 100 + 1 beer
-    });
-
-    it('shows current usage correctly', async () => {
-      const env = createMockEnv({
-        beers: [],
-        dailyUsed: 500,
-      });
-      const request = createMockRequest({ mode: 'missing' });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { quota: { daily: { used: number; remaining: number } } } };
-
-      expect(body.data.quota.daily.used).toBe(500);
-      expect(body.data.quota.daily.remaining).toBe(500); // 1000 - 500
-    });
-
-    it('returns QUOTA_EXCEEDED when operation would exceed daily limit', async () => {
+  describe('no daily limit', () => {
+    it('queues every eligible beer with no daily limit', async () => {
       const env = createMockEnv({
         beers: [
           { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
           { id: '2', brew_name: 'Beer 2', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-          { id: '3', brew_name: 'Beer 3', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
         ],
-        dailyUsed: 999, // 999 used, 3 beers requested = 1002 > 1000 limit
       });
       const request = createMockRequest({ mode: 'missing' });
       const ctx = createMockContext();
 
       const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as {
-        success: boolean;
-        error: { code: string; message: string };
-        quota: { daily: { used: number; limit: number; remaining: number; requested: number } };
-      };
-
-      expect(response.status).toBe(429);
-      expect(body.success).toBe(false);
-      expect(body.error.code).toBe('QUOTA_EXCEEDED');
-      expect(body.error.message).toContain('Operation would exceed daily quota');
-      expect(body.quota.daily.used).toBe(999);
-      expect(body.quota.daily.limit).toBe(1000);
-      expect(body.quota.daily.remaining).toBe(1);
-      expect(body.quota.daily.requested).toBe(3);
-    });
-
-    it('allows operation when exactly at limit', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-        ],
-        dailyUsed: 999, // 999 used, 1 beer requested = 1000 = limit (allowed)
-      });
-      const request = createMockRequest({ mode: 'missing' });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { success: boolean };
+      const body = await response.json() as { success: boolean; data: Record<string, unknown> };
 
       expect(response.status).toBe(200);
       expect(body.success).toBe(true);
+      const [, queuedBeers] = vi.mocked(queueBeersForCleanup).mock.calls[0]!;
+      expect(queuedBeers).toHaveLength(2);
+      expect(body.data).not.toHaveProperty('quota');
     });
 
-    it('dry_run bypasses quota enforcement and shows preview', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-          { id: '2', brew_name: 'Beer 2', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-          { id: '3', brew_name: 'Beer 3', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-        ],
-        dailyUsed: 999, // Would exceed limit, but dry_run should still work
-      });
-      const request = createMockRequest({ mode: 'missing', dry_run: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as {
-        success: boolean;
-        data: {
-          beers_queued: number;
-          dry_run: boolean;
-          quota: { daily: { projected_after: number } };
-        };
-      };
-
-      expect(response.status).toBe(200);
-      expect(body.success).toBe(true);
-      expect(body.data.dry_run).toBe(true);
-      expect(body.data.beers_queued).toBe(3);
-      expect(body.data.quota.daily.projected_after).toBe(1002); // 999 + 3 = 1002 (over limit but shown in preview)
-    });
-
-    it('blocks when quota already exceeded before operation', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-        ],
-        dailyUsed: 1000, // Already at limit
-      });
+    it('reports no quota when nothing is eligible', async () => {
+      const env = createMockEnv({ beers: [] });
       const request = createMockRequest({ mode: 'missing' });
       const ctx = createMockContext();
 
       const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { success: boolean; error: { code: string } };
+      const body = await response.json() as { data: Record<string, unknown> };
 
-      expect(response.status).toBe(429);
-      expect(body.error.code).toBe('QUOTA_EXCEEDED');
+      expect(body.data['skip_reason']).toBe('no_eligible_beers');
+      expect(body.data).not.toHaveProperty('quota');
     });
   });
 
