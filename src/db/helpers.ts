@@ -250,41 +250,39 @@ export function categorizeBeer(
  * Extract ABV percentage from beer description HTML.
  * Returns null if no valid ABV found.
  *
- * Supports two patterns:
- * 1. Percentage notation: "5.2%" or "8%"
- * 2. ABV keyword: "5.2 ABV", "ABV 5.2", "ABV: 5.2"
+ * Prefers a number labelled as alcohol anywhere in the text, so ingredient
+ * percentages ("100% agave", "10% oats") ahead of the ABV cannot hide or
+ * replace it:
+ * 1. Number then label: "5.2% ABV", "11.3 percent alcohol", "5.2 ABV"
+ * 2. Label then number: "ABV: 5.2", "ABV 5.2%"
+ * 3. Otherwise the first bare percentage: "5.2%" or "8%"
  *
- * Max 20% to filter out unrelated percentages.
+ * Labelled values up to 30% are accepted (strong ales are printed as
+ * "21% abv"); a bare percentage above 20% is treated as unrelated.
  */
 export function extractABV(description: string | undefined): number | null {
   if (!description) return null;
 
-  // Strip HTML tags to get plain text
   const plainText = description.replace(/<[^>]*>/g, '');
 
-  // Pattern 1: Look for percentage pattern (e.g., "5.2%" or "8%")
-  // Max 20% - higher values are likely unrelated percentages (e.g., "100% satisfaction")
+  const labelled = [
+    /\b(\d+(?:\.\d+)?)\s*(?:%|percent\b|per cent\b)?\s*(?:ABV\b|alc\b|alcohol\b)/gi,
+    /\bABV[:\s]*(\d+(?:\.\d+)?)/gi,
+  ];
+  for (const pattern of labelled) {
+    for (const match of plainText.matchAll(pattern)) {
+      const abv = parseFloat(match[1] ?? '');
+      if (!isNaN(abv) && abv >= 0 && abv <= 30) {
+        return abv;
+      }
+    }
+  }
+
   const percentageMatch = plainText.match(/\b(\d+(?:\.\d+)?)\s*%/);
   if (percentageMatch && percentageMatch[1]) {
     const abv = parseFloat(percentageMatch[1]);
     if (!isNaN(abv) && abv >= 0 && abv <= 20) {
       return abv;
-    }
-  }
-
-  // Pattern 2: Look for "ABV" near a number (e.g., "5.2 ABV", "ABV 5.2", "ABV: 5.2")
-  // Max 20% - higher values are implausible for beer, let Perplexity handle those
-  const abvPattern = /(?:ABV[:\s]*\b(\d+(?:\.\d+)?)|\b(\d+(?:\.\d+)?)\s*ABV)/i;
-  const abvMatch = plainText.match(abvPattern);
-
-  if (abvMatch) {
-    // Match could be in group 1 (ABV first) or group 2 (number first)
-    const abvString = abvMatch[1] ?? abvMatch[2];
-    if (abvString) {
-      const abv = parseFloat(abvString);
-      if (!isNaN(abv) && abv >= 0 && abv <= 20) {
-        return abv;
-      }
     }
   }
 
