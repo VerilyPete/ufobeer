@@ -8,11 +8,11 @@
  *
  * Rules (see plans/pr44-review-fixes.md):
  * - R1: the word sequence is unchanged — no word added, removed, merged or split
- * - R2: a changed word must be a permitted spelling fix
+ * - R2: a changed word must be an approved misspelling -> correction pair
  * - R3: a changed gap between words must be a permitted punctuation fix
  */
 
-import { ENGLISH_WORDS } from './dictionary/englishWords.generated';
+import { SPELLING_CORRECTIONS } from './dictionary/spellingCorrections.generated';
 import { BEER_TERMS } from './dictionary/beerTerms';
 
 export type CleanupEdit = {
@@ -43,12 +43,20 @@ function tokenize(text: string): Tokens {
 
 const lookupKey = (word: string): string => word.toLowerCase().replace(/’/g, "'");
 
-// Built on first use: splitting ~90k words costs a few milliseconds, paid
-// once per isolate rather than at module load for every request.
-let knownWords: ReadonlySet<string> | undefined;
-function isKnownWord(word: string): boolean {
-  knownWords ??= new Set([...ENGLISH_WORDS.split('\n'), ...BEER_TERMS]);
-  return knownWords.has(lookupKey(word));
+// A word absent from a dictionary is not necessarily misspelled ("hoppier",
+// the "Loral" hop), so the guard never infers a correction. It accepts only
+// pairs from an approved list whose misspellings are not real words; see
+// scripts/generate-spelling-corrections.mjs. Beer vocabulary is excluded
+// again here because the general list does not know it ("tripel").
+// Built on first use, once per isolate.
+let corrections: ReadonlyMap<string, string> | undefined;
+function approvedCorrection(misspelling: string): string | undefined {
+  corrections ??= new Map(
+    SPELLING_CORRECTIONS.split('\n')
+      .map(line => line.split(' '))
+      .flatMap(([from, to]): [string, string][] => (from && to && !BEER_TERMS.includes(from) ? [[from, to]] : [])),
+  );
+  return corrections.get(misspelling);
 }
 
 type CaseShape = 'lower' | 'capitalized' | 'other';
@@ -57,23 +65,6 @@ function caseShape(word: string): CaseShape {
   const rest = word.slice(1);
   if (word[0] === word[0]?.toUpperCase() && rest === rest.toLowerCase()) return 'capitalized';
   return 'other';
-}
-
-const removeAt = (word: string, index: number): string => word.slice(0, index) + word.slice(index + 1);
-
-// True when b is one insertion, deletion, substitution or adjacent
-// transposition away from a.
-function isOneEditApart(a: string, b: string): boolean {
-  if (Math.abs(a.length - b.length) > 1 || a === b) return false;
-  const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
-  if (shorter.length !== longer.length) {
-    return [...longer].some((_, index) => removeAt(longer, index) === shorter);
-  }
-  const mismatches = [...a].flatMap((char, index) => (char === b.charAt(index) ? [] : [index]));
-  if (mismatches.length === 1) return true;
-  const [first, second] = mismatches;
-  return mismatches.length === 2 && first !== undefined && second === first + 1
-    && a.charAt(first) === b.charAt(second) && a.charAt(second) === b.charAt(first);
 }
 
 function isPermittedSpellingFix(options: {
@@ -87,9 +78,7 @@ function isPermittedSpellingFix(options: {
   if (shape === 'other' || caseShape(to) !== shape) return false;
   if (TAG_PREFIX_PATTERN.test(options.precedingGap)) return false;
   if (options.protectedWords.has(lookupKey(from))) return false;
-  if (lookupKey(from)[0] !== lookupKey(to)[0]) return false;
-  if (isKnownWord(from) || !isKnownWord(to)) return false;
-  return isOneEditApart(lookupKey(from), lookupKey(to));
+  return approvedCorrection(lookupKey(from)) === lookupKey(to);
 }
 
 export function checkCleanup(options: {

@@ -45,10 +45,10 @@ describe('cleanup guard: spelling fixes (R2)', () => {
   it.each([
     ['teh', 'the'],
     ['recieve', 'receive'],
-    ['hopy', 'hoppy'],
-    ['Teh', 'The'],
     ['pinapple', 'pineapple'],
-  ])('accepts %s -> %s and reports the edit', (from, to) => {
+    ['seperate', 'separate'],
+    ['Teh', 'The'],
+  ])('accepts the approved correction %s -> %s and reports the edit', (from, to) => {
     expect(spelling(from, to)).toEqual({ ok: true, edits: [{ from, to }] });
   });
 
@@ -56,24 +56,34 @@ describe('cleanup guard: spelling fixes (R2)', () => {
     ['a real word swapped for another', 'dank', 'dark'],
     ['a real word swapped for another', 'form', 'from'],
     ['a real word inflected', 'crisp', 'crispy'],
-    ['a beer term swapped for a real word', 'Sabro', 'Sabre'],
-    ['an all-caps word', 'DIPA', 'DIPS'],
-    ['a changed first letter', 'hte', 'the'],
-    ['a fix that is not a dictionary word', 'hopy', 'hopyy'],
-    ['an edit distance above one', 'recieveing', 'receiving'],
+    ['a beer word missing from the dictionary', 'hoppier', 'happier'],
+    ['a hop variety', 'Loral', 'Local'],
+    ['a beer style that looks like a misspelling', 'tripel', 'triple'],
+    ['a plausible fix that is not an approved pair', 'hopy', 'hoppy'],
+    ['an all-caps word', 'TEH', 'THE'],
     ['a capitalization change', 'teh', 'The'],
   ])('rejects %s (%s -> %s)', (_case, from, to) => {
     expect(spelling(from, to)).toEqual({ ok: false, rule: 'R2' });
   });
 
   it('rejects a fix to a word in the beer name or brewer', () => {
-    expect(spelling('Hopsy', 'Hoppy', ['Hopsy Turvy', 'Great Heights'])).toEqual({ ok: false, rule: 'R2' });
-    expect(spelling('Hopsy', 'Hoppy')).toEqual({ ok: true, edits: [{ from: 'Hopsy', to: 'Hoppy' }] });
+    expect(spelling('Pinapple', 'Pineapple', ['Pinapple Express', 'Great Heights'])).toEqual({ ok: false, rule: 'R2' });
+    expect(spelling('Pinapple', 'Pineapple')).toEqual({ ok: true, edits: [{ from: 'Pinapple', to: 'Pineapple' }] });
   });
 
   it('rejects a fix inside a hashtag or handle', () => {
-    expect(check('Tag #hoppy now', { source: 'Tag #hopy now' })).toEqual({ ok: false, rule: 'R2' });
-    expect(check('Tag @hoppy now', { source: 'Tag @hopy now' })).toEqual({ ok: false, rule: 'R2' });
+    expect(check('Tag #the now', { source: 'Tag #teh now' })).toEqual({ ok: false, rule: 'R2' });
+    expect(check('Tag @the now', { source: 'Tag @teh now' })).toEqual({ ok: false, rule: 'R2' });
+  });
+
+  it.each([
+    ['a possessive of a protected name', "Loral's aroma.", "Local's aroma.", ['Loral']],
+    ['a possessive with a curly apostrophe', 'Loral’s aroma.', 'Local’s aroma.', ['Loral']],
+    ['a word containing digits', 'Contains co2.', 'Contains cow.', []],
+    ['a chemical formula', 'Pure H2 here.', 'Pure He here.', []],
+    ['a non-ASCII letter that hides an extra edit', 'A t𐐨 finish.', 'A the finish.', []],
+  ])('rejects %s', (_case, from, to, protectedTerms) => {
+    expect(check(to, { source: from, protectedTerms })).toEqual({ ok: false, rule: 'R2' });
   });
 
   it('rejects reordered words even when each is a real word', () => {
