@@ -43,6 +43,52 @@ describe('extractABV', () => {
     expect(extractABV(description)).toBe(expected);
   });
 
+  it.each([
+    ['Made with 100% agave. Alcohol: 4.0%', 4],
+    ['Made with 100% agave. 4.0%&nbsp;ABV', 4],
+    ['Made with 100% agave. ABV - 4.0%', 4],
+  ])('reads common label formatting in %j', (description, expected) => {
+    expect(extractABV(description)).toBe(expected);
+  });
+
+  it.each([
+    ['to help create a balanced beer.11.8% abv.', 11.8],
+    ['overall hop intensity.6.8%ABV', 6.8],
+    ['unfiltered and hazy6.4% ABV', 6.4],
+  ])('reads an ABV run into the preceding text in %j', (description, expected) => {
+    expect(extractABV(description)).toBe(expected);
+  });
+
+  it('reads the labelled ABV rather than a percentage range', () => {
+    expect(extractABV('this beer lacks the 13-15% saison normally blended in. 5.5% ABV')).toBe(5.5);
+  });
+
+  it.each([
+    'IBU: 20 ABV: 5.2%',
+    'IBU: 20 ABV: 5.2',
+    'IBU: 20 ABV - 5.2',
+  ])('reads the ABV rather than an IBU printed just before the label in %j', (description) => {
+    expect(extractABV(description)).toBe(5.2);
+  });
+
+  it.each([
+    'ABV: 5.2%. Brewed with 10% alcohol-free beer.',
+    'ABV: 5.2%. Brewed with 10% alcohol–free beer.',
+    'ABV: 5.2%. Brewed with 10% alcohol  free beer.',
+  ])('does not treat an alcohol-free ingredient as the ABV label in %j', (description) => {
+    expect(extractABV(description)).toBe(5.2);
+  });
+
+  it.each([
+    'Contains .5 percent alcohol.',
+    'Contains 5,2 percent alcohol.',
+    'Non-alcoholic beer (.5 percent alcohol).',
+    'ABV: 5,2%',
+    'ABV: 0,5%',
+  ])('does not read a fragment of a decimal in %j as a whole ABV', (description) => {
+    expect(extractABV(description)).toBeNull();
+  });
+
   it('ignores an ingredient percentage that is not labelled as alcohol', () => {
     expect(extractABV('This blend uses Merlot (55%), Grenache Noir (35%), and Syrah (10%) grapes')).toBeNull();
   });

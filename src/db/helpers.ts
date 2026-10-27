@@ -252,10 +252,11 @@ export function categorizeBeer(
  *
  * Prefers a number labelled as alcohol anywhere in the text, so ingredient
  * percentages ("100% agave", "10% oats") ahead of the ABV cannot hide or
- * replace it:
- * 1. Number then label: "5.2% ABV", "11.3 percent alcohol", "5.2 ABV"
- * 2. Label then number: "ABV: 5.2", "ABV 5.2%"
- * 3. Otherwise the first bare percentage: "5.2%" or "8%"
+ * replace it. Strongest form first:
+ * 1. Percentage then label: "5.2% ABV", "11.3 percent alcohol"
+ * 2. Label then percentage: "ABV: 5.2%", "Alcohol: 4.0%", "ABV - 4.0%"
+ * 3. Bare number beside ABV: "ABV 5.2", then "5.2 ABV"
+ * 4. Otherwise the first bare percentage: "5.2%" or "8%"
  *
  * Labelled values up to 30% are accepted (strong ales are printed as
  * "21% abv"); a bare percentage above 20% is treated as unrelated.
@@ -263,11 +264,18 @@ export function categorizeBeer(
 export function extractABV(description: string | undefined): number | null {
   if (!description) return null;
 
-  const plainText = description.replace(/<[^>]*>/g, '');
+  const plainText = description.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ');
 
+  // A number must be a whole token: ".5", "5,2" and "0,5" never read as 5, 2 or 0.
+  // A sentence-ending period does not count: "balanced beer.11.8% abv" is 11.8.
+  const num = String.raw`(?<!\d)(?<!(?:^|[^A-Za-z])[.,])(\d+(?:\.\d+)?)(?![.,]\d)`;
+  const percent = String.raw`(?:%|percent\b|per cent\b)`;
+  const label = String.raw`(?:ABV\b|alc\b|alcohol\b(?![\s\-–—]*free))`;
   const labelled = [
-    /\b(\d+(?:\.\d+)?)\s*(?:%|percent\b|per cent\b)?\s*(?:ABV\b|alc\b|alcohol\b)/gi,
-    /\bABV[:\s]*(\d+(?:\.\d+)?)/gi,
+    new RegExp(String.raw`${num}\s*${percent}\s*${label}`, 'gi'),
+    new RegExp(String.raw`${label}[:\s\-–]*${num}\s*${percent}`, 'gi'),
+    new RegExp(String.raw`\bABV[:\s\-–]*${num}`, 'gi'),
+    new RegExp(String.raw`${num}\s*ABV\b`, 'gi'),
   ];
   for (const pattern of labelled) {
     for (const match of plainText.matchAll(pattern)) {
@@ -278,7 +286,7 @@ export function extractABV(description: string | undefined): number | null {
     }
   }
 
-  const percentageMatch = plainText.match(/\b(\d+(?:\.\d+)?)\s*%/);
+  const percentageMatch = plainText.match(new RegExp(String.raw`${num}\s*%`));
   if (percentageMatch && percentageMatch[1]) {
     const abv = parseFloat(percentageMatch[1]);
     if (!isNaN(abv) && abv >= 0 && abv <= 20) {
