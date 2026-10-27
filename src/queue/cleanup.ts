@@ -373,11 +373,14 @@ const RESPONSE_PREFIXES = [
  */
 function stripResponsePrefixes(text: string): string {
   let result = text.trim();
+  // Models sometimes quote or emphasize the preamble. Normalize only the
+  // candidate prefix; preserve source text when no known preamble matches.
+  const candidate = result.replace(/^(?:>\s*)+/, '').replace(/^(?:\*\*|__)/, '');
 
   // Strip known prefixes
   for (const prefix of RESPONSE_PREFIXES) {
-    if (result.toLowerCase().startsWith(prefix.toLowerCase())) {
-      result = result.slice(prefix.length);
+    if (candidate.toLowerCase().startsWith(prefix.toLowerCase())) {
+      result = candidate.slice(prefix.length).replace(/^(?:\*\*|__)/, '');
       break;
     }
   }
@@ -476,6 +479,15 @@ async function cleanDescriptionSafely(
     return fallback;
   }
 
+  // This service removes formatting, not content. An allowlist of preambles
+  // cannot cover arbitrary model commentary. Require the normalized source
+  // verbatim: this also rejects invented facts, suffixes and subtle rewrites.
+  const normalizedOutput = sanitizeFallbackDescription(cleaned);
+  if (normalizedOutput !== boundedOriginal) {
+    console.warn('[cleanup] Model changed source content, using deterministic cleanup');
+    return fallback;
+  }
+
   // AI cleanup successful. Do NOT derive a persisted ABV from model output
   // when the source text contained none: an injection that fabricates an
   // ABV in a description with none passes both checks above (the ABV
@@ -483,7 +495,7 @@ async function cleanDescriptionSafely(
   // string is easily within the length ratio), so this must be enforced
   // explicitly rather than trusting cleanedAbv.
   return {
-    cleaned: sanitizeFallbackDescription(cleaned),
+    cleaned: normalizedOutput,
     usedOriginal: false,
     extractedABV: originalAbv === null ? null : cleanedAbv,
   };

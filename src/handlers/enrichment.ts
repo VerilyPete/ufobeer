@@ -17,7 +17,7 @@ import { shouldSkipEnrichment } from '../config';
 import { errorResponse } from '../context';
 import { getToday, getMonthEnd } from '../utils/date';
 import { readBoundedJson, boundedJsonErrorResponse } from '../utils/body';
-import { SMALL_JSON_BODY_MAX_BYTES } from '../constants';
+import { SMALL_JSON_BODY_MAX_BYTES, ABV_LOOKUP_MISS_RETRY_MS, ABV_LOOKUP_RECENTLY_SEEN_MS } from '../constants';
 import {
   TriggerEnrichmentRequestSchema,
 } from '../schemas/request';
@@ -48,10 +48,16 @@ export async function selectAndQueuePendingEnrichment(
   env: Env,
   options: { limit: number; excludeFailures?: boolean }
 ): Promise<QueuePendingResult> {
+  // A provider's explicit unknown is a temporary lookup miss, not a permanent
+  // exclusion. Revisit only recently seen beers, at most once per day, through
+  // the existing quota-checked queue path. Never retry on each client refresh.
+  const now = Date.now();
+  const missCutoff = now - ABV_LOOKUP_MISS_RETRY_MS;
+  const seenCutoff = now - ABV_LOOKUP_RECENTLY_SEEN_MS;
   let query = `
-    SELECT id, brew_name, brewer, description_hash
+    SELECT id, brew_name, brewer, description_hash, enrichment_status
     FROM enriched_beers
-    WHERE enrichment_status = 'pending'
+    WHERE (enrichment_status = 'pending' OR (enrichment_status = 'not_found' AND abv IS NULL AND updated_at <= ${missCutoff} AND last_seen_at >= ${seenCutoff}))
   `;
   if (options.excludeFailures) {
     query += `
@@ -64,16 +70,31 @@ export async function selectAndQueuePendingEnrichment(
 
   const beersToEnrich = await env.DB.prepare(query)
     .bind(options.limit)
-    .all<{ id: string; brew_name: string; brewer: string; description_hash: string | null }>();
+    .all<{ id: string; brew_name: string; brewer: string; description_hash: string | null; enrichment_status?: string }>();
 
   if (!beersToEnrich.results || beersToEnrich.results.length === 0) {
     return { beersQueued: 0, blocklistedMarked: 0, noEligibleBeers: true };
   }
 
   // Filter out blocklisted items (flights, mixed drinks, etc.)
-  const eligibleBeers = beersToEnrich.results.filter(
+  const candidates = beersToEnrich.results.filter(
     beer => !shouldSkipEnrichment(beer.brew_name)
   );
+
+  const eligibleBeers = [];
+  for (const beer of candidates) {
+    if (beer.enrichment_status === 'not_found') {
+      // Atomic claim: concurrent sweeps or a newly enriched row cannot be
+      // overwritten. A send failure leaves pending work recoverable next pass.
+      const claim = await env.DB.prepare(`UPDATE enriched_beers
+        SET enrichment_status = 'pending', updated_at = ?
+        WHERE id = ? AND enrichment_status = 'not_found' AND abv IS NULL
+          AND updated_at <= ? AND last_seen_at >= ? AND description_hash IS ?`)
+        .bind(now, beer.id, missCutoff, seenCutoff, beer.description_hash).run();
+      if (claim.meta?.changes !== 1) continue;
+    }
+    eligibleBeers.push(beer);
+  }
 
   if (eligibleBeers.length === 0) {
     return { beersQueued: 0, blocklistedMarked: 0, noEligibleBeers: true };
