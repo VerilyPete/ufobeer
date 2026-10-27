@@ -36,8 +36,8 @@ describe('cleanup guard: word sequence (R1)', () => {
     expect(check("Fireman s 4 is bigger than you d expect.", { source: withApostrophes })).toEqual({ ok: false, rule: 'R1' });
   });
 
-  it('rejects any changed punctuation until punctuation fixes are permitted', () => {
-    expect(check('Pours a bright, clear golden yellow! Nose is pineapple and citrus zest.').ok).toBe(false);
+  it('rejects changed punctuation that is not a permitted fix', () => {
+    expect(check('Pours a bright, clear golden yellow! Nose is pineapple and citrus zest.')).toEqual({ ok: false, rule: 'R3' });
   });
 });
 
@@ -136,5 +136,85 @@ describe('cleanup guard: spelling fixes (R2)', () => {
 
   it('rejects reordered words even when each is a real word', () => {
     expect(check('Pours a clear, bright golden yellow. Nose is pineapple and citrus zest.')).toEqual({ ok: false, rule: 'R2' });
+  });
+});
+
+describe('cleanup guard: punctuation fixes (R3)', () => {
+  it.each([
+    ['a missing space after a full stop', 'Some bitterness.Medium body.', 'Some bitterness. Medium body.', 'bitterness.Medium', 'bitterness. Medium'],
+    ['a missing comma', 'A crisp dry finish.', 'A crisp, dry finish.', 'crisp dry', 'crisp, dry'],
+    ['a missing space after a comma', 'Citra,Mosaic hops.', 'Citra, Mosaic hops.', 'Citra,Mosaic', 'Citra, Mosaic'],
+    ['a missing final full stop', 'Very crisp', 'Very crisp.', 'crisp', 'crisp.'],
+  ])('accepts %s and reports it in context', (_case, source, output, from, to) => {
+    expect(check(output, { source })).toEqual({ ok: true, edits: [{ from, to }] });
+  });
+
+  it.each([
+    ['a removed comma', 'A crisp, dry finish.', 'A crisp dry finish.'],
+    ['a removed full stop', 'Crisp. Dry finish.', 'Crisp Dry finish.'],
+    ['a comma swapped for a semicolon', 'A crisp, dry finish.', 'A crisp; dry finish.'],
+    ['an added semicolon', 'A crisp dry finish.', 'A crisp; dry finish.'],
+    ['an added colon', 'Notes of citrus pine.', 'Notes of: citrus pine.'],
+    ['an added exclamation mark', 'A crisp dry finish.', 'A crisp! Dry finish.'],
+    ['a changed final exclamation mark', 'A crisp finish!', 'A crisp finish.'],
+    ['an added trailing comma', 'Very crisp', 'Very crisp,'],
+    ['a straightened quote', 'A “crisp” finish.', 'A "crisp" finish.'],
+    ['a split number', 'Over 1,000 kegs.', 'Over 1, 000 kegs.'],
+    ['a split price', 'Only $5.00 today.', 'Only $5. 00 today.'],
+    ['a split domain', 'See example.com today.', 'See example. com today.'],
+    ['a full stop added after a number', 'ABV 5', 'ABV 5.'],
+    ['an added space before a comma', 'A crisp, dry finish.', 'A crisp , dry finish.'],
+    ['a comma added before a number', 'Over 1000 kegs.', 'Over, 1000 kegs.'],
+    ['a comma swapped for a full stop', 'Citra,Mosaic hops.', 'Citra. Mosaic hops.'],
+  ])('rejects %s', (_case, source, output) => {
+    expect(check(output, { source })).toEqual({ ok: false, rule: 'R3' });
+  });
+});
+
+describe('cleanup guard: capitalization (R4)', () => {
+  it('accepts capitalizing a word after an existing sentence end', () => {
+    expect(check('Some bitterness. Medium body.', { source: 'Some bitterness. medium body.' }))
+      .toEqual({ ok: true, edits: [{ from: 'medium', to: 'Medium' }] });
+  });
+
+  it('accepts capitalizing a word after an added full stop', () => {
+    expect(check('A clean lager. Nose of citrus.', { source: 'A clean lager nose of citrus.' }))
+      .toEqual({ ok: true, edits: [{ from: 'lager nose', to: 'lager. nose' }, { from: 'nose', to: 'Nose' }] });
+  });
+
+  it.each([
+    ['capitalizing mid-sentence', 'A crisp dry finish.', 'A crisp Dry finish.'],
+    ['lowercasing a word', 'The finish is dry.', 'the finish is dry.'],
+    ['lowercasing after a sentence end', 'Dry. The finish.', 'Dry. the finish.'],
+    ['capitalizing the first word', 'pours gold.', 'Pours gold.'],
+    ['capitalizing inside a domain', 'See example.com today.', 'See example.Com today.'],
+    ['changing more than the first letter after a sentence end', 'Dry. finish here.', 'Dry. FINISH here.'],
+  ])('rejects %s', (_case, source, output) => {
+    expect(check(output, { source })).toEqual({ ok: false, rule: 'R4' });
+  });
+});
+
+describe('cleanup guard: combined fixes', () => {
+  it('reports spelling, punctuation and case edits in text order', () => {
+    expect(check('A pleasant crisp, dry ale. Very nice.', { source: 'A pleasent crisp dry ale very nice.' })).toEqual({
+      ok: true,
+      edits: [
+        { from: 'pleasent', to: 'pleasant' },
+        { from: 'crisp dry', to: 'crisp, dry' },
+        { from: 'ale very', to: 'ale. very' },
+        { from: 'very', to: 'Very' },
+      ],
+    });
+  });
+});
+
+describe('cleanup guard: edit budget (R5)', () => {
+  it('accepts five permitted edits', () => {
+    expect(check('A crisp, dry, clean, bright, pleasant ale.', { source: 'A crisp dry clean bright pleasent ale.' }).ok).toBe(true);
+  });
+
+  it('rejects six permitted edits', () => {
+    expect(check('A crisp, dry, clean, bright, pleasant, fresh ale.', { source: 'A crisp dry clean bright pleasent fresh ale.' }))
+      .toEqual({ ok: false, rule: 'R5' });
   });
 });

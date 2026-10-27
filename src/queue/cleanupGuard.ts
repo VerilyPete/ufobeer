@@ -9,17 +9,21 @@
  * Rules (see plans/pr44-review-fixes.md):
  * - R1: the word sequence is unchanged — no word added, removed, merged or split
  * - R2: a changed word must be a reviewed misspelling -> correction pair
- * - R3: a changed gap between words must be a permitted punctuation fix
+ * - R3: a changed gap between words must be a permitted punctuation fix:
+ *       only adding a missing comma, full stop, or space after one
+ * - R4: a case change must be capitalizing a word after a sentence-ending ". "
+ * - R5: at most MAX_CLEANUP_GUARD_EDITS edits in total
  */
 
 import { APPROVED_SPELLING_CORRECTIONS } from './dictionary/spellingCorrections';
+import { MAX_CLEANUP_GUARD_EDITS } from '../constants';
 
 export type CleanupEdit = {
   readonly from: string;
   readonly to: string;
 };
 
-export type CleanupRule = 'R1' | 'R2' | 'R3';
+export type CleanupRule = 'R1' | 'R2' | 'R3' | 'R4' | 'R5';
 
 export type CleanupVerdict =
   | { readonly ok: true; readonly edits: readonly CleanupEdit[] }
@@ -87,6 +91,42 @@ function isPermittedSpellingFix(options: {
   return APPROVED_SPELLING_CORRECTIONS.get(lookupKey(from)) === lookupKey(to);
 }
 
+// Gap fixes are only ever additions of a missing comma, full stop or space,
+// and only between plain words: never inside numbers, prices, domains or
+// identifiers, and never removing or swapping existing punctuation.
+const PLAIN_WORD = /^[\p{L}'’]+$/u;
+const CAPITALIZED_WORD = /^\p{Lu}/u;
+const SENTENCE_END = '. ';
+
+function isPermittedGapFix(options: {
+  readonly from: string;
+  readonly to: string;
+  readonly before: string | undefined;
+  readonly after: string | undefined;
+}): boolean {
+  const { from, to, before, after } = options;
+  if (before === undefined || !PLAIN_WORD.test(before)) return false;
+  if (after === undefined) return from === '' && to === '.';
+  if (!PLAIN_WORD.test(after)) return false;
+  if (from === ' ') return to === ', ' || to === SENTENCE_END;
+  if (from === ',') return to === ', ';
+  if (from === '.') return to === SENTENCE_END && CAPITALIZED_WORD.test(after);
+  return false;
+}
+
+// R3 has already verified every ". " in the output: it was in the source or
+// replaced a space, so only the following word's first letter may change.
+function isPermittedCaseFix(options: {
+  readonly from: string;
+  readonly to: string;
+  readonly outputGap: string;
+}): boolean {
+  const { from, to } = options;
+  return to === from.charAt(0).toUpperCase() + from.slice(1) && options.outputGap.endsWith(SENTENCE_END);
+}
+
+const isCaseOnly = (from: string, to: string): boolean => from !== to && from.toLowerCase() === to.toLowerCase();
+
 export function checkCleanup(options: {
   readonly source: string;
   readonly output: string;
@@ -102,21 +142,49 @@ export function checkCleanup(options: {
       .flatMap(term => tokenize(term).words.map(lookupKey))
       .flatMap(word => [word, word.replace(/'s$/, '')]),
   );
-  const changed = source.words
-    .map((from, index) => ({
-      from,
-      to: output.words[index] ?? '',
-      precedingGap: source.gaps[index] ?? '',
-      followingGap: source.gaps[index + 1] ?? '',
-      isFirst: index === 0,
-      isLast: index === source.words.length - 1,
-    }))
-    .filter(({ from, to }) => from !== to);
-  if (!changed.every(edit => isPermittedSpellingFix({ ...edit, protectedWords }))) {
+  const words = source.words.map((from, index) => ({
+    index,
+    from,
+    to: output.words[index] ?? '',
+    precedingGap: source.gaps[index] ?? '',
+    followingGap: source.gaps[index + 1] ?? '',
+    isFirst: index === 0,
+    isLast: index === source.words.length - 1,
+  }));
+  const spellingFixes = words.filter(({ from, to }) => from !== to && !isCaseOnly(from, to));
+  if (!spellingFixes.every(edit => isPermittedSpellingFix({ ...edit, protectedWords }))) {
     return { ok: false, rule: 'R2' };
   }
 
-  if (source.gaps.some((gap, index) => gap !== output.gaps[index])) return { ok: false, rule: 'R3' };
+  const gaps = source.gaps.map((from, index) => ({
+    index,
+    from,
+    to: output.gaps[index] ?? '',
+    before: source.words[index - 1],
+    after: source.words[index],
+  }));
+  const gapFixes = gaps.filter(({ from, to }) => from !== to);
+  if (!gapFixes.every(isPermittedGapFix)) return { ok: false, rule: 'R3' };
 
-  return { ok: true, edits: changed.map(({ from, to }) => ({ from, to })) };
+  const caseFixes = words.filter(({ from, to }) => isCaseOnly(from, to));
+  const casePermitted = caseFixes.every(({ index, from, to }) =>
+    isPermittedCaseFix({ from, to, outputGap: output.gaps[index] ?? '' }));
+  if (!casePermitted) return { ok: false, rule: 'R4' };
+
+  const edits = [
+    ...gapFixes.map(({ index, from, to, before = '', after = '' }) => ({
+      position: index * 2,
+      from: before + from + after,
+      to: before + to + after,
+    })),
+    ...words
+      .filter(({ from, to }) => from !== to)
+      .map(({ index, from, to }) => ({ position: index * 2 + 1, from, to })),
+  ];
+  if (edits.length > MAX_CLEANUP_GUARD_EDITS) return { ok: false, rule: 'R5' };
+
+  return {
+    ok: true,
+    edits: [...edits].sort((a, b) => a.position - b.position).map(({ from, to }) => ({ from, to })),
+  };
 }
