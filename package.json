@@ -15,7 +15,8 @@
 		"migrate:remote": "wrangler d1 migrations apply beer-db --remote",
 		"migrate:local": "wrangler d1 migrations apply beer-db --local",
 		"migrate:list": "wrangler d1 migrations list beer-db --remote",
-		"cf-typegen": "wrangler types"
+		"cf-typegen": "wrangler types",
+		"generate:dictionary": "node scripts/generate-dictionary.mjs"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",

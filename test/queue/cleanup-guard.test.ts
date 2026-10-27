@@ -3,8 +3,11 @@ import { checkCleanup } from '../../src/queue/cleanupGuard';
 
 const source = 'Pours a bright, clear golden yellow. Nose is pineapple and citrus zest.';
 
-const check = (output: string, overrides: { source?: string } = {}) =>
-  checkCleanup({ source: overrides.source ?? source, output, protectedTerms: [] });
+const check = (output: string, overrides: { source?: string; protectedTerms?: readonly string[] } = {}) =>
+  checkCleanup({ source: overrides.source ?? source, output, protectedTerms: overrides.protectedTerms ?? [] });
+
+const spelling = (from: string, to: string, protectedTerms: readonly string[] = []) =>
+  check(`A ${to} finish.`, { source: `A ${from} finish.`, protectedTerms });
 
 describe('cleanup guard: word sequence (R1)', () => {
   it('accepts output identical to the source with no edits', () => {
@@ -33,11 +36,47 @@ describe('cleanup guard: word sequence (R1)', () => {
     expect(check("Fireman s 4 is bigger than you d expect.", { source: withApostrophes })).toEqual({ ok: false, rule: 'R1' });
   });
 
-  it('rejects any changed word until spelling fixes are permitted', () => {
-    expect(check('Pours a bright, clear golden yellow. Nose is pineapple and citrus zesty.').ok).toBe(false);
-  });
-
   it('rejects any changed punctuation until punctuation fixes are permitted', () => {
     expect(check('Pours a bright, clear golden yellow! Nose is pineapple and citrus zest.').ok).toBe(false);
+  });
+});
+
+describe('cleanup guard: spelling fixes (R2)', () => {
+  it.each([
+    ['teh', 'the'],
+    ['recieve', 'receive'],
+    ['hopy', 'hoppy'],
+    ['Teh', 'The'],
+    ['pinapple', 'pineapple'],
+  ])('accepts %s -> %s and reports the edit', (from, to) => {
+    expect(spelling(from, to)).toEqual({ ok: true, edits: [{ from, to }] });
+  });
+
+  it.each([
+    ['a real word swapped for another', 'dank', 'dark'],
+    ['a real word swapped for another', 'form', 'from'],
+    ['a real word inflected', 'crisp', 'crispy'],
+    ['a beer term swapped for a real word', 'Sabro', 'Sabre'],
+    ['an all-caps word', 'DIPA', 'DIPS'],
+    ['a changed first letter', 'hte', 'the'],
+    ['a fix that is not a dictionary word', 'hopy', 'hopyy'],
+    ['an edit distance above one', 'recieveing', 'receiving'],
+    ['a capitalization change', 'teh', 'The'],
+  ])('rejects %s (%s -> %s)', (_case, from, to) => {
+    expect(spelling(from, to)).toEqual({ ok: false, rule: 'R2' });
+  });
+
+  it('rejects a fix to a word in the beer name or brewer', () => {
+    expect(spelling('Hopsy', 'Hoppy', ['Hopsy Turvy', 'Great Heights'])).toEqual({ ok: false, rule: 'R2' });
+    expect(spelling('Hopsy', 'Hoppy')).toEqual({ ok: true, edits: [{ from: 'Hopsy', to: 'Hoppy' }] });
+  });
+
+  it('rejects a fix inside a hashtag or handle', () => {
+    expect(check('Tag #hoppy now', { source: 'Tag #hopy now' })).toEqual({ ok: false, rule: 'R2' });
+    expect(check('Tag @hoppy now', { source: 'Tag @hopy now' })).toEqual({ ok: false, rule: 'R2' });
+  });
+
+  it('rejects reordered words even when each is a real word', () => {
+    expect(check('Pours a clear, bright golden yellow. Nose is pineapple and citrus zest.')).toEqual({ ok: false, rule: 'R2' });
   });
 });
