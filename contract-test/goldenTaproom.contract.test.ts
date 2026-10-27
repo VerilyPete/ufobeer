@@ -29,7 +29,6 @@ const requiredTables = [
   'rate_limits',
   'audit_log',
   'enrichment_limits',
-  'cleanup_limits',
 ] as const;
 
 const goldenEnv: Env = {
