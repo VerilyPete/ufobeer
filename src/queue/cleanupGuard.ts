@@ -94,7 +94,8 @@ function isPermittedSpellingFix(options: {
 // Gap fixes never add, remove or swap punctuation, since a new comma or full
 // stop can reverse meaning ("No alcohol is added" -> "No, alcohol is
 // added"). Only a missing space after an existing comma, or a final full
-// stop, may be added, plus the space in "9.2%ABV" -> "9.2% ABV". A missing
+// stop (also after a closing "4.7%"), may be added, plus the space in
+// "9.2%ABV" -> "9.2% ABV". A missing
 // space after a full stop is never fixed: it
 // cannot be told apart from a dotted name (example.Com, Menu.Pdf, U.S). The
 // comma pair must be two plain words standing alone, so numbers, lists and
@@ -115,7 +116,10 @@ function isPermittedGapFix(options: {
   readonly protectedWords: ReadonlySet<string>;
 }): boolean {
   const { from, to, before, after, protectedWords } = options;
-  if (from === '%') return to === '% ' && before !== undefined && NUMBER.test(before) && after?.toLowerCase() === 'abv';
+  if (from === '%') {
+    const afterNumber = before !== undefined && NUMBER.test(before);
+    return afterNumber && (after === undefined ? to === '%.' : to === '% ' && after.toLowerCase() === 'abv');
+  }
   if (before === undefined || !PLAIN_WORD.test(before) || protectedWords.has(lookupKey(before))) return false;
   if (after === undefined) {
     const lastWordStandsAlone = standsAlone({ precedingGap: options.outerBefore, followingGap: '', isFirst: options.beforeIsFirst, isLast: true });
@@ -209,6 +213,7 @@ export function checkCleanup(options: {
 }
 
 const GAP_FIXES: Readonly<Record<string, string>> = { ',': ', ', '%': '% ' };
+const FINAL_GAP_FIXES: Readonly<Record<string, string>> = { '': '.', '%': '%.' };
 
 const matchCase = (word: string, correction: string): string =>
   caseShape(word) === 'capitalized' ? correction.charAt(0).toUpperCase() + correction.slice(1) : correction;
@@ -234,7 +239,7 @@ export function applyCleanupFixes(options: {
     return isPermittedSpellingFix({ from, to, ...wordContext(source, index), protectedWords }) ? to : from;
   });
   const gaps = source.gaps.map((from, index) => {
-    const to = index === source.words.length && from === '' ? '.' : GAP_FIXES[from];
+    const to = index === source.words.length ? FINAL_GAP_FIXES[from] : GAP_FIXES[from];
     if (to === undefined) return from;
     return isPermittedGapFix({ from, to, ...gapContext(source, index), protectedWords }) ? to : from;
   });

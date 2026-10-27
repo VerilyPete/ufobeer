@@ -10,6 +10,7 @@ describe('applyCleanupFixes', () => {
     ['a missing space after a comma', 'Citra,Mosaic hops.', 'Citra, Mosaic hops.'],
     ['a missing space between a percentage and ABV', 'Strong at 9.2%ABV today.', 'Strong at 9.2% ABV today.'],
     ['a missing final full stop', 'A crisp finish', 'A crisp finish.'],
+    ['a missing final full stop after a percentage', 'Bright and dry at 4.7%', 'Bright and dry at 4.7%.'],
     ['every fix at once', 'A pleasent ale with Citra,Mosaic hops at 9.2%ABV', 'A pleasant ale with Citra, Mosaic hops at 9.2% ABV.'],
   ])('applies %s', (_case, source, expected) => {
     expect(fix(source)).toBe(expected);

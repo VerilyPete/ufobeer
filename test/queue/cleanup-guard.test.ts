@@ -146,6 +146,7 @@ describe('cleanup guard: punctuation fixes (R3)', () => {
     ['a missing space between a percentage and ABV', 'Strong at 9.2%ABV today.', 'Strong at 9.2% ABV today.', '2%ABV', '2% ABV'],
     ['a missing space between a percentage and lowercase abv', 'Strong at 9%abv today.', 'Strong at 9% abv today.', '9%abv', '9% abv'],
     ['a final full stop after a percentage and ABV', 'Strong at 9.2%ABV', 'Strong at 9.2%ABV.', 'ABV', 'ABV.'],
+    ['a final full stop after a percentage', 'Bright and dry at 4.7%', 'Bright and dry at 4.7%.', '7%', '7%.'],
   ])('accepts %s and reports it in context', (_case, source, output, from, to) => {
     expect(check(output, { source })).toEqual({ ok: true, edits: [{ from, to }] });
   });
@@ -180,6 +181,8 @@ describe('cleanup guard: punctuation fixes (R3)', () => {
     ['a split dotted handle', 'Follow @brew.Example today.', 'Follow @brew. Example today.'],
     ['a split chained list', 'Notes of crisp,dry,clean malt.', 'Notes of crisp, dry,clean malt.'],
     ['a full stop added after a number', 'ABV 5', 'ABV 5.'],
+    ['a final exclamation mark after a percentage', 'Bright and dry at 4.7%', 'Bright and dry at 4.7%!'],
+    ['a full stop after a percent sign not preceded by a number', 'Rated A%', 'Rated A%.'],
     ['an added space before a comma', 'A crisp, dry finish.', 'A crisp , dry finish.'],
     ['a comma swapped for a full stop', 'Citra,Mosaic hops.', 'Citra. Mosaic hops.'],
     ['a space after a percentage before another word', 'A 100%Citra hop bill.', 'A 100% Citra hop bill.'],
