@@ -16,7 +16,7 @@
 		"migrate:local": "wrangler d1 migrations apply beer-db --local",
 		"migrate:list": "wrangler d1 migrations list beer-db --remote",
 		"cf-typegen": "wrangler types",
-		"generate:spelling": "node scripts/generate-spelling-corrections.mjs"
+		"spelling:candidates": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/find-spelling-candidates.mjs"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",

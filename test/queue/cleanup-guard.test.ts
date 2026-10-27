@@ -43,12 +43,12 @@ describe('cleanup guard: word sequence (R1)', () => {
 
 describe('cleanup guard: spelling fixes (R2)', () => {
   it.each([
-    ['teh', 'the'],
-    ['recieve', 'receive'],
-    ['pinapple', 'pineapple'],
-    ['seperate', 'separate'],
-    ['Teh', 'The'],
-  ])('accepts the approved correction %s -> %s and reports the edit', (from, to) => {
+    ['pleasent', 'pleasant'],
+    ['noticable', 'noticeable'],
+    ['alchohol', 'alcohol'],
+    ['marshmellows', 'marshmallows'],
+    ['Ballanced', 'Balanced'],
+  ])('accepts the reviewed correction %s -> %s and reports the edit', (from, to) => {
     expect(spelling(from, to)).toEqual({ ok: true, edits: [{ from, to }] });
   });
 
@@ -59,27 +59,32 @@ describe('cleanup guard: spelling fixes (R2)', () => {
     ['a beer word missing from the dictionary', 'hoppier', 'happier'],
     ['a hop variety', 'Loral', 'Local'],
     ['a beer style that looks like a misspelling', 'tripel', 'triple'],
-    ['a plausible fix that is not an approved pair', 'hopy', 'hoppy'],
-    ['an all-caps word', 'TEH', 'THE'],
-    ['a capitalization change', 'teh', 'The'],
+    ['an inflected beer style', 'tripels', 'triples'],
+    ['an ingredient name', 'Hass', 'Hash'],
+    ['intentional wording', 'folx', 'folks'],
+    ['a fragment of a non-ASCII word', 'caf', 'calf'],
+    ['a common typo that has not been reviewed', 'teh', 'the'],
+    ['a plausible fix that has not been reviewed', 'hopy', 'hoppy'],
+    ['an all-caps word', 'ALCHOHOL', 'ALCOHOL'],
+    ['a capitalization change', 'pleasent', 'Pleasant'],
   ])('rejects %s (%s -> %s)', (_case, from, to) => {
     expect(spelling(from, to)).toEqual({ ok: false, rule: 'R2' });
   });
 
   it('rejects a fix to a word in the beer name or brewer', () => {
-    expect(spelling('Pinapple', 'Pineapple', ['Pinapple Express', 'Great Heights'])).toEqual({ ok: false, rule: 'R2' });
-    expect(spelling('Pinapple', 'Pineapple')).toEqual({ ok: true, edits: [{ from: 'Pinapple', to: 'Pineapple' }] });
+    expect(spelling('Pleasent', 'Pleasant', ['Pleasent Valley Ale', 'Great Heights'])).toEqual({ ok: false, rule: 'R2' });
+    expect(spelling('Pleasent', 'Pleasant')).toEqual({ ok: true, edits: [{ from: 'Pleasent', to: 'Pleasant' }] });
   });
 
   it('rejects a fix inside a hashtag or handle', () => {
-    expect(check('Tag #the now', { source: 'Tag #teh now' })).toEqual({ ok: false, rule: 'R2' });
-    expect(check('Tag @the now', { source: 'Tag @teh now' })).toEqual({ ok: false, rule: 'R2' });
+    expect(check('Tag #pleasant now', { source: 'Tag #pleasent now' })).toEqual({ ok: false, rule: 'R2' });
+    expect(check('Tag @pleasant now', { source: 'Tag @pleasent now' })).toEqual({ ok: false, rule: 'R2' });
   });
 
   it('rejects a fix anywhere inside an underscored hashtag, handle or identifier', () => {
-    expect(check('Tag #fresh_pineapple now', { source: 'Tag #fresh_pinapple now' })).toEqual({ ok: false, rule: 'R2' });
-    expect(check('Tag @the_brewers now', { source: 'Tag @teh_brewers now' })).toEqual({ ok: false, rule: 'R2' });
-    expect(check('Tag pineapple_ipa now', { source: 'Tag pinapple_ipa now' })).toEqual({ ok: false, rule: 'R2' });
+    expect(check('Tag #so_pleasant now', { source: 'Tag #so_pleasent now' })).toEqual({ ok: false, rule: 'R2' });
+    expect(check('Tag @pleasant_brewers now', { source: 'Tag @pleasent_brewers now' })).toEqual({ ok: false, rule: 'R2' });
+    expect(check('Tag pleasant_ipa now', { source: 'Tag pleasent_ipa now' })).toEqual({ ok: false, rule: 'R2' });
   });
 
   it.each([

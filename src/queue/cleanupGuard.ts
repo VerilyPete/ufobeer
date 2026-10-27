@@ -8,12 +8,11 @@
  *
  * Rules (see plans/pr44-review-fixes.md):
  * - R1: the word sequence is unchanged — no word added, removed, merged or split
- * - R2: a changed word must be an approved misspelling -> correction pair
+ * - R2: a changed word must be a reviewed misspelling -> correction pair
  * - R3: a changed gap between words must be a permitted punctuation fix
  */
 
-import { SPELLING_CORRECTIONS } from './dictionary/spellingCorrections.generated';
-import { BEER_TERMS } from './dictionary/beerTerms';
+import { APPROVED_SPELLING_CORRECTIONS } from './dictionary/spellingCorrections';
 
 export type CleanupEdit = {
   readonly from: string;
@@ -47,21 +46,8 @@ function tokenize(text: string): Tokens {
 const lookupKey = (word: string): string => word.toLowerCase().replace(/’/g, "'");
 
 // A word absent from a dictionary is not necessarily misspelled ("hoppier",
-// the "Loral" hop), so the guard never infers a correction. It accepts only
-// pairs from an approved list whose misspellings are not real words; see
-// scripts/generate-spelling-corrections.mjs. Beer vocabulary is excluded
-// again here because the general list does not know it ("tripel").
-// Built on first use, once per isolate.
-let corrections: ReadonlyMap<string, string> | undefined;
-function approvedCorrection(misspelling: string): string | undefined {
-  corrections ??= new Map(
-    SPELLING_CORRECTIONS.split('\n')
-      .map(line => line.split(' '))
-      .flatMap(([from, to]): [string, string][] => (from && to && !BEER_TERMS.includes(from) ? [[from, to]] : [])),
-  );
-  return corrections.get(misspelling);
-}
-
+// the "Loral" hop, the "tripel" style), so the guard never infers a
+// correction. It accepts only pairs a person has reviewed.
 type CaseShape = 'lower' | 'capitalized' | 'other';
 function caseShape(word: string): CaseShape {
   if (word === word.toLowerCase()) return 'lower';
@@ -82,7 +68,7 @@ function isPermittedSpellingFix(options: {
   if (shape === 'other' || caseShape(to) !== shape) return false;
   if (TAG_BEFORE_PATTERN.test(options.precedingGap) || TAG_AFTER_PATTERN.test(options.followingGap)) return false;
   if (options.protectedWords.has(lookupKey(from))) return false;
-  return approvedCorrection(lookupKey(from)) === lookupKey(to);
+  return APPROVED_SPELLING_CORRECTIONS.get(lookupKey(from)) === lookupKey(to);
 }
 
 export function checkCleanup(options: {
