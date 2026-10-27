@@ -676,6 +676,20 @@ describe('processAIConcurrently', () => {
     expect(results.every(r => r.success)).toBe(true);
   });
 
+  it('keeps the original description when cleanup changes the extracted ABV', async () => {
+    const original = 'Oatmeal stout brewed with 10% flaked oats. 6.2 percent alcohol.';
+    const mockAI = createMockAI(10);
+    mockAI.run = vi.fn().mockResolvedValue({ response: 'Oatmeal stout brewed with 10% flaked oats. 6.2%.' });
+
+    const [result] = await processAIConcurrently(
+      [createMockMessage(0, original)] as Message<CleanupMessage>[],
+      mockAI as unknown as Ai,
+      10
+    );
+
+    expect(result).toMatchObject({ success: true, usedOriginal: true, cleaned: original, extractedABV: 6.2 });
+  });
+
   it('returns results in correct order regardless of completion order', async () => {
     const mockAI = createMockAI(10);
     const messages = [

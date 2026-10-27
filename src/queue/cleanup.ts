@@ -277,12 +277,12 @@ async function cleanDescriptionSafely(
     };
   }
 
-  // Validation 1: ABV extraction should work the same or better
+  // Validation 1: cleanup must not lose or change an ABV the original states
   const originalAbv = extractABV(original);
   const cleanedAbv = extractABV(cleaned);
 
-  if (originalAbv !== null && cleanedAbv === null) {
-    console.warn('[cleanup] Cleanup broke ABV extraction, using original');
+  if (originalAbv !== null && cleanedAbv !== originalAbv) {
+    console.warn('[cleanup] Cleanup changed ABV extraction, using original');
     return {
       cleaned: original,
       usedOriginal: true,
