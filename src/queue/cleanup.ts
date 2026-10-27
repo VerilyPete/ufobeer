@@ -62,32 +62,14 @@ const CONTROL_CHAR_PATTERN = new RegExp('[' + CONTROL_CHAR_CODES.map((c) => Stri
 
 /**
  * Delimiter and instruction-like artifacts that should never legitimately
- * appear in a cleaned beer description. Any spelling of the prompt's own
- * `<TEXT>`/`</TEXT>` delimiter, or phrasing that reads as the model
+ * appear in a cleaned beer description. Any spelling of a `<TEXT>`/`</TEXT>`
+ * delimiter (which earlier prompts used), or phrasing that reads as the model
  * following injected instructions rather than cleaning text, is treated as
  * evidence the model was steered off-task.
  */
 const INJECTION_ARTIFACT_PATTERN = /<\s*\/?\s*text\s*>|ignore\s+(all\s+|any\s+|previous\s+|prior\s+)?instructions|you are now|new instructions|system prompt|###\s*(instruction|system)/i;
 
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/gi;
-
-/**
- * Neutralize any spelling of the prompt's closing (and re-opening)
- * delimiter before the description is concatenated into the prompt, so
- * injected text cannot terminate the `<TEXT>` block early and have
- * subsequent attacker-supplied text read as fresh instructions.
- *
- * This is a defense-in-depth layer, not the primary control -- an
- * attacker can pre-encode the delimiter (e.g. `&lt;/TEXT&gt;`) and rely on
- * the model's own instructed entity-decoding to reconstruct it after this
- * check runs. The primary controls are bounding description length before
- * assembly and validating model *output* content (see
- * `hasUnsafePromptArtifacts` below) regardless of how an injection reached
- * the model.
- */
-function sanitizePromptDelimiters(text: string): string {
-  return text.replace(/<\s*\/?\s*text\s*>/gi, '[removed]');
-}
 
 /**
  * Extract the set of URLs present in a string, used to detect a cleaned
@@ -161,26 +143,20 @@ function sanitizeFallbackDescription(text: string): string {
 }
 
 // The description reaches the model already stripped of HTML and entities
-// (sanitizeFallbackDescription). The prompt asks only for the fixes the
-// cleanup guard can verify; the guard, not this prompt, is the control.
-const CLEANUP_PROMPT = `Proofread the text between <TEXT> and </TEXT>. Return ONLY the corrected text, nothing else.
+// (sanitizeFallbackDescription), as the user message on its own: there are no
+// delimiters for the model to echo or for injected text to close. The
+// instructions ask only for the fixes the cleanup guard can verify; the
+// guard, not these instructions, is the control.
+const CLEANUP_INSTRUCTIONS = `You proofread beer descriptions. Reply with the corrected description only: no introduction, no quotes, no tags, no notes.
 
 You may ONLY:
 - Fix an obviously misspelled word (for example "pleasent" becomes "pleasant")
 - Add a missing space after a comma (for example "Citra,Mosaic" becomes "Citra, Mosaic")
 - Add a full stop at the very end if the text has no final punctuation
 
-Do NOT:
-- Add, remove, reorder or replace any other word
-- Add, remove or change any other punctuation
-- Change capitalization
-- Change numbers, prices, ABV values, names, hashtags, links or email addresses
-- Add any introduction, explanation or comment
+Do NOT add, remove, reorder or replace any other word; add, remove or change any other punctuation; change capitalization; or change numbers, prices, ABV values, names, hashtags, links or email addresses.
 
-If nothing needs fixing, return the text exactly as written.
-
-<TEXT>
-`;
+If nothing needs fixing, reply with the description exactly as written.`;
 
 // ============================================================================
 // Types
@@ -432,13 +408,14 @@ async function cleanDescriptionSafely(
 
   let cleaned: string;
   try {
-    // Treat every LLM input as hostile regardless of provenance: neutralize
-    // the prompt's own delimiter before assembly so injected text cannot
-    // terminate the <TEXT> block early (see sanitizePromptDelimiters for
-    // why this is defense-in-depth, not the primary control).
-    const promptSafeDescription = sanitizePromptDelimiters(boundedOriginal);
+    // Every LLM input is hostile regardless of provenance. Output is
+    // validated below (hasUnsafePromptArtifacts, then the cleanup guard)
+    // whatever the description told the model to do.
     const result = await ai.run('@cf/meta/llama-3.2-3b-instruct', {
-      prompt: CLEANUP_PROMPT + promptSafeDescription + '\n</TEXT>',
+      messages: [
+        { role: 'system', content: CLEANUP_INSTRUCTIONS },
+        { role: 'user', content: boundedOriginal },
+      ],
       max_tokens: 700,
     });
 

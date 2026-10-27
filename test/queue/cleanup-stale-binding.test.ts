@@ -441,7 +441,7 @@ describe('deterministic cleanup and honest fallback metrics', () => {
       const entry = metricsLog.mock.calls.find(call => call[0] === '[cleanup] Batch metrics:');
       expect(JSON.parse(String(entry?.[1]))).toMatchObject({ ai_success: 0, ai_failure: 1, fallback_used: 1, circuit_breaker: false });
     }
-    if (outcome !== 'quota') expect(ai.run.mock.calls[0]?.[1]?.prompt).toContain(expected);
+    if (outcome !== 'quota') expect(ai.run.mock.calls[0]?.[1]?.messages?.[1]?.content).toBe(expected);
   });
 
   it('decodes entities and separates HTML blocks without changing source ABV', async () => {

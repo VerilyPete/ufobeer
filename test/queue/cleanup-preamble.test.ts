@@ -91,3 +91,22 @@ describe('cleanup applies only guard-approved model fixes', () => {
     vi.restoreAllMocks();
   });
 });
+
+describe('cleanup model request', () => {
+  it('sends the instructions as a system message and only the sanitized description as the user message', async () => {
+    const ai = { run: vi.fn().mockResolvedValue({ response: 'A pleasant & bright ale.' }) } as unknown as Ai;
+    const message = {
+      body: { beerId: 'beer-1', beerName: 'Bright Ale', brewer: 'Valley Brewing', brewDescription: '<p>A pleasant &amp; bright ale.</p>' },
+      ack: vi.fn(),
+      retry: vi.fn(),
+    } as unknown as Message<CleanupMessage>;
+    await processAIConcurrently([message], ai, 1, { breaker: createCircuitBreaker() });
+    expect(ai.run).toHaveBeenCalledWith('@cf/meta/llama-3.2-3b-instruct', {
+      messages: [
+        { role: 'system', content: expect.stringContaining('You may ONLY') },
+        { role: 'user', content: 'A pleasant & bright ale.' },
+      ],
+      max_tokens: 700,
+    });
+  });
+});

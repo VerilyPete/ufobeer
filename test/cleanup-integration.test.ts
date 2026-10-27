@@ -136,13 +136,13 @@ function createMockD1(initialCount = 0, dailyLimit = 1000): MockD1Database {
  */
 function createMockAI(delayMs = 50): MockAI {
   return {
-    run: vi.fn().mockImplementation(async (_model: string, options: { prompt: string }) => {
+    run: vi.fn().mockImplementation(async (_model: string, options: { messages: readonly { content: string }[] }) => {
       if (delayMs > 0) {
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
       // Extract ABV from prompt if present
-      const abvMatch = options.prompt.match(/(\d+\.?\d*)%/);
-      const abv = abvMatch ? parseFloat(abvMatch[1]) : null;
+      const abvMatch = options.messages.at(-1)?.content.match(/(\d+\.?\d*)%/);
+      const abv = abvMatch?.[1] ? parseFloat(abvMatch[1]) : null;
       return {
         response: JSON.stringify({
           cleanedDescription: 'Cleaned beer description',
