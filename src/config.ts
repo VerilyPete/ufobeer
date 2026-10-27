@@ -76,7 +76,7 @@ export const ENRICHMENT_BLOCKLIST_PATTERNS = [
   /\bbeer and cheese\b/i,  // Beer and cheese pairings
   /\b(?:glass|mug)\b.*(?:\bSL\b|\bft\.|\bw\/|\+)/i, // Promo glassware: "Glass SL", "Glass ft. Guinness", "Mug 2025 + ..."
   /\bprize glass\b/i,      // Contest glassware
-  /\bclass(?:\s+SL)?(?:\s+chit)?\s+\d+\b/i, // Numbered beer-class sessions: "Class SL 1", "Class Chit 2"
+  /\bclass\s+(?:SL|chit)\b|\bbeer class\b/i, // Beer-class tickets: "Class SL 1", "Beer Class Chit 2" (not beers like "Class 5 Pale Ale")
   /\bmystery (?:beer|cans?)\b/i, // Blind cans: nothing identifiable to look up
   /\badd[- ]?on\b/i,       // Spirit add-ons such as Underberg
 ];

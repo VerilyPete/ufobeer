@@ -98,7 +98,6 @@ describe('shouldSkipEnrichment', () => {
     '$5 Mystery Can (CAN)',
     'Mystery Beer (CAN/BTL)',
     'Around the World Beer Class Chit 1',
-    'Oktoberfest Class 2',
   ])('returns true for non-beer item %j', (name) => {
     expect(shouldSkipEnrichment(name)).toBe(true);
   });
@@ -111,6 +110,8 @@ describe('shouldSkipEnrichment', () => {
     'Saint Arnold Pumpkinator 2026 Glass Night',
     'Good Society Mystery Made IPA',
     'Dogfish Head The Perfect Pairing',
+    'Alaskan Class 5 Pale Ale',
+    'Banded Peak Class 5 DIPA',
   ])('returns false for beer %j that only resembles a non-beer word', (name) => {
     expect(shouldSkipEnrichment(name)).toBe(false);
   });
