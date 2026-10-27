@@ -15,6 +15,9 @@ export default defineConfig({
 	plugins: [
 		cloudflareTest({
 			wrangler: { configPath: './wrangler.jsonc' },
+			// Tests mock AI and never touch Cloudflare: no remote proxy session,
+			// which would also need an API token CI does not have.
+			remoteBindings: false,
 			...(isGoldenContract && migrations
 				? { miniflare: { bindings: { TEST_MIGRATIONS: migrations } } }
 				: {}),
