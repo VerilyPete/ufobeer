@@ -10,8 +10,14 @@ const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 describe('Beer Enrichment Worker', () => {
 	// The auth chain now runs the D1-backed pre-auth rate limiter before any
 	// routing, so these tests need real tables (rate_limits, audit_log).
+	// Storage is isolated per file, not per test, so clear what the auth chain
+	// writes: otherwise the throttling test's bucket turns later 401s into 429s.
 	beforeEach(async () => {
 		await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
+		await env.DB.batch([
+			env.DB.prepare('DELETE FROM rate_limits'),
+			env.DB.prepare('DELETE FROM audit_log'),
+		]);
 	});
 
 	it('returns Unauthorized without API key (unit style)', async () => {
