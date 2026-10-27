@@ -11,7 +11,7 @@
  * - R2: a changed word must be a reviewed misspelling -> correction pair
  * - R3: a changed gap must only add a missing space after an existing comma
  *       or full stop, or a final full stop
- * - R4: a case change must be capitalizing a word after a sentence-ending ". "
+ * - R4: capitalization never changes
  * - R5: at most MAX_CLEANUP_GUARD_EDITS edits in total
  */
 
@@ -96,12 +96,12 @@ function isPermittedSpellingFix(options: {
 // stop can reverse meaning ("No alcohol is added" -> "No, alcohol is
 // added"). Only a missing space after an existing comma or full stop, or a
 // final full stop, may be added. The joined pair must be two plain words
-// standing alone, and a full stop only splits before a Capitalized word that
-// is not a top-level domain, so numbers, prices, domains (example.Com),
+// standing alone, and a full stop only splits before a Capitalized ASCII word
+// that is not a top-level domain, so numbers, prices, domains (example.Com),
 // emails and handles are never split. A final full stop is only appended to
 // a standalone word, never to a path or address.
 const PLAIN_WORD = /^[\p{L}'’]+$/u;
-const CAPITALIZED_WORD = /^\p{Lu}[\p{Ll}'’]*$/u;
+const CAPITALIZED_ASCII_WORD = /^[A-Z][a-z]+$/;
 const SENTENCE_END = '. ';
 
 function isPermittedGapFix(options: {
@@ -131,29 +131,9 @@ function isPermittedGapFix(options: {
   if (!pairStandsAlone) return false;
   if (from === ',') return to === ', ';
   if (from === '.') {
-    return to === SENTENCE_END && CAPITALIZED_WORD.test(after) && !TOP_LEVEL_DOMAINS.has(lookupKey(after));
+    return to === SENTENCE_END && CAPITALIZED_ASCII_WORD.test(after) && !TOP_LEVEL_DOMAINS.has(lookupKey(after));
   }
   return false;
-}
-
-// R3 has already verified every ". " in the output, so only the following
-// word's first letter may change, and never in a beer name or brewer. The
-// word must be all lowercase (mL is a unit, iPhone a name) and the full stop
-// must end a word of three or more letters, not an abbreviation (e.g., oz.).
-const LOWERCASE_WORD = /^\p{Ll}+$/u;
-const MIN_SENTENCE_END_WORD_LENGTH = 3;
-
-function isPermittedCaseFix(options: {
-  readonly from: string;
-  readonly to: string;
-  readonly outputGap: string;
-  readonly previousWord: string | undefined;
-  readonly protectedWords: ReadonlySet<string>;
-}): boolean {
-  const { from, to, previousWord } = options;
-  if (options.protectedWords.has(lookupKey(from)) || !LOWERCASE_WORD.test(from)) return false;
-  if (previousWord === undefined || previousWord.length < MIN_SENTENCE_END_WORD_LENGTH) return false;
-  return to === from.charAt(0).toUpperCase() + from.slice(1) && options.outputGap.endsWith(SENTENCE_END);
 }
 
 const isCaseOnly = (from: string, to: string): boolean => from !== to && from.toLowerCase() === to.toLowerCase();
@@ -201,10 +181,10 @@ export function checkCleanup(options: {
   const gapFixes = gaps.filter(({ from, to }) => from !== to);
   if (!gapFixes.every(gap => isPermittedGapFix({ ...gap, protectedWords }))) return { ok: false, rule: 'R3' };
 
-  const caseFixes = words.filter(({ from, to }) => isCaseOnly(from, to));
-  const casePermitted = caseFixes.every(({ index, from, to }) =>
-    isPermittedCaseFix({ from, to, outputGap: output.gaps[index] ?? '', previousWord: output.words[index - 1], protectedWords }));
-  if (!casePermitted) return { ok: false, rule: 'R4' };
+  // A full stop after an abbreviation ("Inc. added", "vol. ml") cannot be told
+  // from a sentence end, and capitalizing a unit changes its meaning (ml -> Ml),
+  // so capitalization is never changed.
+  if (words.some(({ from, to }) => isCaseOnly(from, to))) return { ok: false, rule: 'R4' };
 
   const edits = [
     ...gapFixes.map(({ index, from, to, before = '', after = '' }) => ({

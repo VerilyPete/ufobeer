@@ -168,6 +168,8 @@ describe('cleanup guard: punctuation fixes (R3)', () => {
     ['a split all-caps domain', 'See example.COM today.', 'See example. COM today.'],
     ['a split title-case domain', 'See example.Com today.', 'See example. Com today.'],
     ['a split title-case beer domain', 'Visit hops.Beer today.', 'Visit hops. Beer today.'],
+    ['a split non-ASCII domain', 'Visit beer.Рф today.', 'Visit beer. Рф today.'],
+    ['a split before encoding debris', 'A dry cider.Â Pours gold.', 'A dry cider. Â Pours gold.'],
     ['a final full stop appended to a path', 'Download /recipes/ipa', 'Download /recipes/ipa.'],
     ['a final full stop appended to a domain', 'Visit example.com', 'Visit example.com.'],
     ['a split email address', 'Mail sales.Example@example.com today.', 'Mail sales. Example@example.com today.'],
@@ -193,43 +195,28 @@ describe('cleanup guard: punctuation fixes (R3)', () => {
 });
 
 describe('cleanup guard: capitalization (R4)', () => {
-  it('accepts capitalizing a word after an existing sentence end', () => {
-    expect(check('Some bitterness. Medium body.', { source: 'Some bitterness. medium body.' }))
-      .toEqual({ ok: true, edits: [{ from: 'medium', to: 'Medium' }] });
-  });
-
   it.each([
+    ['capitalizing after a sentence end', 'Full body. unfiltered and hazy.', 'Full body. Unfiltered and hazy.'],
+    ['capitalizing after an abbreviation', 'AleSmith Inc. added lactose.', 'AleSmith Inc. Added lactose.'],
+    ['capitalizing a unit after a longer abbreviation', 'Recipe units: vol. ml, wt. kg.', 'Recipe units: vol. Ml, wt. kg.'],
+    ['capitalizing a unit after a short abbreviation', 'Volumes use SI units, e.g. mL.', 'Volumes use SI units, e.g. ML.'],
     ['capitalizing mid-sentence', 'A crisp dry finish.', 'A crisp Dry finish.'],
-    ['lowercasing a word', 'The finish is dry.', 'the finish is dry.'],
-    ['lowercasing after a sentence end', 'Dry. The finish.', 'Dry. the finish.'],
     ['capitalizing the first word', 'pours gold.', 'Pours gold.'],
     ['capitalizing inside a domain', 'See example.com today.', 'See example.Com today.'],
-    ['changing more than the first letter after a sentence end', 'Dry. finish here.', 'Dry. FINISH here.'],
-    ['capitalizing a unit after an abbreviation', 'Volumes use SI units, e.g. mL.', 'Volumes use SI units, e.g. ML.'],
-    ['capitalizing a word after a short abbreviation', 'Sweet, e.g. caramel.', 'Sweet, e.g. Caramel.'],
-    ['capitalizing a mixed-case word', 'A collaboration. iPhone users love it.', 'A collaboration. IPhone users love it.'],
+    ['lowercasing a word', 'The finish is dry.', 'the finish is dry.'],
+    ['changing a beer name', 'A collaboration. eBay supplied glasses.', 'A collaboration. EBay supplied glasses.'],
   ])('rejects %s', (_case, source, output) => {
     expect(check(output, { source })).toEqual({ ok: false, rule: 'R4' });
-  });
-
-  it('accepts capitalizing a one-letter word after a sentence end', () => {
-    expect(check('Dry finish. A hint of oak.', { source: 'Dry finish. a hint of oak.' }))
-      .toEqual({ ok: true, edits: [{ from: 'a', to: 'A' }] });
-  });
-
-  it('rejects capitalizing a beer name or brewer', () => {
-    expect(check('A collaboration. EBay supplied glasses.', { source: 'A collaboration. eBay supplied glasses.', protectedTerms: ['eBay'] }))
-      .toEqual({ ok: false, rule: 'R4' });
   });
 });
 
 describe('cleanup guard: combined fixes', () => {
-  it('reports spelling, punctuation and case edits in text order', () => {
-    expect(check('A pleasant ale. Very crisp, dry finish.', { source: 'A pleasent ale. very crisp,dry finish' })).toEqual({
+  it('reports spelling and punctuation edits in text order', () => {
+    expect(check('A pleasant ale. Very crisp, dry finish.', { source: 'A pleasent ale.Very crisp,dry finish' })).toEqual({
       ok: true,
       edits: [
         { from: 'pleasent', to: 'pleasant' },
-        { from: 'very', to: 'Very' },
+        { from: 'ale.Very', to: 'ale. Very' },
         { from: 'crisp,dry', to: 'crisp, dry' },
         { from: 'finish', to: 'finish.' },
       ],
