@@ -118,8 +118,9 @@ function isPermittedGapFix(options: {
   if (from === '%') return to === '% ' && before !== undefined && NUMBER.test(before) && after?.toLowerCase() === 'abv';
   if (before === undefined || !PLAIN_WORD.test(before) || protectedWords.has(lookupKey(before))) return false;
   if (after === undefined) {
-    return from === '' && to === '.'
-      && standsAlone({ precedingGap: options.outerBefore, followingGap: '', isFirst: options.beforeIsFirst, isLast: true });
+    const lastWordStandsAlone = standsAlone({ precedingGap: options.outerBefore, followingGap: '', isFirst: options.beforeIsFirst, isLast: true });
+    const endsWithPercentAbv = options.outerBefore === '%' && before.toLowerCase() === 'abv';
+    return from === '' && to === '.' && (lastWordStandsAlone || endsWithPercentAbv);
   }
   if (!PLAIN_WORD.test(after) || protectedWords.has(lookupKey(after))) return false;
   const pairStandsAlone = standsAlone({
@@ -134,46 +135,53 @@ function isPermittedGapFix(options: {
 
 const isCaseOnly = (from: string, to: string): boolean => from !== to && from.toLowerCase() === to.toLowerCase();
 
-export function checkCleanup(options: {
-  readonly source: string;
-  readonly output: string;
-  readonly protectedTerms: readonly string[];
-}): CleanupVerdict {
-  const source = tokenize(options.source);
-  const output = tokenize(options.output);
-
-  if (source.words.length !== output.words.length) return { ok: false, rule: 'R1' };
-
-  const protectedWords = new Set(
-    options.protectedTerms
+function protectedWordsOf(terms: readonly string[]): ReadonlySet<string> {
+  return new Set(
+    terms
       .flatMap(term => tokenize(term).words.map(lookupKey))
       .flatMap(word => [word, word.replace(/'s$/, '')]),
   );
-  const words = source.words.map((from, index) => ({
-    index,
-    from,
-    to: output.words[index] ?? '',
+}
+
+function wordContext(source: Tokens, index: number) {
+  return {
     precedingGap: source.gaps[index] ?? '',
     followingGap: source.gaps[index + 1] ?? '',
     isFirst: index === 0,
     isLast: index === source.words.length - 1,
-  }));
-  const spellingFixes = words.filter(({ from, to }) => from !== to && !isCaseOnly(from, to));
-  if (!spellingFixes.every(edit => isPermittedSpellingFix({ ...edit, protectedWords }))) {
-    return { ok: false, rule: 'R2' };
-  }
+  };
+}
 
-  const gaps = source.gaps.map((from, index) => ({
-    index,
-    from,
-    to: output.gaps[index] ?? '',
+function gapContext(source: Tokens, index: number) {
+  return {
     before: source.words[index - 1],
     after: source.words[index],
     outerBefore: source.gaps[index - 1] ?? '',
     outerAfter: source.gaps[index + 1] ?? '',
     beforeIsFirst: index - 1 === 0,
     afterIsLast: index === source.words.length - 1,
-  }));
+  };
+}
+
+export function checkCleanup(options: {
+  readonly source: string;
+  readonly output: string;
+  readonly protectedTerms: readonly string[];
+  readonly maxEdits?: number;
+}): CleanupVerdict {
+  const source = tokenize(options.source);
+  const output = tokenize(options.output);
+
+  if (source.words.length !== output.words.length) return { ok: false, rule: 'R1' };
+
+  const protectedWords = protectedWordsOf(options.protectedTerms);
+  const words = source.words.map((from, index) => ({ index, from, to: output.words[index] ?? '', ...wordContext(source, index) }));
+  const spellingFixes = words.filter(({ from, to }) => from !== to && !isCaseOnly(from, to));
+  if (!spellingFixes.every(edit => isPermittedSpellingFix({ ...edit, protectedWords }))) {
+    return { ok: false, rule: 'R2' };
+  }
+
+  const gaps = source.gaps.map((from, index) => ({ index, from, to: output.gaps[index] ?? '', ...gapContext(source, index) }));
   const gapFixes = gaps.filter(({ from, to }) => from !== to);
   if (!gapFixes.every(gap => isPermittedGapFix({ ...gap, protectedWords }))) return { ok: false, rule: 'R3' };
 
@@ -192,10 +200,44 @@ export function checkCleanup(options: {
       .filter(({ from, to }) => from !== to)
       .map(({ index, from, to }) => ({ position: index * 2 + 1, from, to })),
   ];
-  if (edits.length > MAX_CLEANUP_GUARD_EDITS) return { ok: false, rule: 'R5' };
+  if (edits.length > (options.maxEdits ?? MAX_CLEANUP_GUARD_EDITS)) return { ok: false, rule: 'R5' };
 
   return {
     ok: true,
     edits: [...edits].sort((a, b) => a.position - b.position).map(({ from, to }) => ({ from, to })),
   };
+}
+
+const GAP_FIXES: Readonly<Record<string, string>> = { ',': ', ', '%': '% ' };
+
+const matchCase = (word: string, correction: string): string =>
+  caseShape(word) === 'capitalized' ? correction.charAt(0).toUpperCase() + correction.slice(1) : correction;
+
+/**
+ * Apply every fix the guard permits, deterministically: reviewed spelling
+ * pairs, a missing space after a comma or between a percentage and ABV, and a
+ * missing final full stop. Each candidate is judged by the same rules as
+ * model output, so the result always passes checkCleanup (without the model
+ * edit budget, which exists to catch a model rewriting, not fixing).
+ */
+export function applyCleanupFixes(options: {
+  readonly source: string;
+  readonly protectedTerms: readonly string[];
+}): string {
+  const source = tokenize(options.source);
+  const protectedWords = protectedWordsOf(options.protectedTerms);
+
+  const words = source.words.map((from, index) => {
+    const correction = APPROVED_SPELLING_CORRECTIONS.get(lookupKey(from));
+    if (correction === undefined) return from;
+    const to = matchCase(from, correction);
+    return isPermittedSpellingFix({ from, to, ...wordContext(source, index), protectedWords }) ? to : from;
+  });
+  const gaps = source.gaps.map((from, index) => {
+    const to = index === source.words.length && from === '' ? '.' : GAP_FIXES[from];
+    if (to === undefined) return from;
+    return isPermittedGapFix({ from, to, ...gapContext(source, index), protectedWords }) ? to : from;
+  });
+
+  return gaps.map((gap, index) => gap + (words[index] ?? '')).join('');
 }

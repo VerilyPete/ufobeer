@@ -145,6 +145,7 @@ describe('cleanup guard: punctuation fixes (R3)', () => {
     ['a missing final full stop', 'Very crisp', 'Very crisp.', 'crisp', 'crisp.'],
     ['a missing space between a percentage and ABV', 'Strong at 9.2%ABV today.', 'Strong at 9.2% ABV today.', '2%ABV', '2% ABV'],
     ['a missing space between a percentage and lowercase abv', 'Strong at 9%abv today.', 'Strong at 9% abv today.', '9%abv', '9% abv'],
+    ['a final full stop after a percentage and ABV', 'Strong at 9.2%ABV', 'Strong at 9.2%ABV.', 'ABV', 'ABV.'],
   ])('accepts %s and reports it in context', (_case, source, output, from, to) => {
     expect(check(output, { source })).toEqual({ ok: true, edits: [{ from, to }] });
   });
