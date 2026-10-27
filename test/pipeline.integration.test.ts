@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { insertPlaceholders, getEnrichmentForBeerIds, extractABV } from '../src/db';
 import type { InsertPlaceholdersResult, BeerEnrichmentData } from '../src/db';
 
@@ -38,16 +39,16 @@ import { hashDescription } from '../src/utils/hash';
 // ============================================================================
 
 interface MockD1PreparedStatement {
-  bind: ReturnType<typeof vi.fn>;
-  first: ReturnType<typeof vi.fn>;
-  all: ReturnType<typeof vi.fn>;
-  run: ReturnType<typeof vi.fn>;
+  bind: Mock;
+  first: Mock;
+  all: Mock;
+  run: Mock;
 }
 
 interface MockD1Database {
-  batch: ReturnType<typeof vi.fn>;
-  prepare: ReturnType<typeof vi.fn>;
-  exec: ReturnType<typeof vi.fn>;
+  batch: Mock;
+  prepare: Mock;
+  exec: Mock;
 }
 
 /**
