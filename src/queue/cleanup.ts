@@ -20,8 +20,6 @@ import pLimit from 'p-limit';
 import { extractABV } from '../db/helpers';
 import { shouldSkipEnrichment } from '../config';
 import {
-  MIN_CLEANUP_LENGTH_RATIO,
-  MAX_CLEANUP_LENGTH_RATIO,
   ABV_CONFIDENCE_FROM_DESCRIPTION,
   ABV_CONFIDENCE_FROM_DESCRIPTION_FALLBACK,
   MAX_PROMPT_DESCRIPTION_LENGTH,
@@ -35,8 +33,8 @@ import {
   reserveCleanupQuotaBatch,
 } from './cleanupHelpers';
 import type { CircuitBreaker } from './circuitBreaker';
-import { checkCleanup } from './cleanupGuard';
-import { log, logWarn } from '../utils/log';
+import { applyCleanupFixes, checkCleanup } from './cleanupGuard';
+import { log } from '../utils/log';
 
 // ============================================================================
 // Constants
@@ -59,52 +57,6 @@ const DEFAULT_DAILY_CLEANUP_LIMIT = 1000;
 // free-form descriptions), plus DEL (0x7F).
 const CONTROL_CHAR_CODES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 127];
 const CONTROL_CHAR_PATTERN = new RegExp('[' + CONTROL_CHAR_CODES.map((c) => String.fromCharCode(c)).join('') + ']');
-
-/**
- * Delimiter and instruction-like artifacts that should never legitimately
- * appear in a cleaned beer description. Any spelling of a `<TEXT>`/`</TEXT>`
- * delimiter (which earlier prompts used), or phrasing that reads as the model
- * following injected instructions rather than cleaning text, is treated as
- * evidence the model was steered off-task.
- */
-const INJECTION_ARTIFACT_PATTERN = /<\s*\/?\s*text\s*>|ignore\s+(all\s+|any\s+|previous\s+|prior\s+)?instructions|you are now|new instructions|system prompt|###\s*(instruction|system)/i;
-
-const URL_PATTERN = /https?:\/\/[^\s"'<>]+/gi;
-
-/**
- * Extract the set of URLs present in a string, used to detect a cleaned
- * description that gained a URL the source text never had -- one of the
- * concrete things a prompt injection could try to add.
- */
-function extractUrls(text: string): ReadonlySet<string> {
-  return new Set(text.match(URL_PATTERN) ?? []);
-}
-
-/**
- * Validate model *output* content before it is persisted or served.
- * Neither the ABV-regression check nor the length-ratio check in
- * `cleanDescriptionSafely` is a barrier to an attacker who controls the
- * input: the ratio divides by attacker-supplied `original`, so the
- * denominator can be sized to pass any desired output. This checks the
- * content itself, independent of that ratio:
- *
- * - an absolute length cap (MAX_CLEANED_OUTPUT_LENGTH)
- * - control characters (beyond \t \n \r)
- * - delimiter/instruction-like artifacts (evidence of a followed injection)
- * - a URL that was not present in the original description
- */
-function hasUnsafePromptArtifacts(cleaned: string, original: string): boolean {
-  if (cleaned.length > MAX_CLEANED_OUTPUT_LENGTH) return true;
-  if (CONTROL_CHAR_PATTERN.test(cleaned)) return true;
-  if (INJECTION_ARTIFACT_PATTERN.test(cleaned)) return true;
-
-  const originalUrls = extractUrls(original);
-  for (const url of extractUrls(cleaned)) {
-    if (!originalUrls.has(url)) return true;
-  }
-
-  return false;
-}
 
 /**
  * Sanitize raw description text for the fallback ("use original") path:
@@ -141,23 +93,6 @@ function sanitizeFallbackDescription(text: string): string {
     .trim()
     .slice(0, MAX_CLEANED_OUTPUT_LENGTH);
 }
-
-// The description reaches the model already stripped of HTML and entities
-// (sanitizeFallbackDescription), as the user message on its own: there are no
-// delimiters for the model to echo or for injected text to close. The
-// instructions ask only for the fixes the cleanup guard can verify; the
-// guard, not these instructions, is the control.
-const CLEANUP_INSTRUCTIONS = `You proofread beer descriptions. Reply with the corrected description only: no introduction, no quotes, no tags, no notes.
-
-You may ONLY:
-- Fix an obviously misspelled word (for example "pleasent" becomes "pleasant")
-- Add a missing space after a comma (for example "Citra,Mosaic" becomes "Citra, Mosaic")
-- Add a missing space between a percentage and ABV (for example "9.2%ABV" becomes "9.2% ABV")
-- Add a full stop at the very end if the text has no final punctuation
-
-Do NOT add, remove, reorder or replace any other word; add, remove or change any other punctuation; change capitalization; or change numbers, prices, ABV values, names, hashtags, links or email addresses.
-
-If nothing needs fixing, reply with the description exactly as written.`;
 
 // ============================================================================
 // Types
@@ -338,159 +273,38 @@ export type CategorizedResult =
  */
 export type FallbackSource = 'fallback-quota-exceeded' | 'fallback-circuit-breaker';
 
-// Common prefixes the LLM might add that we need to strip
-const RESPONSE_PREFIXES = [
-  'Here is the cleaned text:',
-  'Here is the cleaned description:',
-  'Here\'s the cleaned text:',
-  'Cleaned text:',
-  'Cleaned:',
-];
-
-/**
- * Strip common LLM preamble prefixes and leading whitespace from the response.
- */
-function stripResponsePrefixes(text: string): string {
-  let result = text.trim();
-  // Models sometimes quote or emphasize the preamble. Normalize only the
-  // candidate prefix; preserve source text when no known preamble matches.
-  const candidate = result.replace(/^(?:>\s*)+/, '').replace(/^(?:\*\*|__)/, '');
-
-  // Strip known prefixes
-  for (const prefix of RESPONSE_PREFIXES) {
-    if (candidate.toLowerCase().startsWith(prefix.toLowerCase())) {
-      result = candidate.slice(prefix.length).replace(/^(?:\*\*|__)/, '');
-      break;
-    }
-  }
-
-  // Remove any leading newlines/whitespace after stripping prefix
-  return result.replace(/^[\s\n]+/, '').trim();
-}
-
 // ============================================================================
 // Cleanup Function with Validation
 // ============================================================================
 
 /**
- * Clean description using Workers AI with validation.
- * Returns the cleaned description, whether the original was used,
- * and the extracted ABV to avoid redundant regex execution.
- *
- * Falls back to original if:
- * - AI call fails
- * - ABV extraction breaks after cleanup
- * - Length changes dramatically (<0.7x or >1.1x — see MIN/MAX_CLEANUP_LENGTH_RATIO)
- * - The cleanup guard cannot prove every change is a permitted fix
+ * Clean a description deterministically: sanitize it, then apply every fix
+ * the cleanup guard permits (applyCleanupFixes: reviewed spelling pairs, a
+ * missing space after a comma or between a percentage and ABV, a missing
+ * final full stop). No model is called. An evaluation of Llama 3.2 3B and
+ * Haiku 5.5 found every edit either could safely persist was one of these,
+ * while both also editorialized (plans/pr44-review-fixes.md, step 6).
  */
 async function cleanDescriptionSafely(
   original: string,
-  ai: Ai,
+  _ai: Ai,
   context: CleanupContext
 ): Promise<CleanupResult> {
-  if (!original) {
-    return {
-      cleaned: original,
-      usedOriginal: true,
-      extractedABV: extractABV(original),
-    };
-  }
-
-  // Bound description length before prompt assembly, rather than relying
-  // on the post-hoc length-ratio check below (see MAX_PROMPT_DESCRIPTION_LENGTH).
-  // Applied regardless of source: request-schema bounds on brew_description
+  // Bounded regardless of source: request-schema bounds on brew_description
   // are a client-facing concern and do not constrain descriptions that
-  // originate from Flying Saucer. Used consistently below so ABV
-  // extraction and the ratio check operate on what the model actually saw.
-  const boundedOriginal = sanitizeFallbackDescription(original.slice(0, MAX_PROMPT_DESCRIPTION_LENGTH));
-  const originalAbv = extractABV(boundedOriginal);
-  const fallback: CleanupResult = { cleaned: boundedOriginal, usedOriginal: true, extractedABV: originalAbv };
-  if (!boundedOriginal) return fallback;
-
-  let cleaned: string;
-  try {
-    // Every LLM input is hostile regardless of provenance. Output is
-    // validated below (hasUnsafePromptArtifacts, then the cleanup guard)
-    // whatever the description told the model to do.
-    const result = await ai.run('@cf/meta/llama-3.2-3b-instruct', {
-      messages: [
-        { role: 'system', content: CLEANUP_INSTRUCTIONS },
-        { role: 'user', content: boundedOriginal },
-      ],
-      max_tokens: 700,
-    });
-
-    // Workers AI returns { response?: string, ... }
-    if (result.response) {
-      cleaned = stripResponsePrefixes(result.response);
-    } else {
-      console.error('[cleanup] AI response missing text');
-      return fallback;
-    }
-  } catch (e) {
-    console.error('[cleanup] Inference failed:', e instanceof Error ? e.message : String(e));
-    return fallback;
-  }
-
-  // Validation 1: reject content-level injection artifacts. The ABV and
-  // length-ratio checks below are NOT a barrier to an attacker who
-  // controls the input -- the ratio divides by attacker-supplied
-  // `original`, so the denominator can be sized to pass any desired
-  // output, and the ABV check only fires when originalAbv !== null. This
-  // is the primary control against model output that was steered by an
-  // injected instruction, regardless of how the injection reached the
-  // model.
-  if (hasUnsafePromptArtifacts(cleaned, boundedOriginal)) {
-    console.warn('[cleanup] Cleaned output failed content validation, using original');
-    return fallback;
-  }
-
-  // Validation 2: ABV extraction should work the same or better
-  const cleanedAbv = extractABV(cleaned);
-
-  if (originalAbv !== null && cleanedAbv === null) {
-    console.warn('[cleanup] Cleanup broke ABV extraction, using original');
-    return fallback;
-  }
-
-  // Validation 3: Length shouldn't change much (only removing HTML artifacts)
-  // Tighter bounds since we're only removing artifacts, not rewriting
-  const lengthRatio = cleaned.length / boundedOriginal.length;
-  if (lengthRatio < MIN_CLEANUP_LENGTH_RATIO || lengthRatio > MAX_CLEANUP_LENGTH_RATIO) {
-    console.warn(`[cleanup] Length changed too much (ratio=${lengthRatio.toFixed(2)}), using original`);
-    return fallback;
-  }
-
-  // This service fixes typos, not content. An allowlist of preambles cannot
-  // cover arbitrary model commentary, so the guard accepts output only when
-  // every difference from the source is a fix it can prove is safe: reviewed
-  // spelling pairs, a space after an existing comma, a final full stop.
-  // Everything else (commentary, rewrites, invented facts) falls back.
-  const normalizedOutput = sanitizeFallbackDescription(cleaned);
+  // originate from Flying Saucer.
+  const source = sanitizeFallbackDescription(original.slice(0, MAX_PROMPT_DESCRIPTION_LENGTH));
+  const cleaned = applyCleanupFixes({ source, protectedTerms: context.protectedTerms });
   const verdict = checkCleanup({
-    source: boundedOriginal,
-    output: normalizedOutput,
+    source,
+    output: cleaned,
     protectedTerms: context.protectedTerms,
+    maxEdits: Number.POSITIVE_INFINITY,
   });
-  if (!verdict.ok) {
-    logWarn('cleanup.guard.rejected', { beerId: context.beerId, rule: verdict.rule });
-    return fallback;
+  if (verdict.ok && verdict.edits.length > 0) {
+    log('cleanup.fixes.applied', { beerId: context.beerId, edits: verdict.edits });
   }
-  if (verdict.edits.length > 0) {
-    log('cleanup.guard.accepted', { beerId: context.beerId, edits: verdict.edits });
-  }
-
-  // AI cleanup successful. Do NOT derive a persisted ABV from model output
-  // when the source text contained none: an injection that fabricates an
-  // ABV in a description with none passes both checks above (the ABV
-  // check only fires when originalAbv !== null; a fabricated short ABV
-  // string is easily within the length ratio), so this must be enforced
-  // explicitly rather than trusting cleanedAbv.
-  return {
-    cleaned: normalizedOutput,
-    usedOriginal: false,
-    extractedABV: originalAbv === null ? null : cleanedAbv,
-  };
+  return { cleaned, usedOriginal: false, extractedABV: extractABV(source) };
 }
 
 // ============================================================================
@@ -743,7 +557,7 @@ function buildBatchOperations(
           `).bind(
             c.cleaned,
             now,
-            c.usedOriginal ? 'fallback-ai' : 'workers-ai',
+            c.usedOriginal ? 'fallback-ai' : 'deterministic',
             c.abv,
             c.beerId,
             c.message.body.descriptionHash ?? null
@@ -770,7 +584,7 @@ function buildBatchOperations(
           `).bind(
             c.cleaned,
             now,
-            c.usedOriginal ? 'fallback-ai' : 'workers-ai',
+            c.usedOriginal ? 'fallback-ai' : 'deterministic',
             c.beerId,
             c.message.body.descriptionHash ?? null
           ),

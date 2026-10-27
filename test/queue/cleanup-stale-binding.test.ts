@@ -191,7 +191,7 @@ describe('consumer-side stale-result binding', () => {
     // First delivery.
     const first = buildMessage();
     await handleCleanupBatch(createBatch([first]), env);
-    expect(rows.get('beer-2')!.brew_description_cleaned).toBe(description);
+    expect(rows.get('beer-2')!.brew_description_cleaned).toBe(`${description}.`);
     expect(first.ack).toHaveBeenCalledOnce();
 
     const afterFirstDelivery = { ...rows.get('beer-2')! };
@@ -373,7 +373,7 @@ describe('producer -> consumer seam (queueBeersForCleanup -> handleCleanupBatch)
 
     await handleCleanupBatch(createBatch([deliveredMessage]), consumerEnv);
 
-    expect(rows.get('beer-7')!.brew_description_cleaned).toBe(description);
+    expect(rows.get('beer-7')!.brew_description_cleaned).toBe(`${description}.`);
     expect(deliveredMessage.ack).toHaveBeenCalledOnce();
     expect(deliveredMessage.retry).not.toHaveBeenCalled();
   });
@@ -382,7 +382,7 @@ describe('producer -> consumer seam (queueBeersForCleanup -> handleCleanupBatch)
     // Regression guard for the defect flagged in review: if
     // queueBeersForCleanup ever again dropped descriptionHash before
     // sending, every message it produces would hit handleCleanupBatch's
-    // Phase 0 filter and be acked without ever reaching AI processing.
+    // Phase 0 filter and be acked without ever being cleaned.
     const description = 'A hoppy IPA from Testville with citrus notes';
     const currentHash = await hashDescription(description);
     const { db, rows } = createFakeD1({
@@ -411,37 +411,30 @@ describe('producer -> consumer seam (queueBeersForCleanup -> handleCleanupBatch)
     const deliveredMessage = createMessage(capturedMessages[0]!.body);
     await handleCleanupBatch(createBatch([deliveredMessage]), createEnv(db, ai));
 
-    // If the in-flight-drop path had fired, the AI would never be called
-    // and the row would stay unwritten.
-    expect(ai.run).toHaveBeenCalled();
-    expect(rows.get('beer-8')!.brew_description_cleaned).toBe(description);
+    // If the in-flight-drop path had fired, the row would stay unwritten.
+    expect(rows.get('beer-8')!.brew_description_cleaned).toBe(`${description}.`);
   });
 });
 
 describe('deterministic cleanup and honest fallback metrics', () => {
-  it.each(['oversized', 'missing', 'failed', 'accepted', 'quota'])('cleans escaped source text when AI is %s', async outcome => {
-    const metricsLog = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const raw = "Refreshing Seltzer from Untitled Art\\'s Florida Seltzers with navel oranged and Yuzu\\r\\n";
-    const expected = "Refreshing Seltzer from Untitled Art's Florida Seltzers with navel oranged and Yuzu";
+  const raw = "Refreshing Seltzer from Untitled Art\\'s Florida Seltzers with navel oranged and Yuzu\\r\\n";
+  const sanitized = "Refreshing Seltzer from Untitled Art's Florida Seltzers with navel oranged and Yuzu";
+
+  it.each([
+    ['within quota', 1000, `${sanitized}.`, 'deterministic'],
+    ['over quota', 0, sanitized, 'fallback-quota-exceeded'],
+  ])('cleans escaped source text %s without calling the model', async (_case, dailyLimit, expected, source) => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
     const hash = await hashDescription(raw);
     const { db, rows } = createFakeD1({
       '19995947': { description_hash: hash, brew_description_cleaned: null, abv: null, cleanup_source: null },
     });
-    const ai = createMockAI(outcome === 'oversized' ? 'Long invented text. '.repeat(150) : raw);
-    if (outcome === 'missing') ai.run.mockResolvedValue({});
-    if (outcome === 'failed') ai.run.mockRejectedValue(new Error('Inference unavailable'));
-    const env = createEnv(db, ai, outcome === 'quota' ? 0 : 1000);
+    const ai = createMockAI('Invented model text.');
     const msg = createMessage({ beerId: '19995947', beerName: 'Florida Seltzer', brewer: 'Untitled Art', brewDescription: raw, descriptionHash: hash });
-    await handleCleanupBatch(createBatch([msg]), env);
-    expect(rows.get('19995947')?.brew_description_cleaned).toBe(expected);
-    expect(rows.get('19995947')?.abv).toBeNull();
+    await handleCleanupBatch(createBatch([msg]), createEnv(db, ai, dailyLimit));
+    expect(rows.get('19995947')).toMatchObject({ brew_description_cleaned: expected, abv: null, cleanup_source: source });
     expect(msg.ack).toHaveBeenCalledOnce();
-    if (['oversized', 'missing', 'failed'].includes(outcome)) {
-      expect(rows.get('19995947')?.cleanup_source).toBe('fallback-ai');
-      const entry = metricsLog.mock.calls.find(call => call[0] === '[cleanup] Batch metrics:');
-      expect(JSON.parse(String(entry?.[1]))).toMatchObject({ ai_success: 0, ai_failure: 1, fallback_used: 1, circuit_breaker: false });
-    }
-    if (outcome !== 'quota') expect(ai.run.mock.calls[0]?.[1]?.messages?.[1]?.content).toBe(expected);
+    expect(ai.run).not.toHaveBeenCalled();
   });
 
   it('decodes entities and separates HTML blocks without changing source ABV', async () => {
@@ -453,7 +446,7 @@ describe('deterministic cleanup and honest fallback metrics', () => {
     const ai = createMockAI('invented '.repeat(300));
     const msg = createMessage({ beerId: 'beer', beerName: 'Beer', brewer: 'Brewer', brewDescription: raw, descriptionHash: hash });
     await handleCleanupBatch(createBatch([msg]), createEnv(db, ai));
-    expect(rows.get('beer')?.brew_description_cleaned).toBe("Brewer's & citrus 5.5% ABV bright");
+    expect(rows.get('beer')?.brew_description_cleaned).toBe("Brewer's & citrus 5.5% ABV bright.");
     expect(rows.get('beer')?.abv).toBe(5.5);
   });
 });

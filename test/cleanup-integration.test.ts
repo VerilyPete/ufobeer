@@ -788,17 +788,17 @@ describe('processAIConcurrently', () => {
     const mockAI = createMockAI(10);
     const messages = [createMockMessage(0, 'Beer 0')];
 
-    // Create AI that takes longer than timeout
-    mockAI.run = vi.fn().mockImplementation(async () => {
+    // A cleanup function that takes longer than the timeout
+    const slowCleanFn = async () => {
       await new Promise(resolve => setTimeout(resolve, 200));
-      return { response: 'Cleaned' };
-    });
+      return { cleaned: 'Cleaned', usedOriginal: false, extractedABV: null };
+    };
 
     const results = await processAIConcurrently(
       messages as Message<CleanupMessage>[],
       mockAI as unknown as Ai,
       10,
-      { timeoutMs: 50, breaker: createCircuitBreaker() }
+      { cleanFn: slowCleanFn, timeoutMs: 50, breaker: createCircuitBreaker() }
     );
 
     expect(results[0].success).toBe(false);
