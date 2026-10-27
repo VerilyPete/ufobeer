@@ -6,9 +6,9 @@ const day = 86400000;
 beforeAll(async () => {
   await env.DB.exec('CREATE TABLE IF NOT EXISTS enriched_beers (id TEXT PRIMARY KEY,brew_name TEXT,brewer TEXT,description_hash TEXT,enrichment_status TEXT,abv REAL,updated_at INTEGER,last_seen_at INTEGER)');
 });
-async function seed(id:string,status:string,age:number,seenAge=0,abv:number|null=null) {
+async function seed(id:string,status:string,age:number,seenAge=0,abv:number|null=null,name='Great Heights Leo Carillo') {
   const now=Date.now();
-  await env.DB.prepare('INSERT INTO enriched_beers VALUES (?,?,?,?,?,?,?,?)').bind(id,'Great Heights Leo Carillo','Great Heights','source-hash',status,abv,now-age,now-seenAge).run();
+  await env.DB.prepare('INSERT INTO enriched_beers VALUES (?,?,?,?,?,?,?,?)').bind(id,name,'Great Heights','source-hash',status,abv,now-age,now-seenAge).run();
 }
 function context() {
   const sendBatch=vi.fn().mockResolvedValue(undefined);
@@ -43,5 +43,18 @@ describe('recover temporary ABV lookup misses',()=>{
     expect((await selectAndQueuePendingEnrichment(worker,{limit:2})).beersQueued).toBe(2);
     expect(sendBatch.mock.calls[0]?.[0]).toHaveLength(2);
     expect(await env.DB.prepare("SELECT count(*) as n FROM enriched_beers WHERE enrichment_status='not_found'").first('n')).toBe(1);
+  });
+  it('skips blocklisted rows so they cannot starve valid pending work',async()=>{
+    await seed('flight','not_found',3*day,0,null,'Texas Flight');
+    await seed('mixed','pending',2*day,0,null,'Build Your Flight');
+    await seed('pilsner','pending',day,0,null,'Pilsner');
+    const {worker,sendBatch}=context();
+    const status=(id:string)=>env.DB.prepare('SELECT enrichment_status FROM enriched_beers WHERE id=?').bind(id).first('enrichment_status');
+    expect(await selectAndQueuePendingEnrichment(worker,{limit:2})).toMatchObject({beersQueued:0,blocklistedMarked:2});
+    expect(sendBatch).not.toHaveBeenCalled();
+    expect(await status('flight')).toBe('skipped');
+    expect(await status('mixed')).toBe('skipped');
+    expect((await selectAndQueuePendingEnrichment(worker,{limit:2})).beersQueued).toBe(1);
+    expect(sendBatch.mock.calls[0]?.[0]).toEqual([expect.objectContaining({body:expect.objectContaining({beerId:'pilsner'})})]);
   });
 });
