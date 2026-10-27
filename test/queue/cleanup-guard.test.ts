@@ -166,6 +166,10 @@ describe('cleanup guard: punctuation fixes (R3)', () => {
     ['a split price', 'Only $5.00 today.', 'Only $5. 00 today.'],
     ['a split domain', 'See example.com today.', 'See example. com today.'],
     ['a split all-caps domain', 'See example.COM today.', 'See example. COM today.'],
+    ['a split title-case domain', 'See example.Com today.', 'See example. Com today.'],
+    ['a split title-case beer domain', 'Visit hops.Beer today.', 'Visit hops. Beer today.'],
+    ['a final full stop appended to a path', 'Download /recipes/ipa', 'Download /recipes/ipa.'],
+    ['a final full stop appended to a domain', 'Visit example.com', 'Visit example.com.'],
     ['a split email address', 'Mail sales.Example@example.com today.', 'Mail sales. Example@example.com today.'],
     ['a split dotted handle', 'Follow @brew.Example today.', 'Follow @brew. Example today.'],
     ['a split chained list', 'Notes of crisp,dry,clean malt.', 'Notes of crisp, dry,clean malt.'],
@@ -201,8 +205,16 @@ describe('cleanup guard: capitalization (R4)', () => {
     ['capitalizing the first word', 'pours gold.', 'Pours gold.'],
     ['capitalizing inside a domain', 'See example.com today.', 'See example.Com today.'],
     ['changing more than the first letter after a sentence end', 'Dry. finish here.', 'Dry. FINISH here.'],
+    ['capitalizing a unit after an abbreviation', 'Volumes use SI units, e.g. mL.', 'Volumes use SI units, e.g. ML.'],
+    ['capitalizing a word after a short abbreviation', 'Sweet, e.g. caramel.', 'Sweet, e.g. Caramel.'],
+    ['capitalizing a mixed-case word', 'A collaboration. iPhone users love it.', 'A collaboration. IPhone users love it.'],
   ])('rejects %s', (_case, source, output) => {
     expect(check(output, { source })).toEqual({ ok: false, rule: 'R4' });
+  });
+
+  it('accepts capitalizing a one-letter word after a sentence end', () => {
+    expect(check('Dry finish. A hint of oak.', { source: 'Dry finish. a hint of oak.' }))
+      .toEqual({ ok: true, edits: [{ from: 'a', to: 'A' }] });
   });
 
   it('rejects capitalizing a beer name or brewer', () => {

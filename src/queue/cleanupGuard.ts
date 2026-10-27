@@ -16,6 +16,7 @@
  */
 
 import { APPROVED_SPELLING_CORRECTIONS } from './dictionary/spellingCorrections';
+import { TOP_LEVEL_DOMAINS } from './dictionary/topLevelDomains.generated';
 import { MAX_CLEANUP_GUARD_EDITS } from '../constants';
 
 export type CleanupEdit = {
@@ -95,8 +96,10 @@ function isPermittedSpellingFix(options: {
 // stop can reverse meaning ("No alcohol is added" -> "No, alcohol is
 // added"). Only a missing space after an existing comma or full stop, or a
 // final full stop, may be added. The joined pair must be two plain words
-// standing alone, and a full stop only splits before a Capitalized word, so
-// numbers, prices, domains, emails and handles are never split.
+// standing alone, and a full stop only splits before a Capitalized word that
+// is not a top-level domain, so numbers, prices, domains (example.Com),
+// emails and handles are never split. A final full stop is only appended to
+// a standalone word, never to a path or address.
 const PLAIN_WORD = /^[\p{L}'’]+$/u;
 const CAPITALIZED_WORD = /^\p{Lu}[\p{Ll}'’]*$/u;
 const SENTENCE_END = '. ';
@@ -114,7 +117,10 @@ function isPermittedGapFix(options: {
 }): boolean {
   const { from, to, before, after, protectedWords } = options;
   if (before === undefined || !PLAIN_WORD.test(before) || protectedWords.has(lookupKey(before))) return false;
-  if (after === undefined) return from === '' && to === '.';
+  if (after === undefined) {
+    return from === '' && to === '.'
+      && standsAlone({ precedingGap: options.outerBefore, followingGap: '', isFirst: options.beforeIsFirst, isLast: true });
+  }
   if (!PLAIN_WORD.test(after) || protectedWords.has(lookupKey(after))) return false;
   const pairStandsAlone = standsAlone({
     precedingGap: options.outerBefore,
@@ -124,20 +130,29 @@ function isPermittedGapFix(options: {
   });
   if (!pairStandsAlone) return false;
   if (from === ',') return to === ', ';
-  if (from === '.') return to === SENTENCE_END && CAPITALIZED_WORD.test(after);
+  if (from === '.') {
+    return to === SENTENCE_END && CAPITALIZED_WORD.test(after) && !TOP_LEVEL_DOMAINS.has(lookupKey(after));
+  }
   return false;
 }
 
 // R3 has already verified every ". " in the output, so only the following
-// word's first letter may change, and never in a beer name or brewer.
+// word's first letter may change, and never in a beer name or brewer. The
+// word must be all lowercase (mL is a unit, iPhone a name) and the full stop
+// must end a word of three or more letters, not an abbreviation (e.g., oz.).
+const LOWERCASE_WORD = /^\p{Ll}+$/u;
+const MIN_SENTENCE_END_WORD_LENGTH = 3;
+
 function isPermittedCaseFix(options: {
   readonly from: string;
   readonly to: string;
   readonly outputGap: string;
+  readonly previousWord: string | undefined;
   readonly protectedWords: ReadonlySet<string>;
 }): boolean {
-  const { from, to } = options;
-  if (options.protectedWords.has(lookupKey(from))) return false;
+  const { from, to, previousWord } = options;
+  if (options.protectedWords.has(lookupKey(from)) || !LOWERCASE_WORD.test(from)) return false;
+  if (previousWord === undefined || previousWord.length < MIN_SENTENCE_END_WORD_LENGTH) return false;
   return to === from.charAt(0).toUpperCase() + from.slice(1) && options.outputGap.endsWith(SENTENCE_END);
 }
 
@@ -188,7 +203,7 @@ export function checkCleanup(options: {
 
   const caseFixes = words.filter(({ from, to }) => isCaseOnly(from, to));
   const casePermitted = caseFixes.every(({ index, from, to }) =>
-    isPermittedCaseFix({ from, to, outputGap: output.gaps[index] ?? '', protectedWords }));
+    isPermittedCaseFix({ from, to, outputGap: output.gaps[index] ?? '', previousWord: output.words[index - 1], protectedWords }));
   if (!casePermitted) return { ok: false, rule: 'R4' };
 
   const edits = [
