@@ -76,6 +76,12 @@ describe('cleanup guard: spelling fixes (R2)', () => {
     expect(check('Tag @the now', { source: 'Tag @teh now' })).toEqual({ ok: false, rule: 'R2' });
   });
 
+  it('rejects a fix anywhere inside an underscored hashtag, handle or identifier', () => {
+    expect(check('Tag #fresh_pineapple now', { source: 'Tag #fresh_pinapple now' })).toEqual({ ok: false, rule: 'R2' });
+    expect(check('Tag @the_brewers now', { source: 'Tag @teh_brewers now' })).toEqual({ ok: false, rule: 'R2' });
+    expect(check('Tag pineapple_ipa now', { source: 'Tag pinapple_ipa now' })).toEqual({ ok: false, rule: 'R2' });
+  });
+
   it.each([
     ['a possessive of a protected name', "Loral's aroma.", "Local's aroma.", ['Loral']],
     ['a possessive with a curly apostrophe', 'Loral’s aroma.', 'Local’s aroma.', ['Loral']],

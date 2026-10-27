@@ -32,7 +32,10 @@ type Tokens = {
 };
 
 const WORD_PATTERN = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu;
-const TAG_PREFIX_PATTERN = /[#@]$/;
+// A word joined to a tag marker or underscore is part of a hashtag, handle or
+// identifier (#fresh_pinapple, pinapple_ipa) and is never edited.
+const TAG_BEFORE_PATTERN = /[#@_]$/;
+const TAG_AFTER_PATTERN = /^_/;
 
 function tokenize(text: string): Tokens {
   return {
@@ -71,12 +74,13 @@ function isPermittedSpellingFix(options: {
   readonly from: string;
   readonly to: string;
   readonly precedingGap: string;
+  readonly followingGap: string;
   readonly protectedWords: ReadonlySet<string>;
 }): boolean {
   const { from, to } = options;
   const shape = caseShape(from);
   if (shape === 'other' || caseShape(to) !== shape) return false;
-  if (TAG_PREFIX_PATTERN.test(options.precedingGap)) return false;
+  if (TAG_BEFORE_PATTERN.test(options.precedingGap) || TAG_AFTER_PATTERN.test(options.followingGap)) return false;
   if (options.protectedWords.has(lookupKey(from))) return false;
   return approvedCorrection(lookupKey(from)) === lookupKey(to);
 }
@@ -95,7 +99,7 @@ export function checkCleanup(options: {
     options.protectedTerms.flatMap(term => tokenize(term).words.map(lookupKey)),
   );
   const changed = source.words
-    .map((from, index) => ({ from, to: output.words[index] ?? '', precedingGap: source.gaps[index] ?? '' }))
+    .map((from, index) => ({ from, to: output.words[index] ?? '', precedingGap: source.gaps[index] ?? '', followingGap: source.gaps[index + 1] ?? '' }))
     .filter(({ from, to }) => from !== to);
   if (!changed.every(edit => isPermittedSpellingFix({ ...edit, protectedWords }))) {
     return { ok: false, rule: 'R2' };
