@@ -267,41 +267,47 @@ export function categorizeBeer(
  * Extract ABV percentage from beer description HTML.
  * Returns null if no valid ABV found.
  *
- * Supports two patterns:
- * 1. Percentage notation: "5.2%" or "8%"
- * 2. ABV keyword: "5.2 ABV", "ABV 5.2", "ABV: 5.2"
+ * Prefers a number labelled as alcohol anywhere in the text, so ingredient
+ * percentages ("100% agave", "10% oats") ahead of the ABV cannot hide or
+ * replace it. Strongest form first:
+ * 1. Percentage then label: "5.2% ABV", "11.3 percent alcohol"
+ * 2. Label then percentage: "ABV: 5.2%", "Alcohol: 4.0%", "ABV - 4.0%"
+ * 3. Bare number beside ABV: "ABV 5.2", then "5.2 ABV"
+ * 4. Otherwise the first bare percentage: "5.2%" or "8%"
  *
- * Max 20% to filter out unrelated percentages.
+ * Labelled values up to 30% are accepted (strong ales are printed as
+ * "21% abv"); a bare percentage above 20% is treated as unrelated.
  */
 export function extractABV(description: string | undefined): number | null {
   if (!description) return null;
 
-  // Strip HTML tags to get plain text
-  const plainText = description.replace(/<[^>]*>/g, '');
+  const plainText = description.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ');
 
-  // Pattern 1: Look for percentage pattern (e.g., "5.2%" or "8%")
-  // Max 20% - higher values are likely unrelated percentages (e.g., "100% satisfaction")
-  const percentageMatch = plainText.match(/\b(\d+(?:\.\d+)?)\s*%/);
+  // A number must be a whole token: ".5", "5,2" and "0,5" never read as 5, 2 or 0.
+  // A sentence-ending period does not count: "balanced beer.11.8% abv" is 11.8.
+  const num = String.raw`(?<!\d)(?<!(?:^|[^A-Za-z])[.,])(\d+(?:\.\d+)?)(?![.,]\d)`;
+  const percent = String.raw`(?:%|percent\b|per cent\b)`;
+  const label = String.raw`(?:ABV\b|alc\b|alcohol\b(?![\s\-–—]*free))`;
+  const labelled = [
+    new RegExp(String.raw`${num}\s*${percent}\s*${label}`, 'gi'),
+    new RegExp(String.raw`${label}[:\s\-–]*${num}\s*${percent}`, 'gi'),
+    new RegExp(String.raw`\bABV[:\s\-–]*${num}`, 'gi'),
+    new RegExp(String.raw`${num}\s*ABV\b`, 'gi'),
+  ];
+  for (const pattern of labelled) {
+    for (const match of plainText.matchAll(pattern)) {
+      const abv = parseFloat(match[1] ?? '');
+      if (!isNaN(abv) && abv >= 0 && abv <= 30) {
+        return abv;
+      }
+    }
+  }
+
+  const percentageMatch = plainText.match(new RegExp(String.raw`${num}\s*%`));
   if (percentageMatch && percentageMatch[1]) {
     const abv = parseFloat(percentageMatch[1]);
     if (!isNaN(abv) && abv >= 0 && abv <= 20) {
       return abv;
-    }
-  }
-
-  // Pattern 2: Look for "ABV" near a number (e.g., "5.2 ABV", "ABV 5.2", "ABV: 5.2")
-  // Max 20% - higher values are implausible for beer, let Perplexity handle those
-  const abvPattern = /(?:ABV[:\s]*\b(\d+(?:\.\d+)?)|\b(\d+(?:\.\d+)?)\s*ABV)/i;
-  const abvMatch = plainText.match(abvPattern);
-
-  if (abvMatch) {
-    // Match could be in group 1 (ABV first) or group 2 (number first)
-    const abvString = abvMatch[1] ?? abvMatch[2];
-    if (abvString) {
-      const abv = parseFloat(abvString);
-      if (!isNaN(abv) && abv >= 0 && abv <= 20) {
-        return abv;
-      }
     }
   }
 

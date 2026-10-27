@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { handleFallbackBatch } from '../src/queue/cleanup';
 import type { Env, CleanupMessage } from '../src/types';
 
@@ -192,7 +193,7 @@ describe('handleFallbackBatch', () => {
     await handleFallbackBatch(mockEnv, mockMessages, 'fallback-quota-exceeded');
 
     expect(mockEnv.DB.batch).toHaveBeenCalledTimes(3);
-    const calls = (mockEnv.DB.batch as ReturnType<typeof vi.fn>).mock.calls;
+    const calls = (mockEnv.DB.batch as Mock).mock.calls;
     expect(calls[0][0]).toBe(calls[1][0]);
     expect(calls[1][0]).toBe(calls[2][0]);
   });

@@ -11,7 +11,7 @@
  * before implementing the N+1 query fix (Issue 7.1).
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { handleBeerList, refreshTaplistForStore } from '../../src/handlers/beers';
 import type { Env, RequestContext, FlyingSaucerBeer } from '../../src/types';
 import type { CachedBeer } from '../../src/schemas/cache';
@@ -77,8 +77,39 @@ import { queueBeersForEnrichment, queueBeersForCleanup } from '../../src/queue';
 import { getCachedTaplist, parseCachedBeers, setCachedTaplist, updateCacheTimestamp } from '../../src/db/cache';
 import { checkConditionalRequest } from '../../src/utils/conditional';
 import { shouldUpdateContent } from '../../src/utils/cache-helpers';
-import { hashDescription, buildCombinedEtag } from '../../src/utils/hash';
+import { buildCombinedEtag, hashDescription } from '../../src/utils/hash';
 import { computeEnrichmentHash } from '../../src/utils/enrichment-hash';
+
+// clearMocks only clears call history, so per-test overrides such as
+// mockResolvedValue would leak into later tests. Reset every module mock to
+// its factory default, and put back the real fetch tests replace.
+const originalFetch = globalThis.fetch;
+
+beforeEach(() => {
+  vi.mocked(insertPlaceholders).mockReset().mockResolvedValue({
+    totalSynced: 0,
+    withAbv: 0,
+    needsEnrichment: [],
+    needsCleanup: [],
+    failed: [],
+  });
+  vi.mocked(getEnrichmentForBeerIds).mockReset().mockResolvedValue(new Map());
+  vi.mocked(queueBeersForEnrichment).mockReset().mockResolvedValue({ queued: 0, skipped: 0 });
+  vi.mocked(queueBeersForCleanup).mockReset().mockResolvedValue({ queued: 0, queuedIds: [] });
+  vi.mocked(hashDescription).mockReset().mockResolvedValue('mock-hash');
+  vi.mocked(buildCombinedEtag).mockReset().mockResolvedValue('"mock-combined-etag"');
+  vi.mocked(checkConditionalRequest).mockReset().mockReturnValue(null);
+  vi.mocked(shouldUpdateContent).mockReset().mockReturnValue(true);
+  vi.mocked(getCachedTaplist).mockReset().mockResolvedValue(null);
+  vi.mocked(setCachedTaplist).mockReset().mockResolvedValue(undefined);
+  vi.mocked(updateCacheTimestamp).mockReset().mockResolvedValue(undefined);
+  vi.mocked(parseCachedBeers).mockReset().mockReturnValue(null);
+  vi.mocked(computeEnrichmentHash).mockReset().mockResolvedValue('mock-enrichment-hash');
+});
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
 
 // ============================================================================
 // Test Helpers
@@ -1388,7 +1419,7 @@ describe('handleBeerList', () => {
         '13885',
         expect.arrayContaining([expect.objectContaining({ id: '1' })]),
         'mock-hash',
-        expect.anything(),
+        undefined, // no enrichment rows, so no enrichment hash
       );
     });
 
@@ -1560,7 +1591,7 @@ describe('handleBeerList', () => {
         '13885',
         expect.arrayContaining([expect.objectContaining({ id: 'new' })]),
         'mock-hash',
-        expect.anything(),
+        undefined, // no enrichment rows, so no enrichment hash
       );
     });
 

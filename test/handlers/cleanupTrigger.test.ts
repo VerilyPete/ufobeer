@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { handleCleanupTrigger } from '../../src/handlers/cleanupTrigger';
 import type { Env, RequestContext } from '../../src/types';
 import { hashDescription } from '../../src/utils/hash';
@@ -235,7 +236,7 @@ describe('handleCleanupTrigger', () => {
 
       expect(response.status).toBe(200);
       expect(body.data.beers_queued).toBe(0);
-      const prepare = (env.DB as unknown as { prepare: ReturnType<typeof vi.fn> }).prepare;
+      const prepare = (env.DB as unknown as { prepare: Mock }).prepare;
       const sqls = (prepare.mock.calls as unknown[][]).map(c => String(c[0]));
       expect(sqls.some(sql => sql.includes('UPDATE enriched_beers SET') && sql.includes('queued_for_cleanup_at'))).toBe(false);
     });
@@ -253,7 +254,7 @@ describe('handleCleanupTrigger', () => {
 
       await handleCleanupTrigger(request, env, headers, ctx);
 
-      const prepare = (env.DB as unknown as { prepare: ReturnType<typeof vi.fn> }).prepare;
+      const prepare = (env.DB as unknown as { prepare: Mock }).prepare;
       const sqls = (prepare.mock.calls as unknown[][]).map(c => String(c[0]));
       expect(sqls.some(sql => sql.includes('UPDATE enriched_beers SET') && sql.includes('queued_for_cleanup_at'))).toBe(false);
 
@@ -266,7 +267,7 @@ describe('handleCleanupTrigger', () => {
       vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 1, queuedIds: ['1'] });
       await handleCleanupTrigger(createMockRequest({ mode: 'missing' }), env2, headers, createMockContext());
 
-      const prepare2 = (env2.DB as unknown as { prepare: ReturnType<typeof vi.fn> }).prepare;
+      const prepare2 = (env2.DB as unknown as { prepare: Mock }).prepare;
       const sqls2 = (prepare2.mock.calls as unknown[][]).map(c => String(c[0]));
       expect(sqls2.some(sql => sql.includes('UPDATE enriched_beers SET') && sql.includes('queued_for_cleanup_at'))).toBe(true);
     });

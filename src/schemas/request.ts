@@ -86,18 +86,18 @@ export const TriggerEnrichmentRequestSchema = z.object({
 
 export const TriggerCleanupRequestSchema = z.object({
   mode: z.enum(['all', 'missing'], {
-    errorMap: () => ({ message: 'INVALID_MODE: mode is required and must be "all" or "missing"' }),
+    error: 'INVALID_MODE: mode is required and must be "all" or "missing"',
   }),
   limit: z.number({
-    errorMap: () => ({ message: 'INVALID_LIMIT: limit must be a number' }),
-  }).int({ message: 'INVALID_LIMIT: limit must be a positive integer' })
-    .min(1, { message: 'INVALID_LIMIT: limit must be a positive integer' })
+    error: 'INVALID_LIMIT: limit must be a number',
+  }).int({ error: 'INVALID_LIMIT: limit must be a positive integer' })
+    .min(1, { error: 'INVALID_LIMIT: limit must be a positive integer' })
     .optional(),
   dry_run: z.boolean({
-    errorMap: () => ({ message: 'INVALID_DRY_RUN: dry_run must be a boolean' }),
+    error: 'INVALID_DRY_RUN: dry_run must be a boolean',
   }).optional().default(false),
   confirm: z.boolean({
-    errorMap: () => ({ message: 'INVALID_CONFIRM: confirm must be a boolean' }),
+    error: 'INVALID_CONFIRM: confirm must be a boolean',
   }).optional(),
 }).strict();
 

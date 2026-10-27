@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import {
   handleCleanupBatch,
   processAIConcurrently,
@@ -30,25 +31,25 @@ import type { Env, CleanupMessage } from '../src/types';
 // ============================================================================
 
 interface MockD1PreparedStatement {
-  bind: ReturnType<typeof vi.fn>;
-  run: ReturnType<typeof vi.fn>;
-  first: ReturnType<typeof vi.fn>;
-  all: ReturnType<typeof vi.fn>;
+  bind: Mock;
+  run: Mock;
+  first: Mock;
+  all: Mock;
 }
 
 interface MockD1Database {
-  batch: ReturnType<typeof vi.fn>;
-  prepare: ReturnType<typeof vi.fn>;
-  exec: ReturnType<typeof vi.fn>;
+  batch: Mock;
+  prepare: Mock;
+  exec: Mock;
   _mockStatement: MockD1PreparedStatement;
 }
 
 interface MockAI {
-  run: ReturnType<typeof vi.fn>;
+  run: Mock;
 }
 
 interface MockQueue {
-  sendBatch: ReturnType<typeof vi.fn>;
+  sendBatch: Mock;
 }
 
 interface MockEnv {
@@ -234,8 +235,8 @@ function expectAllAcked(batch: MessageBatch<CleanupMessage>): void {
  */
 function expectAllProcessed(batch: MessageBatch<CleanupMessage>): void {
   for (const msg of batch.messages) {
-    const acked = (msg.ack as ReturnType<typeof vi.fn>).mock.calls.length > 0;
-    const retried = (msg.retry as ReturnType<typeof vi.fn>).mock.calls.length > 0;
+    const acked = (msg.ack as Mock).mock.calls.length > 0;
+    const retried = (msg.retry as Mock).mock.calls.length > 0;
     expect(acked || retried).toBe(true);
   }
 }

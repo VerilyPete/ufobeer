@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { handleScheduledEnrichment } from '../../src/handlers/scheduled';
 import type { Env } from '../../src/types';
 
@@ -172,6 +173,28 @@ describe('handleScheduledEnrichment', () => {
     }
   });
 
+  it('marks blocklisted beers skipped even when every selected beer is blocklisted', async () => {
+    const db = buildSequencedDb([
+      ...SCHEDULE_DUE_CONFIGS,
+      { firstResult: { total: 0 } },
+      { firstResult: { request_count: 0 } },
+      { allResults: [
+        { id: 'beer-1', brew_name: 'Texas Flight', brewer: 'Brewery' },
+        { id: 'beer-2', brew_name: '', brewer: '' },
+      ]},
+    ]);
+    const env = createScheduledEnv({ DB: db as unknown as D1Database });
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    const skipped = db.preparedStatements
+      .filter(s => s.sql.includes("enrichment_status = 'skipped'"))
+      .map(s => s.boundArgs);
+    expect(skipped).toEqual([['beer-1'], ['beer-2']]);
+    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(env.ENRICHMENT_QUEUE.sendBatch).not.toHaveBeenCalled();
+  });
+
   // ============================================================================
   // Taplist refresh phase
   // ============================================================================
@@ -205,7 +228,7 @@ describe('handleScheduledEnrichment', () => {
     await handleScheduledEnrichment(env, ctx);
 
     // Enrichment sweep should still run despite taplist refresh failure
-    const sendBatch = env.ENRICHMENT_QUEUE.sendBatch as ReturnType<typeof vi.fn>;
+    const sendBatch = env.ENRICHMENT_QUEUE.sendBatch as Mock;
     expect(sendBatch).toHaveBeenCalled();
   });
 
@@ -227,7 +250,7 @@ describe('handleScheduledEnrichment', () => {
       { firstResult: { next_run: futureTime } },
     ]);
     const env = createScheduledEnv({ DB: db as unknown as D1Database });
-    const analytics = env.ANALYTICS as { writeDataPoint: ReturnType<typeof vi.fn> };
+    const analytics = env.ANALYTICS as { writeDataPoint: Mock };
 
     await handleScheduledEnrichment(env, createMockCtx());
 
@@ -239,7 +262,7 @@ describe('handleScheduledEnrichment', () => {
   it('skips when outside operating hours', async () => {
     vi.mocked(getCurrentHourCT).mockReturnValueOnce(3); // 3am CT
     const env = createScheduledEnv();
-    const analytics = env.ANALYTICS as { writeDataPoint: ReturnType<typeof vi.fn> };
+    const analytics = env.ANALYTICS as { writeDataPoint: Mock };
 
     await handleScheduledEnrichment(env, createMockCtx());
 

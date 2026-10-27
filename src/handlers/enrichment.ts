@@ -40,9 +40,9 @@ export type QueuePendingResult = {
  *
  * Shared by POST /admin/enrich/trigger and the cron enrichment sweep, which
  * previously carried two divergent copies of this logic. Quota checks and
- * response building stay at the call sites. Mirrors the original ordering
- * quirk: when every selected beer is blocklisted, none are marked skipped
- * (the early return precedes the marking batch).
+ * response building stay at the call sites. Blocklisted beers are marked
+ * skipped even when nothing is left to queue, so they cannot fill every
+ * future selection and starve eligible beers beyond the limit.
  */
 export async function selectAndQueuePendingEnrichment(
   env: Env,

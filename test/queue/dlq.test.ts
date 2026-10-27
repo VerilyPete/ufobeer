@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import type { Env, EnrichmentMessage, CleanupMessage } from '../../src/types';
 
 vi.mock('../../src/analytics', () => ({
@@ -59,7 +60,7 @@ const getMockDb = (runResult = {}) => ({
   }),
 });
 
-const getMockBatch = <T>(messages: Array<{ id: string; body: T; attempts: number; ack: ReturnType<typeof vi.fn>; retry: ReturnType<typeof vi.fn> }>, queue = 'beer-enrichment-dlq') => ({
+const getMockBatch = <T>(messages: Array<{ id: string; body: T; attempts: number; ack: Mock; retry: Mock }>, queue = 'beer-enrichment-dlq') => ({
   messages,
   queue,
 });

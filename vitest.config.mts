@@ -1,5 +1,5 @@
-import { defineWorkersConfig, readD1Migrations } from '@cloudflare/vitest-pool-workers/config';
-import { configDefaults } from 'vitest/config';
+import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 const isGoldenContract = process.env.GOLDEN_CONTRACT === '1';
 const migrations = isGoldenContract
@@ -11,23 +11,26 @@ const realMigrations = isGoldenContract
 	? undefined
 	: await readD1Migrations('./migrations');
 
-export default defineWorkersConfig({
+export default defineConfig({
+	plugins: [
+		cloudflareTest({
+			wrangler: { configPath: './wrangler.jsonc' },
+			// Tests mock AI and never touch Cloudflare: no remote proxy session,
+			// which would also need an API token CI does not have.
+			remoteBindings: false,
+			...(isGoldenContract && migrations
+				? { miniflare: { bindings: { TEST_MIGRATIONS: migrations } } }
+				: {}),
+			...(!isGoldenContract && realMigrations
+				? { miniflare: { bindings: { REAL_MIGRATIONS: realMigrations } } }
+				: {}),
+		}),
+	],
 	test: {
 		testTimeout: 30000,
 		clearMocks: true,
 		...(isGoldenContract
 			? { include: ['contract-test/**/*.contract.test.ts'] }
 			: { exclude: [...configDefaults.exclude, 'contract-test/**'] }),
-		poolOptions: {
-			workers: {
-				wrangler: { configPath: './wrangler.jsonc' },
-				...(isGoldenContract && migrations
-					? { miniflare: { bindings: { TEST_MIGRATIONS: migrations } } }
-					: {}),
-				...(!isGoldenContract && realMigrations
-					? { miniflare: { bindings: { REAL_MIGRATIONS: realMigrations } } }
-					: {}),
-			},
-		},
 	},
 });

@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import {
   trackRequest,
   trackEnrichment,
@@ -30,7 +31,7 @@ import type {
 // Factory Functions
 // ============================================================================
 
-const getMockAnalytics = (): { writeDataPoint: ReturnType<typeof vi.fn> } => ({
+const getMockAnalytics = (): { writeDataPoint: Mock } => ({
   writeDataPoint: vi.fn(),
 });
 
