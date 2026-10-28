@@ -4,7 +4,7 @@
 	// api.ufobeer.app custom domain verified live 2026-08-28; disable the
 	// *.workers.dev preview URL so zone-level rules cover all traffic.
 	"workers_dev": false,
-	"compatibility_date": "2025-01-01",
+	"compatibility_date": "2026-10-06",
 	"analytics_engine_datasets": [
 		{
 			"binding": "ANALYTICS",
