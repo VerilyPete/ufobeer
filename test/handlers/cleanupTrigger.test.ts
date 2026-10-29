@@ -75,9 +75,8 @@ function createMockEnv(options: {
       if (sql.includes('queued_for_cleanup_at IS NULL')) {
         filtered = filtered.filter(b => b.queued_for_cleanup_at == null);
       }
-      return {
-        first: vi.fn().mockResolvedValue({ count: filtered.length }),
-      };
+      const first = vi.fn().mockResolvedValue({ count: filtered.length });
+      return { first, bind: vi.fn().mockReturnValue({ first }) };
     }
 
     // Beer select query

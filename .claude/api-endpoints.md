@@ -127,19 +127,31 @@ Manually trigger enrichment processing for beers missing ABV.
 
 ### POST /admin/cleanup/trigger
 
-Trigger description cleanup for beers with raw descriptions.
+Trigger description cleanup. One run every 5 minutes (dry runs are exempt).
 
-**Query Parameters:**
-- `mode` (optional) - `missing` (default) or `all`
-- `limit` (optional) - Max beers to process (default: 100)
+**JSON Body:**
+- `mode` (required) - `missing`: beers never cleaned and not yet queued. `all`: beers whose cleaned text came from legacy cleanup or an older `CLEANUP_VERSION`. Their current cleaned text keeps being served until the re-clean rewrites it.
+- `limit` (optional) - Max beers per run, 1-500 (default: 500). Repeat `all` runs to work through the rest; re-cleaned beers stop matching.
+- `dry_run` (optional) - Report counts without queueing
+- `confirm` (required for `all` unless `dry_run`) - Without it, `all` returns `CONFIRMATION_REQUIRED` with `preview.beers_would_reset`
 
 **Response:**
 ```json
 {
-  "queued": 50,
-  "message": "Queued 50 beers for cleanup"
+  "success": true,
+  "data": {
+    "operation_id": "cleanup-trigger-1761750000000",
+    "beers_queued": 500,
+    "beers_reset": 500,
+    "beers_remaining": 848,
+    "mode": "all",
+    "dry_run": false
+  },
+  "requestId": "..."
 }
 ```
+
+To re-clean every description after changing cleanup rules: bump `CLEANUP_VERSION` in `src/constants.ts`, deploy, then repeat `{"mode": "all", "confirm": true}` until `beers_remaining` is 0.
 
 ### GET /admin/dlq
 

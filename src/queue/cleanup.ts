@@ -18,6 +18,7 @@ import { extractABV } from '../db/helpers';
 import { shouldSkipEnrichment } from '../config';
 import {
   ABV_CONFIDENCE_FROM_DESCRIPTION,
+  CLEANUP_VERSION,
   MAX_DESCRIPTION_LENGTH,
   MAX_CLEANED_OUTPUT_LENGTH,
 } from '../constants';
@@ -189,6 +190,7 @@ function buildBatchOperations(
             brew_description_cleaned = ?,
             description_cleaned_at = ?,
             cleanup_source = 'deterministic',
+            cleanup_version = ${CLEANUP_VERSION},
             abv = ?,
             confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION},
             enrichment_source = 'description',
@@ -205,7 +207,8 @@ function buildBatchOperations(
         UPDATE enriched_beers SET
           brew_description_cleaned = ?,
           description_cleaned_at = ?,
-          cleanup_source = 'deterministic'
+          cleanup_source = 'deterministic',
+          cleanup_version = ${CLEANUP_VERSION}
         WHERE id = ? AND description_hash = ?
       `).bind(cleaned, now, beerId, descriptionHash ?? null),
     });
