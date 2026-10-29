@@ -23,6 +23,7 @@ import {
 } from '../constants';
 import { batchUpdateWithRetry } from './cleanupHelpers';
 import { applyCleanupFixes, checkCleanup } from './cleanupGuard';
+import { repairMojibake } from './mojibake';
 import { log } from '../utils/log';
 
 // ============================================================================
@@ -51,7 +52,9 @@ function sanitizeDescription(text: string): string {
     amp: '&', nbsp: ' ', quot: '"', apos: "'", lt: '<', gt: '>',
     rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', ndash: '–', mdash: '—',
   };
-  const decoded = text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, name: string) => {
+  // Repair mojibake first: the whitespace collapse below would otherwise
+  // turn a mangled non-breaking space ("Â" + U+00A0) into "Â ".
+  const decoded = repairMojibake(text).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, name: string) => {
     if (!name.startsWith('#')) return entities[name.toLowerCase()] ?? entity;
     const hex = name[1]?.toLowerCase() === 'x';
     const point = Number.parseInt(name.slice(hex ? 2 : 1), hex ? 16 : 10);

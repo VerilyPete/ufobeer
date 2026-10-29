@@ -379,4 +379,15 @@ describe('deterministic cleanup', () => {
     expect(rows.get('beer')?.brew_description_cleaned).toBe("Brewer's & citrus 5.5% ABV bright.");
     expect(rows.get('beer')?.abv).toBe(5.5);
   });
+
+  it('repairs mojibake, including a mangled non-breaking space, before collapsing whitespace', async () => {
+    const raw = 'The aroma boastsÂ huge floral notes over a MÃ¤rzen base â€“ 6.5% ABV';
+    const hash = await hashDescription(raw);
+    const { db, rows } = createFakeD1({
+      beer: { description_hash: hash, brew_description_cleaned: null, abv: null, cleanup_source: null },
+    });
+    const msg = createMessage({ beerId: 'beer', beerName: 'Beer', brewer: 'Brewer', brewDescription: raw, descriptionHash: hash });
+    await handleCleanupBatch(createBatch([msg]), createEnv(db));
+    expect(rows.get('beer')?.brew_description_cleaned).toBe('The aroma boasts huge floral notes over a Märzen base – 6.5% ABV.');
+  });
 });
