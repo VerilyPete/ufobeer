@@ -17,6 +17,7 @@ describe('repairMojibake', () => {
     ['a non-breaking space', 'with Cider.Â  Varies by location.', 'with Cider.  Varies by location.'],
     ['several runs at once', 'MÃ¤rzen â€“ purÃ©e', 'Märzen – purée'],
     ['a byte-order mark, which is dropped', 'ï»¿A crisp lager', 'A crisp lager'],
+    ['an emoji', 'Cheers ðŸ\u008dº from the taproom', 'Cheers 🍺 from the taproom'],
   ])('repairs %s', (_case, source, expected) => {
     expect(repairMojibake(source)).toBe(expected);
   });
@@ -24,6 +25,11 @@ describe('repairMojibake', () => {
   it.each([
     ['correctly encoded accents', 'Märzen with purée, açai and Føldånroll from Wünder'],
     ['correctly encoded punctuation', 'the region’s love — rich – “Original” at 4°C…'],
+    // Each of these is also valid UTF-8 when read as Windows-1252 bytes.
+    ['a capital accent before a registered sign', 'Brewed for CAFÉ® members'],
+    ['a capital accent before an apostrophe', 'JOSÉ’s cask ale'],
+    ['a capital accent before a trademark sign', 'The BRÜ™ series'],
+    ['an accent before a closing quote and ellipsis', 'They called it “café”… and it stuck'],
     ['a lead character before plain text', 'Â la carte'],
     ['a lead character with too few continuation characters', 'love â€ bold'],
     ['a lead character before an invalid continuation', 'Ã X'],

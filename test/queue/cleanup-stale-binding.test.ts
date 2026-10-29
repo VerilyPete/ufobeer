@@ -390,4 +390,18 @@ describe('deterministic cleanup', () => {
     await handleCleanupBatch(createBatch([msg]), createEnv(db));
     expect(rows.get('beer')?.brew_description_cleaned).toBe('The aroma boasts huge floral notes over a Märzen base – 6.5% ABV.');
   });
+
+  it.each([
+    ['numeric entities', 'A M&#195;&#164;rzen lager', 'A Märzen lager.'],
+    ['a named non-breaking space', 'A crisp lager.Â&nbsp;Bright', 'A crisp lager. Bright.'],
+    ['a numeric non-breaking space', 'A crisp lager.Â&#160;Bright', 'A crisp lager. Bright.'],
+  ])('repairs mojibake hidden in %s', async (_case, raw, expected) => {
+    const hash = await hashDescription(raw);
+    const { db, rows } = createFakeD1({
+      beer: { description_hash: hash, brew_description_cleaned: null, abv: null, cleanup_source: null },
+    });
+    const msg = createMessage({ beerId: 'beer', beerName: 'Beer', brewer: 'Brewer', brewDescription: raw, descriptionHash: hash });
+    await handleCleanupBatch(createBatch([msg]), createEnv(db));
+    expect(rows.get('beer')?.brew_description_cleaned).toBe(expected);
+  });
 });

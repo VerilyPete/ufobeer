@@ -1,5 +1,6 @@
 -- Test fixture copied from schema.sql and migrations/0005_add_store_taplist_cache.sql,
--- migrations/0008_add_cache_etag_columns.sql, and migrations/0009_add_enrichment_hash.sql.
+-- migrations/0008_add_cache_etag_columns.sql, migrations/0009_add_enrichment_hash.sql,
+-- and migrations/0011_add_cleanup_version.sql.
 -- This file is intentionally isolated from production migrations.
 
 CREATE TABLE IF NOT EXISTS enriched_beers (
@@ -19,7 +20,8 @@ CREATE TABLE IF NOT EXISTS enriched_beers (
   description_cleaned_at INTEGER,
   cleanup_source TEXT,
   queued_for_cleanup_at INTEGER,
-  enrichment_status TEXT NOT NULL DEFAULT 'pending'
+  enrichment_status TEXT NOT NULL DEFAULT 'pending',
+  cleanup_version INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS store_taplist_cache (

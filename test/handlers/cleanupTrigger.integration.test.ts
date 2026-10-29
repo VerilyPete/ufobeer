@@ -2,6 +2,8 @@ import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCleanupTrigger } from '../../src/handlers/cleanupTrigger';
 import { CLEANUP_VERSION } from '../../src/constants';
+import { insertPlaceholders } from '../../src/db/helpers';
+import { hashDescription } from '../../src/utils/hash';
 import type { CleanupMessage, Env, RequestContext } from '../../src/types';
 
 type SeededBeer = {
@@ -77,6 +79,20 @@ describe("cleanup trigger mode 'all' (real D1)", () => {
     const { queuedIds } = await trigger({ mode: 'all', confirm: true, limit: 1 });
 
     expect(queuedIds).toEqual(['legacy']);
+  });
+
+  it('recovers a beer whose changed description was never re-cleaned', async () => {
+    await env.DB.prepare(`
+      INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, brew_description_cleaned, cleanup_source, cleanup_version, queued_for_cleanup_at)
+      VALUES ('changed', 'Valley Lager', 'Valley Brewing', 'A crisp lager', ?, 'A crisp lager.', 'deterministic', ?, 1)
+    `).bind(await hashDescription('A crisp lager'), CLEANUP_VERSION).run();
+
+    await insertPlaceholders(env.DB, [
+      { id: 'changed', brew_name: 'Valley Lager', brewer: 'Valley Brewing', brew_description: 'A hazy lager' },
+    ], 'request-1');
+    const { queuedIds } = await trigger({ mode: 'all', confirm: true });
+
+    expect(queuedIds).toEqual(['changed']);
   });
 
   it('previews only the descriptions that would be re-cleaned', async () => {

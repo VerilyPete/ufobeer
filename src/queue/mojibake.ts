@@ -23,7 +23,34 @@ const WINDOWS_1252_HIGH_BYTES: ReadonlyMap<string, number> = new Map([
 const CONTINUATION = `[\\u0080-\\u00bf${[...WINDOWS_1252_HIGH_BYTES.keys()].join('')}]`;
 const MOJIBAKE_RUN = new RegExp(`[\\u00c2-\\u00f4]${CONTINUATION}{1,3}`, 'gu');
 
-const strictUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false });
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+const BYTE_ORDER_MARK = '﻿';
+const C1_CONTROL = /[\u0080-\u009f]/u;
+const LATIN_1_LEADS = new Set(['Â', 'Ã']);
+
+const inRange = (codePoint: number, [from, to]: readonly [number, number]): boolean =>
+  codePoint >= from && codePoint <= to;
+
+// Characters UTF-8 encodes in three bytes that mojibake plausibly came from:
+// punctuation (– — ’ ” …), currency (€), letterlike symbols (™), ligatures
+// (ﬁ ﬂ) and the byte-order mark. A CJK character, also three bytes, is far
+// likelier to be an accent before punctuation ("café”…").
+const PLAUSIBLE_THREE_BYTE: readonly (readonly [number, number])[] = [
+  [0x2000, 0x206f], [0x20a0, 0x20cf], [0x2100, 0x214f], [0xfb00, 0xfb06], [0xfeff, 0xfeff],
+];
+const EMOJI: readonly [number, number] = [0x1f000, 0x1faff];
+
+// Valid UTF-8 alone does not prove corruption: correctly encoded "CAFÉ®" is
+// also the bytes of "ɮ". A repair is accepted only when its result is a
+// character mojibake plausibly came from.
+function isPlausibleRepair(run: string, repaired: string): boolean {
+  const codePoint = repaired.codePointAt(0) ?? 0;
+  if (codePoint >= 0x10000) return inRange(codePoint, EMOJI);
+  if (codePoint >= 0x800) return PLAUSIBLE_THREE_BYTE.some(range => inRange(codePoint, range));
+  if (LATIN_1_LEADS.has(run.charAt(0))) return inRange(codePoint, [0xa0, 0xff]);
+  return C1_CONTROL.test(run);
+}
 
 const byteOf = (char: string): number => WINDOWS_1252_HIGH_BYTES.get(char) ?? char.charCodeAt(0);
 
@@ -37,9 +64,11 @@ function repairRun(run: string): string {
   const [lead = '', ...continuations] = [...run];
   const needed = continuationsFor(byteOf(lead));
   if (continuations.length < needed) return run;
-  const bytes = [lead, ...continuations.slice(0, needed)].map(byteOf);
+  const candidate = [lead, ...continuations.slice(0, needed)];
   try {
-    return strictUtf8.decode(new Uint8Array(bytes)) + continuations.slice(needed).join('');
+    const repaired = strictUtf8.decode(new Uint8Array(candidate.map(byteOf)));
+    if (!isPlausibleRepair(candidate.join(''), repaired)) return run;
+    return repaired.replace(BYTE_ORDER_MARK, '') + continuations.slice(needed).join('');
   } catch {
     return run;
   }

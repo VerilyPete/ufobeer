@@ -50,19 +50,21 @@ function sanitizeDescription(text: string): string {
   // Decode source formatting before stripping tags so encoded markup cannot
   // bypass sanitization. Unknown entities/escapes remain literal.
   const entities: Record<string, string> = {
-    amp: '&', nbsp: ' ', quot: '"', apos: "'", lt: '<', gt: '>',
+    amp: '&', nbsp: ' ', quot: '"', apos: "'", lt: '<', gt: '>',
     rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', ndash: '–', mdash: '—',
   };
-  // Repair mojibake first: the whitespace collapse below would otherwise
-  // turn a mangled non-breaking space ("Â" + U+00A0) into "Â ".
-  const decoded = repairMojibake(text).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, name: string) => {
+  const decoded = text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, name: string) => {
     if (!name.startsWith('#')) return entities[name.toLowerCase()] ?? entity;
     const hex = name[1]?.toLowerCase() === 'x';
     const point = Number.parseInt(name.slice(hex ? 2 : 1), hex ? 16 : 10);
     return point > 0 && point <= 0x10ffff && !(point >= 0xd800 && point <= 0xdfff)
       ? String.fromCodePoint(point) : entity;
   });
-  return decoded
+  // Repair mojibake after entities are decoded, since entities can hide it
+  // ("M&#195;&#164;rzen"), and before the whitespace collapse, which would
+  // turn a mangled non-breaking space ("Â" + U+00A0) into "Â ". Repair only
+  // ever yields non-ASCII, so it cannot reintroduce markup.
+  return repairMojibake(decoded)
     .replace(/\\r\\n|\\[rnt]/g, ' ')
     .replace(/\\(['"])/g, '$1')
     .replace(/<\/?(?:p|div|br)\b[^>]*>/gi, ' ')
