@@ -28,7 +28,6 @@ const strictUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const BYTE_ORDER_MARK = '\ufeff';
 const C1_CONTROL = /[\u0080-\u009f]/u;
 const LETTER = /^\p{L}$/u;
-const STARTS_WITH_LETTER = /^\p{L}/u;
 const ENDS_WITH_LETTER = /\p{L}$/u;
 const NBSP = '\u00a0';
 // Leads whose two-byte runs decode to Latin letters (Ã -> é, Ä -> č, Å -> Ž).
@@ -72,10 +71,10 @@ function isPlausibleRepair(options: {
   const [lead = '', continuation = ''] = [...run];
   if (lead === 'Â') return inRange(codePoint, [0xa0, 0xbf]);
   if (LATIN_LETTER_LEADS.has(lead) && continuation === NBSP) {
-    // A genuine word can end in Ã or Å before a non-breaking space, so the
-    // letter must sit where it occurs: à ends a word ("à la", "voilà"),
-    // Š starts one ("Šumava").
-    return lead === 'Ã' ? !STARTS_WITH_LETTER.test(after) : !ENDS_WITH_LETTER.test(before);
+    // A genuine word can end in Ã or Å before a non-breaking space ("MAÇÃ"),
+    // whatever follows, so the run is repaired only where no genuine word
+    // ends: on its own ("à la", "Šumava"), or after mojibake ("dÃ©jÃ").
+    return !ENDS_WITH_LETTER.test(before) || hasLetterMojibake(before);
   }
   if (LATIN_LETTER_LEADS.has(lead)) {
     return LETTER.test(repaired) && inRange(codePoint, [0xc0, 0x17f])
@@ -119,11 +118,15 @@ function decodeRun(options: {
 // A word with one unambiguous repaired letter is mojibake, so a word-final
 // run in it is repaired even when its byte reads as trailing punctuation
 // ("RychtÃ¡Å™" -> "Rychtář"), while a genuine word stays intact ("MAÇÃ”").
-function repairWord(word: string): string {
-  const wordHasMojibake = [...word.matchAll(MOJIBAKE_RUN)].some(({ 0: run, index: offset }) => {
+function hasLetterMojibake(word: string): boolean {
+  return [...word.matchAll(MOJIBAKE_RUN)].some(({ 0: run, index: offset }) => {
     const decoded = decodeRun({ run, offset, word, wordHasMojibake: false });
     return decoded !== null && LETTER.test(decoded.repaired);
   });
+}
+
+function repairWord(word: string): string {
+  const wordHasMojibake = hasLetterMojibake(word);
   return word.replace(MOJIBAKE_RUN, (run: string, offset: number) => {
     const decoded = decodeRun({ run, offset, word, wordHasMojibake });
     return decoded === null ? run : decoded.repaired.replace(BYTE_ORDER_MARK, '') + decoded.rest;
