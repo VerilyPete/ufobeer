@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS enriched_beers (
     description_hash TEXT,                         -- SHA-256 hash (truncated) for change detection
     description_cleaned_at INTEGER,                -- Timestamp when cleanup was performed
     cleanup_source TEXT,                           -- 'deterministic' | 'fallback-*' | legacy 'workers-ai' | 'groq' | NULL (not yet cleaned)
-    queued_for_cleanup_at INTEGER                  -- When beer was queued for cleanup (prevents re-queueing)
+    queued_for_cleanup_at INTEGER,                 -- When beer was queued for cleanup (prevents re-queueing)
+    cleanup_version INTEGER                        -- CLEANUP_VERSION that produced the cleaned text; NULL = legacy (migration 0011)
 );
 
 CREATE INDEX IF NOT EXISTS idx_beer_name ON enriched_beers(brew_name);

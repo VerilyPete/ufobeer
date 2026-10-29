@@ -18,11 +18,13 @@ import { extractABV } from '../db/helpers';
 import { shouldSkipEnrichment } from '../config';
 import {
   ABV_CONFIDENCE_FROM_DESCRIPTION,
+  CLEANUP_VERSION,
   MAX_DESCRIPTION_LENGTH,
   MAX_CLEANED_OUTPUT_LENGTH,
 } from '../constants';
 import { batchUpdateWithRetry } from './cleanupHelpers';
 import { applyCleanupFixes, checkCleanup } from './cleanupGuard';
+import { repairMojibake } from './mojibake';
 import { log } from '../utils/log';
 
 // ============================================================================
@@ -48,7 +50,7 @@ function sanitizeDescription(text: string): string {
   // Decode source formatting before stripping tags so encoded markup cannot
   // bypass sanitization. Unknown entities/escapes remain literal.
   const entities: Record<string, string> = {
-    amp: '&', nbsp: ' ', quot: '"', apos: "'", lt: '<', gt: '>',
+    amp: '&', nbsp: '\u00a0', quot: '"', apos: "'", lt: '<', gt: '>',
     rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', ndash: '–', mdash: '—',
   };
   const decoded = text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, name: string) => {
@@ -58,7 +60,11 @@ function sanitizeDescription(text: string): string {
     return point > 0 && point <= 0x10ffff && !(point >= 0xd800 && point <= 0xdfff)
       ? String.fromCodePoint(point) : entity;
   });
-  return decoded
+  // Repair mojibake after entities are decoded, since entities can hide it
+  // ("M&#195;&#164;rzen"), and before the whitespace collapse, which would
+  // turn a mangled non-breaking space ("Â" + U+00A0) into "Â ". Repair only
+  // ever yields non-ASCII, so it cannot reintroduce markup.
+  return repairMojibake(decoded)
     .replace(/\\r\\n|\\[rnt]/g, ' ')
     .replace(/\\(['"])/g, '$1')
     .replace(/<\/?(?:p|div|br)\b[^>]*>/gi, ' ')
@@ -186,6 +192,7 @@ function buildBatchOperations(
             brew_description_cleaned = ?,
             description_cleaned_at = ?,
             cleanup_source = 'deterministic',
+            cleanup_version = ${CLEANUP_VERSION},
             abv = ?,
             confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION},
             enrichment_source = 'description',
@@ -202,7 +209,8 @@ function buildBatchOperations(
         UPDATE enriched_beers SET
           brew_description_cleaned = ?,
           description_cleaned_at = ?,
-          cleanup_source = 'deterministic'
+          cleanup_source = 'deterministic',
+          cleanup_version = ${CLEANUP_VERSION}
         WHERE id = ? AND description_hash = ?
       `).bind(cleaned, now, beerId, descriptionHash ?? null),
     });

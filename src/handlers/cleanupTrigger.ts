@@ -6,7 +6,7 @@
  *
  * Allows triggering description cleanup for:
  * - Historical beers not on current taplist (mode: 'missing')
- * - All beers for re-processing (mode: 'all')
+ * - Beers cleaned by an older CLEANUP_VERSION, for re-processing (mode: 'all')
  */
 
 import type {
@@ -21,13 +21,32 @@ import { errorResponse } from '../context';
 import { queueBeersForCleanup } from '../queue';
 import { hashDescription } from '../utils/hash';
 import { readBoundedJson, boundedJsonErrorResponse } from '../utils/body';
-import { SMALL_JSON_BODY_MAX_BYTES } from '../constants';
+import { CLEANUP_VERSION, SMALL_JSON_BODY_MAX_BYTES } from '../constants';
 import { TriggerCleanupRequestSchema } from '../schemas/request';
 import { mapZodIssueToErrorCode, extractZodErrorMessage } from '../schemas/errors';
 
 // ============================================================================
 // Types
 // ============================================================================
+
+/** Beers never cleaned and not already waiting in the queue. */
+const NEVER_CLEANED = `
+  brew_description_original IS NOT NULL
+  AND brew_description_original != ''
+  AND brew_description_cleaned IS NULL
+  AND queued_for_cleanup_at IS NULL
+`;
+
+/**
+ * Beers whose cleaned description came from legacy cleanup (NULL version)
+ * or an older version of the rules. Binds CLEANUP_VERSION. A re-cleaned
+ * beer stops matching, so repeated limited runs work through the table.
+ */
+const OUTDATED_CLEANUP = `
+  brew_description_original IS NOT NULL
+  AND brew_description_original != ''
+  AND (cleanup_version IS NULL OR cleanup_version < ?)
+`;
 
 type BeerRow = {
   readonly id: string;
@@ -130,9 +149,8 @@ async function updateCooldown(db: D1Database): Promise<void> {
 async function getPreviewCounts(db: D1Database): Promise<CleanupPreview> {
   const result = await db.prepare(`
     SELECT COUNT(*) as count FROM enriched_beers
-    WHERE brew_description_original IS NOT NULL
-      AND brew_description_original != ''
-  `).first<{ count: number }>();
+    WHERE ${OUTDATED_CLEANUP}
+  `).bind(CLEANUP_VERSION).first<{ count: number }>();
 
   const total = result?.count ?? 0;
 
@@ -150,44 +168,19 @@ async function queryEligibleBeers(
   mode: 'all' | 'missing',
   limit: number
 ): Promise<{ beers: BeerRow[]; totalCount: number }> {
-  let query: string;
-  let countQuery: string;
-
-  if (mode === 'missing') {
-    query = `
-      SELECT id, brew_name, brewer, brew_description_original
-      FROM enriched_beers
-      WHERE brew_description_original IS NOT NULL
-        AND brew_description_original != ''
-        AND brew_description_cleaned IS NULL
-        AND queued_for_cleanup_at IS NULL
-      LIMIT ?
-    `;
-    countQuery = `
-      SELECT COUNT(*) as count FROM enriched_beers
-      WHERE brew_description_original IS NOT NULL
-        AND brew_description_original != ''
-        AND brew_description_cleaned IS NULL
-        AND queued_for_cleanup_at IS NULL
-    `;
-  } else {
-    query = `
-      SELECT id, brew_name, brewer, brew_description_original
-      FROM enriched_beers
-      WHERE brew_description_original IS NOT NULL
-        AND brew_description_original != ''
-      LIMIT ?
-    `;
-    countQuery = `
-      SELECT COUNT(*) as count FROM enriched_beers
-      WHERE brew_description_original IS NOT NULL
-        AND brew_description_original != ''
-    `;
-  }
+  const [where, params] = mode === 'missing'
+    ? [NEVER_CLEANED, []]
+    : [OUTDATED_CLEANUP, [CLEANUP_VERSION]];
 
   const [beersResult, countResult] = await Promise.all([
-    db.prepare(query).bind(limit).all<BeerRow>(),
-    db.prepare(countQuery).first<{ count: number }>(),
+    db.prepare(`
+      SELECT id, brew_name, brewer, brew_description_original
+      FROM enriched_beers
+      WHERE ${where}
+      LIMIT ?
+    `).bind(...params, limit).all<BeerRow>(),
+    db.prepare(`SELECT COUNT(*) as count FROM enriched_beers WHERE ${where}`)
+      .bind(...params).first<{ count: number }>(),
   ]);
 
   return {
@@ -206,21 +199,18 @@ type BeerWithHash = {
 };
 
 /**
- * Build batch statements for resetting cleanup fields (mode: 'all').
+ * Build batch statements for re-cleaning outdated beers (mode: 'all'). The
+ * cleaned description is left in place so clients keep seeing it until the
+ * consumer overwrites it; the hash is refreshed so that write is accepted.
  */
 function buildResetStatements(
   db: D1Database,
   beers: BeerWithHash[],
   now: number
 ): D1PreparedStatement[] {
-  // Build UPDATE statements for each beer
-  // Using individual statements for clarity; could optimize with batch syntax
   return beers.map(beer =>
     db.prepare(`
       UPDATE enriched_beers SET
-        brew_description_cleaned = NULL,
-        description_cleaned_at = NULL,
-        cleanup_source = NULL,
         description_hash = ?,
         queued_for_cleanup_at = ?
       WHERE id = ?

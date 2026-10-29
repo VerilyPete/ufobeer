@@ -194,7 +194,10 @@ wrangler secret put ADMIN_SECRET     # Admin secret for /admin/* routes (X-Admin
 1. Beer with raw description queued to `description-cleanup`
 2. Deterministic fixes applied (`applyCleanupFixes` in `src/queue/cleanupGuard.ts`): reviewed spelling pairs, a missing space after a comma or between a percentage and ABV, a final full stop. No model is called.
 3. Original preserved, cleaned version stored with `cleanup_source = 'deterministic'`
+   and `cleanup_version = CLEANUP_VERSION` (`src/constants.ts`)
 4. Hash tracked for change detection
+5. After changing cleanup output, bump `CLEANUP_VERSION`; `POST /admin/cleanup/trigger`
+   with `mode: 'all'` then re-cleans older rows, 500 per run, without blanking served text
 
 ## Testing
 

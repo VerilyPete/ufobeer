@@ -432,6 +432,7 @@ export async function insertPlaceholders(
              brew_description_cleaned = NULL,
              description_cleaned_at = NULL,
              cleanup_source = NULL,
+             cleanup_version = NULL,
              enrichment_status = 'pending',
              last_seen_at = excluded.last_seen_at,
              updated_at = excluded.updated_at`

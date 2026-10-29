@@ -344,3 +344,12 @@ export const ABV_LOOKUP_RECENTLY_SEEN_MS = 7 * 24 * 60 * 60 * 1000;
  * rewriting rather than fixing typos, so larger edit sets fall back.
  */
 export const MAX_CLEANUP_GUARD_EDITS = 5;
+
+/**
+ * Version of the deterministic cleanup rules, stored with every cleaned
+ * description. Bump it whenever cleanup output changes, then run the admin
+ * cleanup trigger with mode 'all' to re-clean rows from older versions.
+ *
+ * 1: mojibake repair before sanitizing
+ */
+export const CLEANUP_VERSION = 1;

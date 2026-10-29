@@ -379,4 +379,32 @@ describe('deterministic cleanup', () => {
     expect(rows.get('beer')?.brew_description_cleaned).toBe("Brewer's & citrus 5.5% ABV bright.");
     expect(rows.get('beer')?.abv).toBe(5.5);
   });
+
+  it('repairs mojibake, including a mangled non-breaking space, before collapsing whitespace', async () => {
+    const raw = 'The aroma boastsÂ\u00a0huge floral notes over a MÃ¤rzen base â€“ 6.5% ABV';
+    const hash = await hashDescription(raw);
+    const { db, rows } = createFakeD1({
+      beer: { description_hash: hash, brew_description_cleaned: null, abv: null, cleanup_source: null },
+    });
+    const msg = createMessage({ beerId: 'beer', beerName: 'Beer', brewer: 'Brewer', brewDescription: raw, descriptionHash: hash });
+    await handleCleanupBatch(createBatch([msg]), createEnv(db));
+    expect(rows.get('beer')?.brew_description_cleaned).toBe('The aroma boasts huge floral notes over a Märzen base – 6.5% ABV.');
+  });
+
+  it.each([
+    ['mojibake hidden in numeric entities', 'A M&#195;&#164;rzen lager', 'A Märzen lager.'],
+    ['mojibake hidden in a named non-breaking space', 'A crisp lager.Â&nbsp;Bright', 'A crisp lager. Bright.'],
+    ['mojibake hidden in a numeric non-breaking space', 'A crisp lager.Â&#160;Bright', 'A crisp lager. Bright.'],
+    ['an entity-encoded à', 'A biÃ¨re Ã&nbsp; la framboise', 'A bière à la framboise.'],
+    ['an entity-encoded Š', 'Hops from Å&#160;umava', 'Hops from Šumava.'],
+    ['a genuine name inside entity-encoded quotes, unrepaired','A cider called &ldquo;MAÇÃ&rdquo;', 'A cider called “MAÇÃ”'],
+  ])('cleans %s', async (_case, raw, expected) => {
+    const hash = await hashDescription(raw);
+    const { db, rows } = createFakeD1({
+      beer: { description_hash: hash, brew_description_cleaned: null, abv: null, cleanup_source: null },
+    });
+    const msg = createMessage({ beerId: 'beer', beerName: 'Beer', brewer: 'Brewer', brewDescription: raw, descriptionHash: hash });
+    await handleCleanupBatch(createBatch([msg]), createEnv(db));
+    expect(rows.get('beer')?.brew_description_cleaned).toBe(expected);
+  });
 });

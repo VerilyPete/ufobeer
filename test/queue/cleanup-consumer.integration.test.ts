@@ -2,6 +2,7 @@ import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCleanupBatch } from '../../src/queue/cleanup';
 import type { CleanupMessage, Env } from '../../src/types';
+import { CLEANUP_VERSION } from '../../src/constants';
 
 type Beer = { readonly beerName?: string; readonly brewer?: string };
 
@@ -97,6 +98,15 @@ describe('description cleanup consumer (real D1)', () => {
   it('never alters the beer name or brewer', async () => {
     const { row } = await clean('Brewed by Pleasent Valley.', { brewer: 'Pleasent Valley Brewing' });
     expect(row).toMatchObject({ brew_description_cleaned: 'Brewed by Pleasent Valley.' });
+  });
+
+  it.each([
+    ['with an ABV', 'A crisp lager. 4.9% ABV'],
+    ['without an ABV', 'A crisp lager'],
+  ])('records the cleanup version that produced the text, %s', async (_case, description) => {
+    await clean(description);
+    const row = await env.DB.prepare('SELECT cleanup_version FROM enriched_beers WHERE id = ?').bind('beer-1').first();
+    expect(row).toEqual({ cleanup_version: CLEANUP_VERSION });
   });
 
   it('stores the sanitized source unchanged when nothing needs fixing', async () => {
