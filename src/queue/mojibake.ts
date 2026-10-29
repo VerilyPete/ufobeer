@@ -59,15 +59,17 @@ function isPlausibleRepair(options: {
   readonly run: string;
   readonly repaired: string;
   readonly after: string;
+  readonly wordHasMojibake: boolean;
 }): boolean {
-  const { run, repaired, after } = options;
+  const { run, repaired, after, wordHasMojibake } = options;
   const codePoint = repaired.codePointAt(0) ?? 0;
   if (codePoint >= 0x10000) return inRange(codePoint, EMOJI);
   if (codePoint >= 0x800) return PLAUSIBLE_THREE_BYTE.some(range => inRange(codePoint, range));
   const [lead = '', continuation = ''] = [...run];
   if (lead === 'Â') return inRange(codePoint, [0xa0, 0xbf]);
   if (LATIN_LETTER_LEADS.has(lead)) {
-    return LETTER.test(repaired) && inRange(codePoint, [0xc0, 0x17f]) && !endsWord(continuation, after);
+    return LETTER.test(repaired) && inRange(codePoint, [0xc0, 0x17f])
+      && (wordHasMojibake || !endsWord(continuation, after));
   }
   return C1_CONTROL.test(run);
 }
@@ -80,7 +82,7 @@ const continuationsFor = (leadByte: number): number => {
   return 1;
 };
 
-function repairRun(run: string, offset: number, text: string): string {
+const repairRun = (wordHasMojibake: boolean) => (run: string, offset: number, word: string): string => {
   const [lead = '', ...continuations] = [...run];
   const needed = continuationsFor(byteOf(lead));
   if (continuations.length < needed) return run;
@@ -88,14 +90,26 @@ function repairRun(run: string, offset: number, text: string): string {
   const rest = continuations.slice(needed).join('');
   try {
     const repaired = strictUtf8.decode(new Uint8Array(candidate.map(byteOf)));
-    const after = rest + text.slice(offset + run.length);
-    if (!isPlausibleRepair({ run: candidate.join(''), repaired, after })) return run;
+    const after = rest + word.slice(offset + run.length);
+    if (!isPlausibleRepair({ run: candidate.join(''), repaired, after, wordHasMojibake })) return run;
     return repaired.replace(BYTE_ORDER_MARK, '') + rest;
   } catch {
     return run;
   }
+};
+
+// A word with one unambiguous repair is mojibake, so a word-final run in it
+// is repaired even when its byte reads as trailing punctuation ("RychtÃ¡Å™"
+// -> "Rychtář"), while a genuine word stays intact ("MAÇÃ”").
+function repairWord(word: string): string {
+  const strict = word.replace(MOJIBAKE_RUN, repairRun(false));
+  return strict === word ? word : word.replace(MOJIBAKE_RUN, repairRun(true));
 }
 
+// U+00A0 is both whitespace and a continuation ("Â" + U+00A0), so it never
+// separates words here.
+const WORD_SEPARATOR = /([^\S ]+)/u;
+
 export function repairMojibake(text: string): string {
-  return text.replace(MOJIBAKE_RUN, repairRun);
+  return text.split(WORD_SEPARATOR).map(repairWord).join('');
 }

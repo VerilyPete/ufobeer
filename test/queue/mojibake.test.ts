@@ -22,6 +22,9 @@ describe('repairMojibake', () => {
     ['a Latin Extended-A capital after a guillemet byte', 'A crisp Å»ywiec lager', 'A crisp Żywiec lager'],
     ['several Central European letters', 'A PlzeÅˆskÃ½ Prazdroj clone', 'A Plzeňský Prazdroj clone'],
     ['a letter whose byte reads as punctuation inside a word', 'A classic KÃ–LSCH', 'A classic KÖLSCH'],
+    ['a word-final letter in a word with other mojibake', 'A Czech lager from RychtÃ¡Å™.', 'A Czech lager from Rychtář.'],
+    ['a word-final letter after an Extended-A letter', 'Pivovar ChotÄ›boÅ™ lager', 'Pivovar Chotěboř lager'],
+    ['mojibake in one word without touching a genuine word ending in Ã', 'A purÃ©e cider called “MAÇÃ”', 'A purée cider called “MAÇÃ”'],
   ])('repairs %s', (_case, source, expected) => {
     expect(repairMojibake(source)).toBe(expected);
   });
