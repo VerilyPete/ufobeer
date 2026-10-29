@@ -392,10 +392,11 @@ describe('deterministic cleanup', () => {
   });
 
   it.each([
-    ['numeric entities', 'A M&#195;&#164;rzen lager', 'A Märzen lager.'],
-    ['a named non-breaking space', 'A crisp lager.Â&nbsp;Bright', 'A crisp lager. Bright.'],
-    ['a numeric non-breaking space', 'A crisp lager.Â&#160;Bright', 'A crisp lager. Bright.'],
-  ])('repairs mojibake hidden in %s', async (_case, raw, expected) => {
+    ['mojibake hidden in numeric entities', 'A M&#195;&#164;rzen lager', 'A Märzen lager.'],
+    ['mojibake hidden in a named non-breaking space', 'A crisp lager.Â&nbsp;Bright', 'A crisp lager. Bright.'],
+    ['mojibake hidden in a numeric non-breaking space', 'A crisp lager.Â&#160;Bright', 'A crisp lager. Bright.'],
+    ['a genuine name inside entity-encoded quotes, unrepaired', 'A cider called &ldquo;MAÇÃ&rdquo;', 'A cider called “MAÇÃ”'],
+  ])('cleans %s', async (_case, raw, expected) => {
     const hash = await hashDescription(raw);
     const { db, rows } = createFakeD1({
       beer: { description_hash: hash, brew_description_cleaned: null, abv: null, cleanup_source: null },

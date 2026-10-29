@@ -27,7 +27,18 @@ const strictUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 const BYTE_ORDER_MARK = '﻿';
 const C1_CONTROL = /[\u0080-\u009f]/u;
-const LATIN_1_LEADS = new Set(['Â', 'Ã']);
+const LETTER = /^\p{L}$/u;
+// Leads whose two-byte runs decode to Latin letters (Ã -> é, Ä -> č, Å -> Ž).
+const LATIN_LETTER_LEADS = new Set(['Ã', 'Ä', 'Å']);
+// Characters that commonly follow a word. A word ending in Ã, Ä or Å before
+// one of these ("MAÇÃ”", "SKÅ’s") is genuine text, whereas mojibake sits
+// inside a word ("KÃ–LSCH", "maÃ®tre").
+const WORD_TRAILING = new Set(['’', '”', '“', '‘', '«', '»', '–', '—', '…', '•', '™', '®']);
+
+function endsWord(continuation: string, after: string): boolean {
+  if (!WORD_TRAILING.has(continuation)) return false;
+  return (continuation === '’' ? /^s?(?!\p{L})/u : /^(?!\p{L})/u).test(after);
+}
 
 const inRange = (codePoint: number, [from, to]: readonly [number, number]): boolean =>
   codePoint >= from && codePoint <= to;
@@ -43,12 +54,21 @@ const EMOJI: readonly [number, number] = [0x1f000, 0x1faff];
 
 // Valid UTF-8 alone does not prove corruption: correctly encoded "CAFÉ®" is
 // also the bytes of "ɮ". A repair is accepted only when its result is a
-// character mojibake plausibly came from.
-function isPlausibleRepair(run: string, repaired: string): boolean {
+// character mojibake plausibly came from, in a plausible position.
+function isPlausibleRepair(options: {
+  readonly run: string;
+  readonly repaired: string;
+  readonly after: string;
+}): boolean {
+  const { run, repaired, after } = options;
   const codePoint = repaired.codePointAt(0) ?? 0;
   if (codePoint >= 0x10000) return inRange(codePoint, EMOJI);
   if (codePoint >= 0x800) return PLAUSIBLE_THREE_BYTE.some(range => inRange(codePoint, range));
-  if (LATIN_1_LEADS.has(run.charAt(0))) return inRange(codePoint, [0xa0, 0xff]);
+  const [lead = '', continuation = ''] = [...run];
+  if (lead === 'Â') return inRange(codePoint, [0xa0, 0xbf]);
+  if (LATIN_LETTER_LEADS.has(lead)) {
+    return LETTER.test(repaired) && inRange(codePoint, [0xc0, 0x17f]) && !endsWord(continuation, after);
+  }
   return C1_CONTROL.test(run);
 }
 
@@ -60,15 +80,17 @@ const continuationsFor = (leadByte: number): number => {
   return 1;
 };
 
-function repairRun(run: string): string {
+function repairRun(run: string, offset: number, text: string): string {
   const [lead = '', ...continuations] = [...run];
   const needed = continuationsFor(byteOf(lead));
   if (continuations.length < needed) return run;
   const candidate = [lead, ...continuations.slice(0, needed)];
+  const rest = continuations.slice(needed).join('');
   try {
     const repaired = strictUtf8.decode(new Uint8Array(candidate.map(byteOf)));
-    if (!isPlausibleRepair(candidate.join(''), repaired)) return run;
-    return repaired.replace(BYTE_ORDER_MARK, '') + continuations.slice(needed).join('');
+    const after = rest + text.slice(offset + run.length);
+    if (!isPlausibleRepair({ run: candidate.join(''), repaired, after })) return run;
+    return repaired.replace(BYTE_ORDER_MARK, '') + rest;
   } catch {
     return run;
   }
