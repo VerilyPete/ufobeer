@@ -381,7 +381,7 @@ describe('deterministic cleanup', () => {
   });
 
   it('repairs mojibake, including a mangled non-breaking space, before collapsing whitespace', async () => {
-    const raw = 'The aroma boastsÂ huge floral notes over a MÃ¤rzen base â€“ 6.5% ABV';
+    const raw = 'The aroma boastsÂ\u00a0huge floral notes over a MÃ¤rzen base â€“ 6.5% ABV';
     const hash = await hashDescription(raw);
     const { db, rows } = createFakeD1({
       beer: { description_hash: hash, brew_description_cleaned: null, abv: null, cleanup_source: null },

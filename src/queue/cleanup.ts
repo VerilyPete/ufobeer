@@ -50,7 +50,7 @@ function sanitizeDescription(text: string): string {
   // Decode source formatting before stripping tags so encoded markup cannot
   // bypass sanitization. Unknown entities/escapes remain literal.
   const entities: Record<string, string> = {
-    amp: '&', nbsp: ' ', quot: '"', apos: "'", lt: '<', gt: '>',
+    amp: '&', nbsp: '\u00a0', quot: '"', apos: "'", lt: '<', gt: '>',
     rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', ndash: '–', mdash: '—',
   };
   const decoded = text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, name: string) => {

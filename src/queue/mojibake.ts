@@ -25,7 +25,7 @@ const MOJIBAKE_RUN = new RegExp(`[\\u00c2-\\u00f4]${CONTINUATION}{1,3}`, 'gu');
 
 const strictUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
-const BYTE_ORDER_MARK = '﻿';
+const BYTE_ORDER_MARK = '\ufeff';
 const C1_CONTROL = /[\u0080-\u009f]/u;
 const LETTER = /^\p{L}$/u;
 // Leads whose two-byte runs decode to Latin letters (Ã -> é, Ä -> č, Å -> Ž).
@@ -82,33 +82,46 @@ const continuationsFor = (leadByte: number): number => {
   return 1;
 };
 
-const repairRun = (wordHasMojibake: boolean) => (run: string, offset: number, word: string): string => {
+type DecodedRun = { readonly repaired: string; readonly rest: string };
+
+function decodeRun(options: {
+  readonly run: string;
+  readonly offset: number;
+  readonly word: string;
+  readonly wordHasMojibake: boolean;
+}): DecodedRun | null {
+  const { run, offset, word, wordHasMojibake } = options;
   const [lead = '', ...continuations] = [...run];
   const needed = continuationsFor(byteOf(lead));
-  if (continuations.length < needed) return run;
+  if (continuations.length < needed) return null;
   const candidate = [lead, ...continuations.slice(0, needed)];
   const rest = continuations.slice(needed).join('');
   try {
     const repaired = strictUtf8.decode(new Uint8Array(candidate.map(byteOf)));
     const after = rest + word.slice(offset + run.length);
-    if (!isPlausibleRepair({ run: candidate.join(''), repaired, after, wordHasMojibake })) return run;
-    return repaired.replace(BYTE_ORDER_MARK, '') + rest;
+    return isPlausibleRepair({ run: candidate.join(''), repaired, after, wordHasMojibake }) ? { repaired, rest } : null;
   } catch {
-    return run;
+    return null;
   }
-};
-
-// A word with one unambiguous repair is mojibake, so a word-final run in it
-// is repaired even when its byte reads as trailing punctuation ("RychtÃ¡Å™"
-// -> "Rychtář"), while a genuine word stays intact ("MAÇÃ”").
-function repairWord(word: string): string {
-  const strict = word.replace(MOJIBAKE_RUN, repairRun(false));
-  return strict === word ? word : word.replace(MOJIBAKE_RUN, repairRun(true));
 }
 
-// U+00A0 is both whitespace and a continuation ("Â" + U+00A0), so it never
-// separates words here.
-const WORD_SEPARATOR = /([^\S ]+)/u;
+// A word with one unambiguous repaired letter is mojibake, so a word-final
+// run in it is repaired even when its byte reads as trailing punctuation
+// ("RychtÃ¡Å™" -> "Rychtář"), while a genuine word stays intact ("MAÇÃ”").
+function repairWord(word: string): string {
+  const wordHasMojibake = [...word.matchAll(MOJIBAKE_RUN)].some(({ 0: run, index: offset }) => {
+    const decoded = decodeRun({ run, offset, word, wordHasMojibake: false });
+    return decoded !== null && LETTER.test(decoded.repaired);
+  });
+  return word.replace(MOJIBAKE_RUN, (run: string, offset: number) => {
+    const decoded = decodeRun({ run, offset, word, wordHasMojibake });
+    return decoded === null ? run : decoded.repaired.replace(BYTE_ORDER_MARK, '') + decoded.rest;
+  });
+}
+
+// Whitespace separates words, including a non-breaking space and its
+// mangled form "Â" + U+00A0, which is kept whole so it is still repaired.
+const WORD_SEPARATOR = /((?:Â?\u00a0|\s)+)/u;
 
 export function repairMojibake(text: string): string {
   return text.split(WORD_SEPARATOR).map(repairWord).join('');

@@ -14,7 +14,7 @@ describe('repairMojibake', () => {
     ['a closing quote ending in an undefined byte', '"Originalâ€\u009d, a flavourful beer', '"Original”, a flavourful beer'],
     ['an ellipsis', 'Dry, crisp, refreshingâ€¦.it\'s a lager', 'Dry, crisp, refreshing….it\'s a lager'],
     ['a ligature', 'a smooth proï¬\u0081le', 'a smooth proﬁle'],
-    ['a non-breaking space', 'with Cider.Â  Varies by location.', 'with Cider.  Varies by location.'],
+    ['a non-breaking space', 'with Cider.Â\u00a0 Varies by location.', 'with Cider.\u00a0 Varies by location.'],
     ['several runs at once', 'MÃ¤rzen â€“ purÃ©e', 'Märzen – purée'],
     ['a byte-order mark, which is dropped', 'ï»¿A crisp lager', 'A crisp lager'],
     ['an emoji', 'Cheers ðŸ\u008dº from the taproom', 'Cheers 🍺 from the taproom'],
@@ -25,6 +25,8 @@ describe('repairMojibake', () => {
     ['a word-final letter in a word with other mojibake', 'A Czech lager from RychtÃ¡Å™.', 'A Czech lager from Rychtář.'],
     ['a word-final letter after an Extended-A letter', 'Pivovar ChotÄ›boÅ™ lager', 'Pivovar Chotěboř lager'],
     ['mojibake in one word without touching a genuine word ending in Ã', 'A purÃ©e cider called “MAÇÃ”', 'A purée cider called “MAÇÃ”'],
+    ['mojibake across non-breaking spaces without touching a genuine name', 'Our purÃ©e\u00a0cider\u00a0“MAÇÃ” is crisp.', 'Our purée\u00a0cider\u00a0“MAÇÃ” is crisp.'],
+    ['a mangled non-breaking space after a genuine name', '“MAÇÃ”Â\u00a0with fresh apples', '“MAÇÃ”\u00a0with fresh apples'],
   ])('repairs %s', (_case, source, expected) => {
     expect(repairMojibake(source)).toBe(expected);
   });
