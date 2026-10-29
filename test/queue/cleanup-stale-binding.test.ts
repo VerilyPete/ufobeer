@@ -395,7 +395,9 @@ describe('deterministic cleanup', () => {
     ['mojibake hidden in numeric entities', 'A M&#195;&#164;rzen lager', 'A Märzen lager.'],
     ['mojibake hidden in a named non-breaking space', 'A crisp lager.Â&nbsp;Bright', 'A crisp lager. Bright.'],
     ['mojibake hidden in a numeric non-breaking space', 'A crisp lager.Â&#160;Bright', 'A crisp lager. Bright.'],
-    ['a genuine name inside entity-encoded quotes, unrepaired', 'A cider called &ldquo;MAÇÃ&rdquo;', 'A cider called “MAÇÃ”'],
+    ['an entity-encoded à', 'A biÃ¨re Ã&nbsp; la framboise', 'A bière à la framboise.'],
+    ['an entity-encoded Š', 'Hops from Å&#160;umava', 'Hops from Šumava.'],
+    ['a genuine name inside entity-encoded quotes, unrepaired','A cider called &ldquo;MAÇÃ&rdquo;', 'A cider called “MAÇÃ”'],
   ])('cleans %s', async (_case, raw, expected) => {
     const hash = await hashDescription(raw);
     const { db, rows } = createFakeD1({

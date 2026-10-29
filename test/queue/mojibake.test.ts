@@ -26,7 +26,10 @@ describe('repairMojibake', () => {
     ['a word-final letter after an Extended-A letter', 'Pivovar ChotÄ›boÅ™ lager', 'Pivovar Chotěboř lager'],
     ['mojibake in one word without touching a genuine word ending in Ã', 'A purÃ©e cider called “MAÇÃ”', 'A purée cider called “MAÇÃ”'],
     ['mojibake across non-breaking spaces without touching a genuine name', 'Our purÃ©e\u00a0cider\u00a0“MAÇÃ” is crisp.', 'Our purée\u00a0cider\u00a0“MAÇÃ” is crisp.'],
-    ['a mangled non-breaking space after a genuine name', '“MAÇÃ”Â\u00a0with fresh apples', '“MAÇÃ”\u00a0with fresh apples'],
+    ['an à read as Ã and a non-breaking space', 'A biÃ¨re Ã\u00a0 la framboise.', 'A bière à la framboise.'],
+    ['an à ending a word', 'Brewed voilÃ\u00a0!', 'Brewed voilà!'],
+    ['a word-initial Š read as Å and a non-breaking space', 'Hops from Å\u00a0umava', 'Hops from Šumava'],
+    ['a mangled non-breaking space after a genuine name','“MAÇÃ”Â\u00a0with fresh apples', '“MAÇÃ”\u00a0with fresh apples'],
   ])('repairs %s', (_case, source, expected) => {
     expect(repairMojibake(source)).toBe(expected);
   });
@@ -41,7 +44,9 @@ describe('repairMojibake', () => {
     ['an accent before a closing quote and ellipsis', 'They called it “café”… and it stuck'],
     ['a word ending in Ã before a closing quote', 'A cider called “MAÇÃ”'],
     ['a word ending in Ã before a closing guillemet', 'A cider called «MAÇÃ» here'],
-    ['a word ending in Å before an apostrophe', 'Brewed in ÅLESUND’s harbour by SKÅ’s crew'],
+    ['a word ending in Ã before a non-breaking space and a word', 'A cider called MAÇÃ\u00a0Brut'],
+    ['a word ending in Å before a non-breaking space and a word', 'Brewed in SKÅ\u00a0harbour'],
+    ['a word ending in Å before an apostrophe','Brewed in ÅLESUND’s harbour by SKÅ’s crew'],
     ['a lead character before plain text', 'Â la carte'],
     ['a lead character with too few continuation characters', 'love â€ bold'],
     ['a lead character before an invalid continuation', 'Ã X'],

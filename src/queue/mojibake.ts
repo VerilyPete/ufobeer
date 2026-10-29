@@ -28,6 +28,9 @@ const strictUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const BYTE_ORDER_MARK = '\ufeff';
 const C1_CONTROL = /[\u0080-\u009f]/u;
 const LETTER = /^\p{L}$/u;
+const STARTS_WITH_LETTER = /^\p{L}/u;
+const ENDS_WITH_LETTER = /\p{L}$/u;
+const NBSP = '\u00a0';
 // Leads whose two-byte runs decode to Latin letters (Ã -> é, Ä -> č, Å -> Ž).
 const LATIN_LETTER_LEADS = new Set(['Ã', 'Ä', 'Å']);
 // Characters that commonly follow a word. A word ending in Ã, Ä or Å before
@@ -58,15 +61,22 @@ const EMOJI: readonly [number, number] = [0x1f000, 0x1faff];
 function isPlausibleRepair(options: {
   readonly run: string;
   readonly repaired: string;
+  readonly before: string;
   readonly after: string;
   readonly wordHasMojibake: boolean;
 }): boolean {
-  const { run, repaired, after, wordHasMojibake } = options;
+  const { run, repaired, before, after, wordHasMojibake } = options;
   const codePoint = repaired.codePointAt(0) ?? 0;
   if (codePoint >= 0x10000) return inRange(codePoint, EMOJI);
   if (codePoint >= 0x800) return PLAUSIBLE_THREE_BYTE.some(range => inRange(codePoint, range));
   const [lead = '', continuation = ''] = [...run];
   if (lead === 'Â') return inRange(codePoint, [0xa0, 0xbf]);
+  if (LATIN_LETTER_LEADS.has(lead) && continuation === NBSP) {
+    // A genuine word can end in Ã or Å before a non-breaking space, so the
+    // letter must sit where it occurs: à ends a word ("à la", "voilà"),
+    // Š starts one ("Šumava").
+    return lead === 'Ã' ? !STARTS_WITH_LETTER.test(after) : !ENDS_WITH_LETTER.test(before);
+  }
   if (LATIN_LETTER_LEADS.has(lead)) {
     return LETTER.test(repaired) && inRange(codePoint, [0xc0, 0x17f])
       && (wordHasMojibake || !endsWord(continuation, after));
@@ -98,8 +108,9 @@ function decodeRun(options: {
   const rest = continuations.slice(needed).join('');
   try {
     const repaired = strictUtf8.decode(new Uint8Array(candidate.map(byteOf)));
+    const before = word.slice(0, offset);
     const after = rest + word.slice(offset + run.length);
-    return isPlausibleRepair({ run: candidate.join(''), repaired, after, wordHasMojibake }) ? { repaired, rest } : null;
+    return isPlausibleRepair({ run: candidate.join(''), repaired, before, after, wordHasMojibake }) ? { repaired, rest } : null;
   } catch {
     return null;
   }
@@ -121,7 +132,9 @@ function repairWord(word: string): string {
 
 // Whitespace separates words, including a non-breaking space and its
 // mangled form "Â" + U+00A0, which is kept whole so it is still repaired.
-const WORD_SEPARATOR = /((?:Â?\u00a0|\s)+)/u;
+// After any other lead, U+00A0 is a continuation byte ("Ã" + U+00A0 is à),
+// so it stays in the word for isPlausibleRepair to judge.
+const WORD_SEPARATOR = /((?:Â\u00a0|(?<![\u00c3-\u00f4])\u00a0|[^\S\u00a0])+)/u;
 
 export function repairMojibake(text: string): string {
   return text.split(WORD_SEPARATOR).map(repairWord).join('');
