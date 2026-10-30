@@ -19,7 +19,7 @@
 		"spelling:candidates": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/find-spelling-candidates.mjs"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-plugin": "^1.4.0",
+		"@cloudflare/vitest-plugin": "^1.4.4",
 		"typescript": "^7.0.2",
 		"vitest": "~5.0.3",
 		"wrangler": "^4.149.0"
