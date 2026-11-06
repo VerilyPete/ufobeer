@@ -20,6 +20,7 @@ import {
   FLYING_SAUCER_RESPONSE_MAX_BYTES,
   MAX_FLYING_SAUCER_RESPONSE_ITEMS,
   MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES,
+  TAPLIST_FORMAT_VERSION,
 } from '../../src/constants';
 
 // ============================================================================
@@ -1110,6 +1111,42 @@ describe('handleBeerList', () => {
         'test-request-id'
       );
     });
+
+    it('serves and stores repaired beer names and brewers', async () => {
+      const beers = [
+        createBeer({ id: '1', brew_name: "Dragon\\'s Milk Reserve ", brewer: "Brasserie D\\'achouffe", brew_description: 'Rich' }),
+      ];
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+      });
+      const env = createMockEnv();
+      const { ctx, waitUntilPromises } = createMockExecutionContext();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, createMockReqCtx(), '13885');
+      await Promise.all(waitUntilPromises);
+
+      const body = await result.response.json() as { beers: Array<{ brew_name: string; brewer: string }> };
+      expect(body.beers[0]).toMatchObject({ brew_name: "Dragon's Milk Reserve", brewer: "Brasserie D'achouffe" });
+      expect(insertPlaceholders).toHaveBeenCalledWith(
+        env.DB,
+        [{ id: '1', brew_name: "Dragon's Milk Reserve", brewer: "Brasserie D'achouffe", brew_description: 'Rich' }],
+        'test-request-id'
+      );
+    });
+
+    it('versions the taplist content hash so caches and ETags from before name repair are replaced', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue(createFlyingSaucerResponse([createBeer()])),
+      });
+      const { ctx } = createMockExecutionContext();
+
+      await handleBeerList(mockRequest, createMockEnv(), ctx, mockHeaders, createMockReqCtx(), '13885');
+
+      const rawBody = JSON.stringify(createFlyingSaucerResponse([createBeer()]));
+      expect(hashDescription).toHaveBeenCalledWith(`taplist-v${TAPLIST_FORMAT_VERSION}:${rawBody}`);
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -2002,13 +2039,13 @@ describe('handleBeerList', () => {
 
       await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
-      expect(vi.mocked(hashDescription)).toHaveBeenCalledWith(rawText);
+      expect(vi.mocked(hashDescription)).toHaveBeenCalledWith(`taplist-v${TAPLIST_FORMAT_VERSION}:${rawText}`);
       // The re-serialized form differs in whitespace from rawText -- if the
       // implementation regressed to re-stringifying the parsed object, this
       // call would appear instead of (or in addition to) the raw-bytes call.
       const reSerialized = JSON.stringify(JSON.parse(rawText));
       expect(reSerialized).not.toBe(rawText);
-      expect(vi.mocked(hashDescription)).not.toHaveBeenCalledWith(reSerialized);
+      expect(vi.mocked(hashDescription)).not.toHaveBeenCalledWith(`taplist-v${TAPLIST_FORMAT_VERSION}:${reSerialized}`);
     });
   });
 

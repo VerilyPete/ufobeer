@@ -353,3 +353,12 @@ export const MAX_CLEANUP_GUARD_EDITS = 5;
  * 1: mojibake repair before sanitizing
  */
 export const CLEANUP_VERSION = 1;
+
+/**
+ * Version of how GET /beers reshapes upstream fields, folded into the taplist
+ * content hash. Bump it whenever served names or other upstream fields change
+ * shape, so cached taplists are rewritten and clients' ETags stop matching.
+ *
+ * 1: beer names and brewers repaired with cleanBeerName
+ */
+export const TAPLIST_FORMAT_VERSION = 1;

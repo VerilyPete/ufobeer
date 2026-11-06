@@ -35,8 +35,9 @@ import { isValidStoreId } from '../validation/storeId';
 import { logError, logWithContext } from '../utils/log';
 import { readBoundedJson, boundedJsonErrorResponse } from '../utils/body';
 import { readBoundedText, ResponseTooLargeError } from '../utils/bounded-response';
-import { CACHE_TTL_MS, UPSTREAM_TAPLIST_TIMEOUT_MS, SYNC_BODY_MAX_BYTES, SMALL_JSON_BODY_MAX_BYTES, FLYING_SAUCER_RESPONSE_MAX_BYTES } from '../constants';
+import { CACHE_TTL_MS, TAPLIST_FORMAT_VERSION, UPSTREAM_TAPLIST_TIMEOUT_MS, SYNC_BODY_MAX_BYTES, SMALL_JSON_BODY_MAX_BYTES, FLYING_SAUCER_RESPONSE_MAX_BYTES } from '../constants';
 import { FlyingSaucerResponseSchema, isFlyingSaucerBeerRecordWithinSizeCap } from '../schemas/external';
+import { cleanBeerName } from '../utils/beer-name';
 import {
   BatchLookupRequestSchema,
   SyncBeersRequestOuterSchema,
@@ -293,7 +294,7 @@ async function fetchMergeAndCacheTaplist(
   // hash. NOTE: this changes the hash's input from `JSON.stringify(parsed)`
   // to the raw upstream bytes; see the security review report for the
   // one-time cache-invalidation consequence of that change.
-  const rawHash = await hashDescription(rawResponseBody);
+  const rawHash = await hashDescription(`taplist-v${TAPLIST_FORMAT_VERSION}:${rawResponseBody}`);
 
   // 4. Parse response with type guards
   // Flying Saucer API returns: [{...}, {brewInStock: [...]}]
@@ -332,7 +333,12 @@ async function fetchMergeAndCacheTaplist(
   // passthrough fields the schema itself can't bound) before hashing/caching.
   const rawBeers = rawBeersUnvalidated
     .filter(isValidBeer)
-    .filter(isFlyingSaucerBeerRecordWithinSizeCap);
+    .filter(isFlyingSaucerBeerRecordWithinSizeCap)
+    .map(beer => ({
+      ...beer,
+      brew_name: cleanBeerName(beer.brew_name),
+      ...(beer.brewer === undefined ? {} : { brewer: cleanBeerName(beer.brewer) }),
+    }));
 
   // 3. Fetch enrichment data from D1 (bounded query with chunking)
   const beerIds = rawBeers.map(b => b.id);
