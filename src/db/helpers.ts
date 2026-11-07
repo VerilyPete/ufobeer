@@ -182,7 +182,7 @@ export type InsertPlaceholdersResult = {
 type BeerInput = {
   readonly id: string;
   readonly brew_name: string;
-  readonly brewer: string;
+  readonly brewer?: string | undefined;
   readonly brew_description?: string | undefined;
 };
 
@@ -336,7 +336,7 @@ export function extractABV(description: string | undefined): number | null {
  */
 export async function insertPlaceholders(
   db: D1Database,
-  sourceBeers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string; readonly brew_description?: string | undefined }>,
+  sourceBeers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer?: string | undefined; readonly brew_description?: string | undefined }>,
   requestId: string
 ): Promise<InsertPlaceholdersResult> {
   const beers = sourceBeers.map(cleanBeerNames);
@@ -414,7 +414,7 @@ export async function insertPlaceholders(
         needsCleanup.push({
           id: beer.id,
           brew_name: beer.brew_name,
-          brewer: beer.brewer,
+          brewer: beer.brewer ?? '',
           brew_description: beer.brew_description!,
           // Non-null: this branch is only reached when beer.brew_description
           // is truthy, in which case hashMap.get(beer.id) (the source of
@@ -428,7 +428,7 @@ export async function insertPlaceholders(
            VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              brew_name = excluded.brew_name,
-             brewer = excluded.brewer,
+             brewer = COALESCE(excluded.brewer, enriched_beers.brewer),
              brew_description_original = excluded.brew_description_original,
              description_hash = excluded.description_hash,
              brew_description_cleaned = NULL,
@@ -439,12 +439,12 @@ export async function insertPlaceholders(
              last_seen_at = excluded.last_seen_at,
              updated_at = excluded.updated_at`
             )
-            .bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description, descriptionHash, now, now)
+            .bind(beer.id, beer.brew_name, beer.brewer ?? null, beer.brew_description, descriptionHash, now, now)
         );
         break;
 
       case 'needs_enrichment':
-        needsEnrichment.push({ id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer, descriptionHash });
+        needsEnrichment.push({ id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer ?? '', descriptionHash });
         writeStatements.push(
           db
             .prepare(
@@ -452,10 +452,10 @@ export async function insertPlaceholders(
            VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              brew_name = excluded.brew_name,
-             brewer = excluded.brewer,
+             brewer = COALESCE(excluded.brewer, enriched_beers.brewer),
              last_seen_at = excluded.last_seen_at`
             )
-            .bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description || null, descriptionHash, now, now)
+            .bind(beer.id, beer.brew_name, beer.brewer ?? null, beer.brew_description || null, descriptionHash, now, now)
         );
         break;
 
@@ -467,11 +467,11 @@ export async function insertPlaceholders(
            VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              brew_name = excluded.brew_name,
-             brewer = excluded.brewer,
+             brewer = COALESCE(excluded.brewer, enriched_beers.brewer),
              enrichment_status = 'skipped',
              last_seen_at = excluded.last_seen_at`
             )
-            .bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description || null, descriptionHash, now, now)
+            .bind(beer.id, beer.brew_name, beer.brewer ?? null, beer.brew_description || null, descriptionHash, now, now)
         );
         break;
 
@@ -483,7 +483,7 @@ export async function insertPlaceholders(
               `INSERT INTO enriched_beers (id, brew_name, brewer, abv, confidence, enrichment_source, enrichment_status, brew_description_original, description_hash, last_seen_at, updated_at)
              VALUES (?, ?, ?, ?, ${ABV_CONFIDENCE_FROM_DESCRIPTION}, 'description', 'enriched', ?, ?, ?, ?)`
             )
-            .bind(beer.id, beer.brew_name, beer.brewer, c.abv, beer.brew_description || null, descriptionHash, now, now)
+            .bind(beer.id, beer.brew_name, beer.brewer ?? null, c.abv, beer.brew_description || null, descriptionHash, now, now)
         );
         break;
 
@@ -491,7 +491,7 @@ export async function insertPlaceholders(
         needsCleanup.push({
           id: beer.id,
           brew_name: beer.brew_name,
-          brewer: beer.brewer,
+          brewer: beer.brewer ?? '',
           brew_description: beer.brew_description!,
           // Non-null: this branch is only reached when beer.brew_description
           // is truthy, in which case hashMap.get(beer.id) (the source of
@@ -504,19 +504,19 @@ export async function insertPlaceholders(
               `INSERT INTO enriched_beers (id, brew_name, brewer, enrichment_status, brew_description_original, description_hash, last_seen_at, updated_at)
              VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`
             )
-            .bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description, descriptionHash, now, now)
+            .bind(beer.id, beer.brew_name, beer.brewer ?? null, beer.brew_description, descriptionHash, now, now)
         );
         break;
 
       case 'new_needs_enrichment':
-        needsEnrichment.push({ id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer, descriptionHash });
+        needsEnrichment.push({ id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer ?? '', descriptionHash });
         writeStatements.push(
           db
             .prepare(
               `INSERT INTO enriched_beers (id, brew_name, brewer, enrichment_status, last_seen_at, updated_at)
              VALUES (?, ?, ?, 'pending', ?, ?)`
             )
-            .bind(beer.id, beer.brew_name, beer.brewer, now, now)
+            .bind(beer.id, beer.brew_name, beer.brewer ?? null, now, now)
         );
         break;
 
@@ -527,14 +527,14 @@ export async function insertPlaceholders(
               `INSERT INTO enriched_beers (id, brew_name, brewer, enrichment_status, last_seen_at, updated_at)
              VALUES (?, ?, ?, 'skipped', ?, ?)`
             )
-            .bind(beer.id, beer.brew_name, beer.brewer, now, now)
+            .bind(beer.id, beer.brew_name, beer.brewer ?? null, now, now)
         );
         break;
 
       case 'unchanged':
         writeStatements.push(
-          db.prepare(`UPDATE enriched_beers SET last_seen_at = ?, brew_name = ?, brewer = ? WHERE id = ?`)
-            .bind(now, beer.brew_name, beer.brewer, beer.id)
+          db.prepare(`UPDATE enriched_beers SET last_seen_at = ?, brew_name = ?, brewer = COALESCE(?, brewer) WHERE id = ?`)
+            .bind(now, beer.brew_name, beer.brewer ?? null, beer.id)
         );
         break;
     }

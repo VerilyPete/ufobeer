@@ -23,6 +23,14 @@ describe('cleanBeerName', () => {
   });
 
   it.each([
+    ['Eureka Heights Un Poquito MÃƒÂ¡s', 'Eureka Heights Un Poquito Más'],
+    ["Blue Owl Bob\\\\'s Cold One", "Blue Owl Bob's Cold One"],
+  ])('repairs every layer in one pass, so cleaning again changes nothing: %s', (name, expected) => {
+    expect(cleanBeerName(name)).toBe(expected);
+    expect(cleanBeerName(cleanBeerName(name))).toBe(expected);
+  });
+
+  it.each([
     'Clausthaler Classic N/A (BTL)',
     'Mystery Beer (CAN/BTL)',
     'Boulevard Tank 7 w/ Glass',

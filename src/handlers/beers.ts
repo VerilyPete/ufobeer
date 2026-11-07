@@ -112,7 +112,7 @@ function buildFlyingSaucerUrl(base: string, storeId: string): FlyingSaucerUrlRes
  */
 async function processBackgroundEnrichment(
   env: Env,
-  beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string; readonly brew_description?: string | undefined }>,
+  beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer?: string | undefined; readonly brew_description?: string | undefined }>,
   requestId: string
 ): Promise<void> {
   try {
