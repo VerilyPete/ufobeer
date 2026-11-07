@@ -126,6 +126,34 @@ describe('runUsageHealthCheck (real D1)', () => {
     errors.mockRestore();
   });
 
+  it('measures the backlog from the oldest expired row when current rows are present too', async () => {
+    const today = utcDay(CHECK_TICK);
+    const twoMidnightsAgo = (retention: number) => dayExpiredMidnightsAgo(retention, 2);
+    await env.DB.batch([
+      insertDaily(twoMidnightsAgo(DAILY_RETENTION_DAYS), 'expired'),
+      insertDaily(today, 'current'),
+      env.DB.prepare('INSERT INTO usage_installs (install_id, first_seen_day, last_seen_day) VALUES (?, ?, ?), (?, ?, ?)')
+        .bind('expired', today, twoMidnightsAgo(DAILY_RETENTION_DAYS), 'current', today, today),
+      env.DB.prepare("INSERT INTO usage_batches (install_id, batch_id, request_id, received_at) VALUES ('i', 'old', 'r', ?), ('i', 'new', 'r', ?)")
+        .bind(CHECK_TICK - BATCH_RETENTION_DAYS * DAY_MS - 3 * DAY_MS, CHECK_TICK),
+      env.DB.prepare('INSERT INTO usage_ingest_daily (day, posts) VALUES (?, 1), (?, 1)')
+        .bind(twoMidnightsAgo(INGEST_RETENTION_DAYS), today),
+    ]);
+    const errors = captureErrors();
+
+    const result = await runUsageHealthCheck(env.DB, CHECK_TICK);
+
+    const sinceTwoMidnightsAgo = CHECK_TICK - (START_OF_TODAY - 2 * DAY_MS);
+    expect(result.checked && result.overdueMs).toEqual({
+      usage_daily: sinceTwoMidnightsAgo,
+      usage_installs: sinceTwoMidnightsAgo,
+      usage_batches: 3 * DAY_MS,
+      usage_ingest_daily: sinceTwoMidnightsAgo,
+    });
+    expect(result.checked && result.alerts).toHaveLength(4);
+    errors.mockRestore();
+  });
+
   it('ignores rows that are old but not yet past their window', async () => {
     await env.DB.prepare("INSERT INTO usage_installs (install_id, first_seen_day, last_seen_day) VALUES ('veteran', ?, ?)")
       .bind(utcDay(CHECK_TICK - 400 * DAY_MS), utcDay(CHECK_TICK)).run();

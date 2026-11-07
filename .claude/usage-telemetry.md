@@ -32,6 +32,10 @@ npx wrangler d1 execute beer-db --remote --command "<query>"
 Add `--json` for machine-readable output. Replace `<install-id>` with a
 lower-case UUID.
 
+"Last 30 days" below means 30 receipt days including today:
+`day >= date('now', '-29 days')`. Today's figures are partial until the
+UTC day ends; add `AND day < date('now')` for completed days only.
+
 ## Example questions
 
 ### One install's profile over 30 days
@@ -42,7 +46,7 @@ suggestion opens":
 ```sql
 SELECT event, SUM(count) AS total
 FROM usage_daily
-WHERE install_id = '<install-id>' AND day >= date('now', '-30 days')
+WHERE install_id = '<install-id>' AND day >= date('now', '-29 days')
 GROUP BY event
 ORDER BY total DESC;
 ```
@@ -54,7 +58,7 @@ it at least once, and how often per session among those that did.
 
 ```sql
 WITH recent AS (
-  SELECT * FROM usage_daily WHERE day >= date('now', '-30 days')
+  SELECT * FROM usage_daily WHERE day >= date('now', '-29 days')
 ),
 active AS (SELECT COUNT(DISTINCT install_id) AS installs FROM recent),
 sessions AS (
@@ -82,7 +86,7 @@ as uses per install. Tune the bucket edges once real data arrives.
 
 ```sql
 WITH recent AS (
-  SELECT * FROM usage_daily WHERE day >= date('now', '-30 days')
+  SELECT * FROM usage_daily WHERE day >= date('now', '-29 days')
 ),
 buckets AS (
   SELECT install_id,
@@ -103,30 +107,43 @@ GROUP BY b.bucket, r.event
 ORDER BY b.bucket, uses_per_install DESC;
 ```
 
-### Apple Intelligence fallback rate, by `ai_status`
+### Apple Intelligence fallback rate per install
 
 Attempts are Apple Intelligence results plus fallbacks. A device that uses
 local matching from the start (any `ai_status` other than
-`apple_intelligence`) is not a fallback.
+`apple_intelligence`) is not a fallback, so it has no attempts and is left
+out.
 
 ```sql
-WITH recent AS (
-  SELECT * FROM usage_daily WHERE day >= date('now', '-30 days')
-),
-per_install AS (
+WITH per_install AS (
   SELECT install_id, ai_status,
          SUM(CASE WHEN event LIKE 'fallback\_%' ESCAPE '\' THEN count ELSE 0 END) AS fallbacks,
-         SUM(CASE WHEN event = 'apple_intelligence_used' THEN count ELSE 0 END) AS ai_results
-  FROM recent GROUP BY install_id, ai_status
+         SUM(CASE WHEN (event = 'apple_intelligence_used' OR event LIKE 'fallback\_%' ESCAPE '\') THEN count ELSE 0 END) AS attempts
+  FROM usage_daily
+  WHERE day >= date('now', '-29 days')
+  GROUP BY install_id, ai_status
 )
-SELECT ai_status,
-       COUNT(*) AS installs,
-       SUM(fallbacks) AS fallbacks,
-       SUM(ai_results + fallbacks) AS attempts,
-       ROUND(100.0 * SUM(fallbacks) / NULLIF(SUM(ai_results + fallbacks), 0), 1) AS fallback_pct
+SELECT install_id, ai_status, fallbacks, attempts,
+       ROUND(100.0 * fallbacks / attempts, 1) AS fallback_pct
 FROM per_install
+WHERE attempts > 0
+ORDER BY fallback_pct DESC, attempts DESC;
+```
+
+The pooled rate for each `ai_status` hides an install that always falls
+back behind installs that rarely do, so read it next to the per-install
+rates:
+
+```sql
+SELECT ai_status,
+       COUNT(DISTINCT install_id) AS installs,
+       SUM(CASE WHEN event LIKE 'fallback\_%' ESCAPE '\' THEN count ELSE 0 END) AS fallbacks,
+       ROUND(100.0 * SUM(CASE WHEN event LIKE 'fallback\_%' ESCAPE '\' THEN count ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN (event = 'apple_intelligence_used' OR event LIKE 'fallback\_%' ESCAPE '\') THEN count ELSE 0 END), 0), 1) AS fallback_pct
+FROM usage_daily
+WHERE day >= date('now', '-29 days')
 GROUP BY ai_status
-ORDER BY attempts DESC;
+ORDER BY fallbacks DESC;
 ```
 
 For the split by failure reason, group by `event` with
