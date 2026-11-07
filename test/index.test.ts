@@ -314,6 +314,25 @@ describe('rate limiter wiring', () => {
     expect(body['error']).toBe('Service temporarily unavailable');
   });
 
+  it('returns 503 when the /usage per-IP limiter cannot run', async () => {
+    const { db, first } = createSequencedDbMock();
+    first.mockResolvedValueOnce({ request_count: 1 });
+    first.mockRejectedValueOnce(new Error('D1 unavailable'));
+    vi.mocked(validateApiKey).mockResolvedValueOnce({ valid: true, apiKeyHash: 'hash-123' });
+    const env = createMockEnv({ db });
+    const ctx = createMockCtx();
+    const request = new Request('https://api.ufobeer.app/usage', {
+      method: 'POST',
+      headers: { 'X-API-Key': 'test-api-key', 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+
+    const response = await worker.fetch(request, env, ctx);
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('Retry-After')).toBe('10');
+  });
+
   it('throttles /health under the pre-auth limit', async () => {
     const { db, first } = createSequencedDbMock();
     first.mockResolvedValueOnce({ request_count: 31 });

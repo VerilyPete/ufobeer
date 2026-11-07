@@ -151,6 +151,44 @@ CREATE INDEX IF NOT EXISTS idx_dlq_replayed_at ON dlq_messages(replayed_at);
 CREATE INDEX IF NOT EXISTS idx_dlq_status_failed_id ON dlq_messages(status, failed_at, id);
 
 -- ============================================================================
+-- Usage telemetry (POST /usage, migration 0012)
+-- ============================================================================
+-- Unverified per-install daily feature counts. See plans/usage-telemetry.md.
+CREATE TABLE IF NOT EXISTS usage_daily (
+  day         TEXT    NOT NULL,
+  install_id  TEXT    NOT NULL,
+  event       TEXT    NOT NULL,
+  app_version TEXT    NOT NULL,
+  ai_status   TEXT    NOT NULL,
+  os_major    INTEGER NOT NULL,
+  count       INTEGER NOT NULL,
+  PRIMARY KEY (day, install_id, event, app_version, ai_status, os_major)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_daily_install ON usage_daily (install_id, day);
+
+CREATE TABLE IF NOT EXISTS usage_installs (
+  install_id     TEXT NOT NULL PRIMARY KEY,
+  first_seen_day TEXT NOT NULL,
+  last_seen_day  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_installs_first_seen ON usage_installs (first_seen_day);
+CREATE INDEX IF NOT EXISTS idx_usage_installs_last_seen  ON usage_installs (last_seen_day);
+
+CREATE TABLE IF NOT EXISTS usage_batches (
+  install_id  TEXT    NOT NULL,
+  batch_id    TEXT    NOT NULL,
+  request_id  TEXT    NOT NULL,
+  received_at INTEGER NOT NULL,
+  PRIMARY KEY (install_id, batch_id)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_batches_received ON usage_batches (received_at);
+
+CREATE TABLE IF NOT EXISTS usage_ingest_daily (
+  day   TEXT    NOT NULL PRIMARY KEY,
+  posts INTEGER NOT NULL
+);
+
+-- ============================================================================
 -- Description Cleanup Columns (added to enriched_beers)
 -- ============================================================================
 -- These columns support the LLM-based description cleanup pipeline.

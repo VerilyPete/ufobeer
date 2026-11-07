@@ -95,6 +95,64 @@ export const ADMIN_AUDIT_MAX_TARGET_IDS = 100;
  */
 export const RATE_LIMIT_REAP_LIMIT = 10_000;
 
+/**
+ * Per-install usage rows (usage_daily, usage_installs) are kept this long
+ * during the beta. See plans/usage-telemetry.md (Retention).
+ */
+export const USAGE_DAILY_RETENTION_DAYS = 180;
+
+/**
+ * usage_batches dedup window. Compliant clients delete a pending batch after
+ * 7 days, so one extra day covers a resend frozen just before expiry.
+ */
+export const USAGE_BATCH_RETENTION_DAYS = 8;
+
+/** usage_ingest_daily rows only matter for today's post budget. */
+export const USAGE_INGEST_RETENTION_DAYS = 30;
+
+/**
+ * Maximum rows deleted per usage table per cron tick. At the growth budget
+ * usage_daily gains at most 2,000 posts x 25 events = 50,000 rows a day; 72
+ * ticks a day x 5,000 = 360,000 a day, several times worst-case ingest.
+ * Recompute when events are added.
+ */
+export const USAGE_REAP_LIMIT = 5_000;
+
+/**
+ * UTC hour of the once-a-day usage health check (the cron tick in its first
+ * 20 minutes). Once a day keeps the usage_daily COUNT(*) scan cheap.
+ */
+export const USAGE_HEALTH_CHECK_UTC_HOUR = 17;
+
+/**
+ * usage_daily row count that raises an alert. A beta of a few hundred
+ * installs over the 180-day window stays well under this; a flood of
+ * invented installs at the growth budget (50,000 rows a day) crosses it
+ * within about ten days.
+ */
+export const USAGE_DAILY_ROW_ALERT = 500_000;
+
+/** Alert when a usage table's oldest expired row is overdue by more than this. */
+export const USAGE_REAP_BACKLOG_ALERT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Install IDs first seen per UTC day. Install IDs are client-chosen, so
+ * this bounds how fast an invented-ID flood can grow usage_installs and
+ * usage_daily. Posts from installs already known keep counting.
+ */
+export const USAGE_NEW_INSTALL_DAILY_CAP = 500;
+
+/** Usage posts written per UTC day across all installs. */
+export const USAGE_POST_DAILY_CAP = 2_000;
+
+/**
+ * POST /usage requests per minute per client IP, in their own bucket
+ * outside the shared per-API-key limiter. Every install shares one API key,
+ * so a per-key limit would throttle the whole fleet; a normal client sends
+ * about one post per session.
+ */
+export const USAGE_RATE_LIMIT_RPM = 6;
+
 // =============================================================================
 // D1 Batching Constants
 // =============================================================================

@@ -37,6 +37,9 @@ export type Env = {
   readonly DAILY_ENRICHMENT_LIMIT?: string | undefined;
   readonly MONTHLY_ENRICHMENT_LIMIT?: string | undefined;
   readonly ENRICHMENT_ENABLED?: string | undefined;
+
+  // POST /usage kill switch: ingestion runs only when exactly 'true'.
+  readonly USAGE_ENABLED?: string | undefined;
 };
 
 // ============================================================================

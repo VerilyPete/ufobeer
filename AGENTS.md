@@ -19,7 +19,8 @@ src/
 ├── handlers/          # Request handlers by feature
 │   ├── beers.ts       # GET /beers, POST /beers/batch, POST /beers/sync
 │   ├── admin.ts       # Admin endpoints (triggers, DLQ)
-│   └── health.ts      # GET /health
+│   ├── health.ts      # GET /health
+│   └── usage.ts       # POST /usage (usage telemetry)
 ├── queue/             # Queue consumers
 │   ├── enrichment.ts  # Perplexity API enrichment
 │   ├── cleanup.ts     # Deterministic description cleanup
@@ -54,6 +55,7 @@ See [.claude/api-endpoints.md](.claude/api-endpoints.md) for full documentation.
 - `POST /beers/batch` - Batch lookup enrichment for multiple beers
 - `POST /beers/sync` - Full sync from Flying Saucer API
 - `GET /health` - Health check with quota status
+- `POST /usage` - Beta usage telemetry from BeerSelector (per-install daily feature counts)
 
 ### Admin (admin API key required)
 - `POST /admin/enrich/trigger` - Trigger enrichment processing
@@ -74,6 +76,7 @@ D1 SQLite database. Schema is fully documented in `schema.sql`.
 - `dlq_messages` - Failed queue messages for admin inspection
 - `audit_log` - Request audit trail
 - `system_state` - Locks and configuration
+- `usage_daily`, `usage_installs`, `usage_batches`, `usage_ingest_daily` - Usage telemetry (migration 0012; see Usage Telemetry below)
 
 ### Migrations
 
@@ -157,6 +160,7 @@ PERPLEXITY_MAX_CONCURRENCY  # Parallel Perplexity calls (10)
 DAILY_ENRICHMENT_LIMIT  # Perplexity calls/day (500)
 MONTHLY_ENRICHMENT_LIMIT # Perplexity calls/month (2000)
 ENRICHMENT_ENABLED      # Toggle enrichment (true)
+USAGE_ENABLED           # POST /usage ingests only when exactly "true" (false)
 ```
 
 ### Secrets
@@ -198,6 +202,30 @@ wrangler secret put ADMIN_SECRET     # Admin secret for /admin/* routes (X-Admin
 4. Hash tracked for change detection
 5. After changing cleanup output, bump `CLEANUP_VERSION`; `POST /admin/cleanup/trigger`
    with `mode: 'all'` then re-cleans older rows, 500 per run, without blanking served text
+
+### Usage Telemetry (`POST /usage`)
+- BeerSelector posts daily per-install feature counts keyed by a random
+  install ID. Counts are **unverified** (the API key ships in the app and
+  install IDs are client-chosen): good for trends and ratios, not exact figures.
+- `USAGE_ENABLED` kill switch: anything but `"true"` returns 204 without
+  writing. Every accepted case is a 204, because a 204 tells the client to
+  delete its batch; only a bad envelope is a 400.
+- Rate limit: 6/min per IP under `usage:{ip}`, routed before the shared
+  per-API-key bucket so telemetry never spends the `/beers` budget.
+- Growth budgets (UTC day, `src/constants.ts`): at most 500 new install IDs
+  and 2,000 counted posts. Over budget is a 204 that writes nothing and is
+  logged plus sent to Analytics Engine with its reason.
+- Writes run in one `db.batch()` transaction (`recordUsageReport` in
+  `src/db/usage.ts`); a repeated `(install_id, batch_id)` is ignored.
+- Retention, reaped every cron tick before the enrichment gates, 5,000 rows
+  per table per tick: `usage_daily` and `usage_installs` 180 days,
+  `usage_batches` 8 days (the dedup window), `usage_ingest_daily` 30 days.
+- Daily health check (17:00 UTC tick) logs `usage_daily` size and cleanup
+  backlog; alerts go out via `console.error` and the error-alerts tail worker.
+- Adding an event: add it to `USAGE_EVENTS` in `src/schemas/request.ts` and
+  recompute the reap throughput note in `src/constants.ts`. Until deployed,
+  the worker drops the unknown event and nothing breaks.
+- Queries and monitoring: `.claude/usage-telemetry.md`. Design: `plans/usage-telemetry.md`.
 
 ## Testing
 
