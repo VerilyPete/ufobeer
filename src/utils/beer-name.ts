@@ -1,19 +1,29 @@
 import { repairMojibake } from '../queue/mojibake';
 
-/**
- * Repair a Flying Saucer beer name or brewer for display: mojibake,
- * backslash-escaped quotes ("Dragon\'s") and stray whitespace. Never
- * changes spelling or wording.
- */
-export function cleanBeerName(name: string): string {
-  const cleaned = repairMojibake(name)
+const MAX_REPAIR_PASSES = 4;
+
+function repairPass(name: string): string {
+  return repairMojibake(name)
     .replace(/\\+(['"])/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
-  // Repeat until nothing changes, so double-encoded mojibake is fully
-  // repaired and cleaning an already-clean name is a no-op. Each changing
-  // pass shortens the name or normalizes whitespace, so this terminates.
-  return cleaned === name ? name : cleanBeerName(cleaned);
+}
+
+function settle(original: string, current: string, passesLeft: number): string {
+  const next = repairPass(current);
+  if (next === current) return current;
+  return passesLeft > 1 ? settle(original, next, passesLeft - 1) : original;
+}
+
+/**
+ * Repair a Flying Saucer beer name or brewer for display: mojibake,
+ * backslash-escaped quotes ("Dragon\'s") and stray whitespace. Never
+ * changes spelling or wording. Passes repeat until the name is stable, so
+ * cleaning again is a no-op; a name still changing after MAX_REPAIR_PASSES
+ * (more layers than real data has) is returned exactly as sent.
+ */
+export function cleanBeerName(name: string): string {
+  return settle(name, name, MAX_REPAIR_PASSES);
 }
 
 /** Apply cleanBeerName to a beer's name and, when present, its brewer. */

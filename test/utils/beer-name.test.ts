@@ -30,6 +30,12 @@ describe('cleanBeerName', () => {
     expect(cleanBeerName(cleanBeerName(name))).toBe(expected);
   });
 
+  it('leaves a name with more mojibake layers than real data ever has exactly as sent', () => {
+    const name = `${'Â'.repeat(4999)}¢`;
+
+    expect(cleanBeerName(name)).toBe(name);
+  });
+
   it.each([
     'Clausthaler Classic N/A (BTL)',
     'Mystery Beer (CAN/BTL)',
