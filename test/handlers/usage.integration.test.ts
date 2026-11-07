@@ -9,7 +9,12 @@ import { applyD1Migrations, createExecutionContext, env, waitOnExecutionContext 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import worker from '../../src/index';
 import type { Env } from '../../src/types';
-import { SMALL_JSON_BODY_MAX_BYTES, USAGE_POST_DAILY_CAP, USAGE_RATE_LIMIT_RPM } from '../../src/constants';
+import { SMALL_JSON_BODY_MAX_BYTES, USAGE_RATE_LIMIT_RPM } from '../../src/constants';
+
+// Daily growth budgets plans/usage-telemetry.md specifies, written out so the
+// handler's wiring of the real caps is checked, not just the helper.
+const POST_DAILY_CAP = 2_000;
+const NEW_INSTALL_DAILY_CAP = 500;
 import { getToday } from '../../src/utils/date';
 
 const API_KEY = 'usage-test-key';
@@ -134,7 +139,7 @@ describe('POST /usage', () => {
 
     it('returns 204 and records nothing when the daily post budget is spent', async () => {
       await env.DB.prepare('INSERT INTO usage_ingest_daily (day, posts) VALUES (?, ?)')
-        .bind(getToday(), USAGE_POST_DAILY_CAP).run();
+        .bind(getToday(), POST_DAILY_CAP).run();
 
       const response = await postUsage();
 
@@ -144,7 +149,7 @@ describe('POST /usage', () => {
 
     it('sends the drop reason to analytics when a post is not admitted', async () => {
       await env.DB.prepare('INSERT INTO usage_ingest_daily (day, posts) VALUES (?, ?)')
-        .bind(getToday(), USAGE_POST_DAILY_CAP).run();
+        .bind(getToday(), POST_DAILY_CAP).run();
       const writeDataPoint = vi.fn();
 
       await postUsage({ env: buildEnv({ ANALYTICS: { writeDataPoint } }) });
@@ -154,6 +159,57 @@ describe('POST /usage', () => {
         .filter((point) => point?.blobs?.includes('usage_ingest'));
       expect(usagePoints).toHaveLength(1);
       expect(usagePoints[0]?.blobs).toContain('daily_post_cap');
+    });
+  });
+
+  describe('growth budgets', () => {
+    const otherInstall = (n: number): string => `33333333-3333-4333-8333-${n.toString().padStart(12, '0')}`;
+
+    const seedInstallsFirstSeenToday = (count: number) =>
+      Array.from({ length: Math.ceil(count / 100) }, (_, chunk) => chunk).reduce(async (previous, chunk) => {
+        await previous;
+        await env.DB.batch(Array.from({ length: Math.min(100, count - chunk * 100) }, (_, i) =>
+          env.DB.prepare('INSERT INTO usage_installs (install_id, first_seen_day, last_seen_day) VALUES (?, ?, ?)')
+            .bind(otherInstall(chunk * 100 + i), getToday(), getToday())));
+      }, Promise.resolve());
+
+    it('admits the post that brings the day to the post budget', async () => {
+      await env.DB.prepare('INSERT INTO usage_ingest_daily (day, posts) VALUES (?, ?)')
+        .bind(getToday(), POST_DAILY_CAP - 1).run();
+
+      expect((await postUsage()).status).toBe(204);
+      expect(await usageCounts()).toEqual([{ event: 'suggestions_opened', count: 3 }]);
+    });
+
+    it('admits new installs up to the daily install budget and drops the next one', async () => {
+      await seedInstallsFirstSeenToday(NEW_INSTALL_DAILY_CAP - 1);
+      const writeDataPoint = vi.fn();
+      const workerEnv = buildEnv({ ANALYTICS: { writeDataPoint } });
+
+      expect((await postUsage({ env: workerEnv })).status).toBe(204);
+      expect(await usageCounts()).toEqual([{ event: 'suggestions_opened', count: 3 }]);
+
+      const blocked = await postUsage({
+        env: workerEnv,
+        ip: '203.0.113.9',
+        body: JSON.stringify(buildBody({ install_id: '44444444-4444-4444-8444-000000000001', batch_id: batchId(2) })),
+      });
+
+      expect(blocked.status).toBe(204);
+      expect(await usageCounts()).toEqual([{ event: 'suggestions_opened', count: 3 }]);
+      const outcomes = writeDataPoint.mock.calls
+        .map(([point]) => point)
+        .filter((point) => point?.blobs?.includes('usage_ingest'))
+        .map((point) => point?.blobs?.[4]);
+      expect(outcomes).toEqual(['admitted', 'new_install_cap']);
+    });
+
+    it('keeps counting a known install after the install budget is spent', async () => {
+      await postUsage();
+      await seedInstallsFirstSeenToday(NEW_INSTALL_DAILY_CAP);
+
+      expect((await postUsage({ body: JSON.stringify(buildBody({ batch_id: batchId(2) })) })).status).toBe(204);
+      expect(await usageCounts()).toEqual([{ event: 'suggestions_opened', count: 6 }]);
     });
   });
 

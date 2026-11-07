@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   parseUsageReport,
   USAGE_EVENTS,
-  USAGE_MAX_COUNT_PER_EVENT,
-  USAGE_MAX_EVENT_ITEMS,
 } from '../../src/schemas/request';
+
+// Limits plans/usage-telemetry.md specifies, written out rather than
+// imported, so a changed constant fails here.
+const MAX_EVENT_ITEMS = 40;
+const MAX_COUNT_PER_EVENT = 500;
 
 const INSTALL_ID = '3f2b8c1e-5d4a-4e7b-9c0f-1a2b3c4d5e6f';
 const BATCH_ID = '9a8b7c6d-1e2f-4a3b-8c4d-5e6f7a8b9c0d';
@@ -139,14 +142,14 @@ describe('parseUsageReport envelope', () => {
   });
 
   it('accepts exactly the maximum number of event items', () => {
-    const events = Array.from({ length: USAGE_MAX_EVENT_ITEMS }, () => ({ name: 'view_home', count: 1 }));
+    const events = Array.from({ length: MAX_EVENT_ITEMS }, () => ({ name: 'view_home', count: 1 }));
     expect(parseOk(buildBody({ events })).report.events).toEqual([
-      { name: 'view_home', count: USAGE_MAX_EVENT_ITEMS },
+      { name: 'view_home', count: MAX_EVENT_ITEMS },
     ]);
   });
 
   it('rejects one event item over the maximum', () => {
-    const events = Array.from({ length: USAGE_MAX_EVENT_ITEMS + 1 }, () => ({ name: 'view_home', count: 1 }));
+    const events = Array.from({ length: MAX_EVENT_ITEMS + 1 }, () => ({ name: 'view_home', count: 1 }));
     expectEnvelopeError(buildBody({ events }));
   });
 
@@ -193,7 +196,7 @@ describe('parseUsageReport event items', () => {
     ['null', null],
     ['zero', 0],
     ['negative', -1],
-    ['over the limit', USAGE_MAX_COUNT_PER_EVENT + 1],
+    ['over the limit', MAX_COUNT_PER_EVENT + 1],
   ])('drops a %s count', (_label, count) => {
     const result = eventsOf([{ name: 'view_home', count }, { name: 'view_tasted', count: 1 }]);
     expect(result.report.events).toEqual([{ name: 'view_tasted', count: 1 }]);
@@ -213,8 +216,8 @@ describe('parseUsageReport event items', () => {
   });
 
   it('accepts a count at the per-item limit', () => {
-    expect(eventsOf([{ name: 'view_home', count: USAGE_MAX_COUNT_PER_EVENT }]).report.events).toEqual([
-      { name: 'view_home', count: USAGE_MAX_COUNT_PER_EVENT },
+    expect(eventsOf([{ name: 'view_home', count: MAX_COUNT_PER_EVENT }]).report.events).toEqual([
+      { name: 'view_home', count: MAX_COUNT_PER_EVENT },
     ]);
   });
 
@@ -238,10 +241,10 @@ describe('parseUsageReport event items', () => {
 
   it('clamps a summed count to the per-event limit', () => {
     const result = eventsOf([
-      { name: 'view_home', count: USAGE_MAX_COUNT_PER_EVENT },
+      { name: 'view_home', count: MAX_COUNT_PER_EVENT },
       { name: 'view_home', count: 1 },
     ]);
-    expect(result.report.events).toEqual([{ name: 'view_home', count: USAGE_MAX_COUNT_PER_EVENT }]);
+    expect(result.report.events).toEqual([{ name: 'view_home', count: MAX_COUNT_PER_EVENT }]);
   });
 
   it('gives an empty event list when every item is dropped', () => {
