@@ -39,6 +39,7 @@ type ExistingBeerRow = {
   readonly description_hash: string | null;
   readonly abv: number | null;
   readonly enrichment_status: string | null;
+  readonly brewer: string | null;
 };
 
 /**
@@ -366,7 +367,7 @@ export async function insertPlaceholders(
   // Reuses the chunking pattern from getEnrichmentForBeerIds
   // ============================================================================
   const CHUNK_SIZE = D1_MAX_PARAMS_PER_STATEMENT; // D1 has 100 param limit
-  const existingMap = new Map<string, { description_hash: string | null; abv: number | null; enrichment_status: string | null }>();
+  const existingMap = new Map<string, { description_hash: string | null; abv: number | null; enrichment_status: string | null; brewer: string | null }>();
   const selectStatements: D1PreparedStatement[] = [];
 
   for (let i = 0; i < beers.length; i += CHUNK_SIZE) {
@@ -374,7 +375,7 @@ export async function insertPlaceholders(
     const placeholders = chunk.map(() => '?').join(',');
     selectStatements.push(
       db
-        .prepare(`SELECT id, description_hash, abv, enrichment_status FROM enriched_beers WHERE id IN (${placeholders})`)
+        .prepare(`SELECT id, description_hash, abv, enrichment_status, brewer FROM enriched_beers WHERE id IN (${placeholders})`)
         .bind(...chunk.map((b) => b.id))
     );
   }
@@ -383,7 +384,7 @@ export async function insertPlaceholders(
     const selectResults = await db.batch(selectStatements);
     for (const result of selectResults) {
       for (const row of asTypedRows<ExistingBeerRow>(result.results)) {
-        existingMap.set(row.id, { description_hash: row.description_hash, abv: row.abv, enrichment_status: row.enrichment_status });
+        existingMap.set(row.id, { description_hash: row.description_hash, abv: row.abv, enrichment_status: row.enrichment_status, brewer: row.brewer });
       }
     }
   } catch (error) {
@@ -401,7 +402,11 @@ export async function insertPlaceholders(
   // ============================================================================
   // Step 3: Categorize beers and build INSERT/UPDATE statements
   // ============================================================================
-  const categories = beers.map(beer => categorizeBeer(beer, hashMap, existingMap));
+  // Flying Saucer may omit brewer. Fall back to the stored brewer, repaired,
+  // so the row and any queued enrichment or cleanup work agree.
+  const categories = beers
+    .map(beer => beer.brewer !== undefined ? beer : cleanBeerNames({ ...beer, brewer: existingMap.get(beer.id)?.brewer ?? undefined }))
+    .map(beer => categorizeBeer(beer, hashMap, existingMap));
 
   const writeStatements: D1PreparedStatement[] = [];
   const statementToBeerIdMap: string[] = [];

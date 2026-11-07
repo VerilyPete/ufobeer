@@ -73,14 +73,33 @@ describe('stored beer names (real D1)', () => {
     expect(await storedNames()).toEqual({ brew_name: "Dealer's Choice Flight", brewer: REPAIRED.brewer });
   });
 
-  it('keeps the stored brewer of a beer seen again without one, without failing the rest of the batch', async () => {
+  it('keeps the stored brewer, repaired, of a beer seen again without one, without failing the rest of the batch', async () => {
     await seedEscaped({ abv: 8.5, enrichmentStatus: 'enriched' });
     const withoutBrewer = { id: 'beer-1', brew_name: ESCAPED.brew_name, brew_description: DESCRIPTION } as unknown as { id: string; brew_name: string; brewer: string };
 
     await insertPlaceholders(env.DB, [withoutBrewer, { id: 'beer-2', ...ESCAPED }], 'request-1');
 
-    expect(await storedNames()).toEqual({ brew_name: REPAIRED.brew_name, brewer: ESCAPED.brewer });
+    expect(await storedNames()).toEqual(REPAIRED);
     expect(await env.DB.prepare('SELECT brew_name FROM enriched_beers WHERE id = ?').bind('beer-2').first()).toEqual({ brew_name: REPAIRED.brew_name });
+  });
+
+  it('queues the stored brewer, repaired, for enrichment when a pending beer arrives without one', async () => {
+    await seedEscaped({ abv: null, enrichmentStatus: 'pending' });
+    const withoutBrewer = { id: 'beer-1', brew_name: ESCAPED.brew_name, brew_description: DESCRIPTION } as unknown as { id: string; brew_name: string; brewer: string };
+
+    const result = await insertPlaceholders(env.DB, [withoutBrewer], 'request-1');
+
+    expect(result.needsEnrichment).toEqual([expect.objectContaining({ brewer: REPAIRED.brewer })]);
+    expect(await storedNames()).toEqual(REPAIRED);
+  });
+
+  it('queues the stored brewer, repaired, for cleanup when a changed description arrives without one', async () => {
+    await seedEscaped({ abv: null, enrichmentStatus: 'pending' });
+    const withoutBrewer = { id: 'beer-1', brew_name: ESCAPED.brew_name, brew_description: 'A richer stout' } as unknown as { id: string; brew_name: string; brewer: string };
+
+    const result = await insertPlaceholders(env.DB, [withoutBrewer], 'request-1');
+
+    expect(result.needsCleanup).toEqual([expect.objectContaining({ brewer: REPAIRED.brewer })]);
   });
 
   it('stores a new beer that has no brewer', async () => {
