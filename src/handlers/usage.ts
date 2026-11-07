@@ -47,6 +47,7 @@ export async function handleUsageReport(
     console.log(JSON.stringify({ event: 'usage_events_dropped', droppedCount, requestId: reqCtx.requestId }));
   }
   if (report.events.length === 0) {
+    trackUsageIngest(env.ANALYTICS, { outcome: 'all_dropped', eventsAccepted: 0, eventsDropped: droppedCount });
     return noContent(headers);
   }
 

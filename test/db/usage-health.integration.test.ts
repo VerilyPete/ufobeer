@@ -10,7 +10,6 @@ import { applyD1Migrations, env } from 'cloudflare:test';
 import { runUsageHealthCheck } from '../../src/db/usage';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const HOUR_MS = 60 * 60 * 1000;
 // The daily check runs on the first cron tick of 17:00 UTC.
 const CHECK_TICK = Date.UTC(2026, 10, 7, 17, 0, 30);
 
@@ -48,10 +47,15 @@ describe('runUsageHealthCheck (real D1)', () => {
     ]);
   });
 
-  it('runs only on the daily check tick', async () => {
-    expect((await runUsageHealthCheck(env.DB, CHECK_TICK + 20 * 60 * 1000)).checked).toBe(false);
-    expect((await runUsageHealthCheck(env.DB, CHECK_TICK - HOUR_MS)).checked).toBe(false);
-    expect((await runUsageHealthCheck(env.DB, CHECK_TICK)).checked).toBe(true);
+  it.each([
+    ['16:59:59.999', Date.UTC(2026, 10, 7, 16, 59, 59, 999), false],
+    ['17:00:00', Date.UTC(2026, 10, 7, 17, 0, 0), true],
+    ['17:19:59.999', Date.UTC(2026, 10, 7, 17, 19, 59, 999), true],
+    ['17:20:00 (the next cron tick)', Date.UTC(2026, 10, 7, 17, 20, 0), false],
+    ['17:40:00', Date.UTC(2026, 10, 7, 17, 40, 0), false],
+    ['05:00:00', Date.UTC(2026, 10, 7, 5, 0, 0), false],
+  ] as const)('runs only on the first cron tick of 17:00 UTC (%s)', async (_label, now, checked) => {
+    expect((await runUsageHealthCheck(env.DB, now)).checked).toBe(checked);
   });
 
   it('reports row counts and raises no alert for a healthy, empty or current dataset', async () => {

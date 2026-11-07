@@ -205,7 +205,9 @@ SELECT
 
 Every write's outcome goes to the `beer_enrichment_metrics` Analytics
 Engine dataset with `blob7 = 'usage_ingest'` and the outcome in `blob5`:
-`admitted`, `duplicate`, `daily_post_cap` or `new_install_cap`. Steady
+`admitted`, `duplicate`, `daily_post_cap`, `new_install_cap`, or
+`all_dropped` (a parsed report with no event this worker accepts; nothing is
+written). Steady
 `duplicate`s are normal (lost responses resent). Any `daily_post_cap` or
 `new_install_cap` means posts were dropped: an invented-install flood, or
 real growth past the budgets in `src/constants.ts`.
@@ -224,8 +226,11 @@ curl -s "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/an
 ```
 
 `double2` on the same rows is the number of event items dropped by the
-parser (unknown names or bad counts). A rise after an app release usually
-means the app sends an event this worker does not know yet.
+parser (unknown names or bad counts), for every parsed report including
+`all_dropped` ones. A rise after an app release, or any `all_dropped`
+posts, usually means the app sends an event this worker does not know yet.
+Requests rejected before parsing (400, 413, 415, 429) are not in this
+metric; they appear in `audit_log` and the request analytics.
 
 ### Switching ingestion off
 

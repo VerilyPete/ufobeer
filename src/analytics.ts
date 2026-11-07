@@ -496,7 +496,8 @@ export function trackAdminTrigger(
  * Index: "usage:{outcome}". Anything but 'admitted' is a post that was
  * accepted with a 204 but not counted; 'daily_post_cap' and
  * 'new_install_cap' drops show an invented-ID flood or real growth past the
- * growth budget.
+ * growth budget, and 'all_dropped' a report none of whose events this
+ * worker accepted (often an app release sending events it does not know).
  */
 export function trackUsageIngest(
   analytics: AnalyticsEngineDataset | undefined,

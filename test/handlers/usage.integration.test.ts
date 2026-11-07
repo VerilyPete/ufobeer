@@ -147,6 +147,22 @@ describe('POST /usage', () => {
       expect(await usageCounts()).toEqual([]);
     });
 
+    it('reports a report whose every event was dropped to analytics, so an app sending unknown events is visible', async () => {
+      const writeDataPoint = vi.fn();
+
+      await postUsage({
+        env: buildEnv({ ANALYTICS: { writeDataPoint } }),
+        body: JSON.stringify(buildBody({ events: [{ name: 'brand_new_event', count: 2 }, { name: 'view_home', count: 0 }] })),
+      });
+
+      const usagePoints = writeDataPoint.mock.calls
+        .map(([point]) => point)
+        .filter((point) => point?.blobs?.includes('usage_ingest'));
+      expect(usagePoints).toHaveLength(1);
+      expect(usagePoints[0]?.blobs?.[4]).toBe('all_dropped');
+      expect(usagePoints[0]?.doubles).toEqual([0, 2]);
+    });
+
     it('sends the drop reason to analytics when a post is not admitted', async () => {
       await env.DB.prepare('INSERT INTO usage_ingest_daily (day, posts) VALUES (?, ?)')
         .bind(getToday(), POST_DAILY_CAP).run();
