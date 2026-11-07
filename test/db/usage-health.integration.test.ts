@@ -89,6 +89,38 @@ describe('runUsageHealthCheck (real D1)', () => {
     errors.mockRestore();
   });
 
+  it.each([
+    [500_000, 0],
+    [500_001, 1],
+  ] as const)('alerts above 500,000 usage_daily rows by default (%d rows -> %d alerts)', async (rows, alertCount) => {
+    const withDailyRows = new Proxy(env.DB, {
+      get(target, prop) {
+        if (prop === 'prepare') {
+          return (query: string) => new Proxy(target.prepare(query), {
+            get(statement, statementProp) {
+              if (statementProp === 'first') {
+                return async () => ({
+                  daily_rows: rows, daily_oldest: null, installs_oldest: null, batches_oldest: null, ingest_oldest: null,
+                });
+              }
+              const value: unknown = Reflect.get(statement, statementProp, statement);
+              return typeof value === 'function' ? value.bind(statement) : value;
+            },
+          });
+        }
+        const value: unknown = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const errors = captureErrors();
+
+    const result = await runUsageHealthCheck(withDailyRows, CHECK_TICK);
+
+    expect(result.checked && result.alerts).toHaveLength(alertCount);
+    expect(errors).toHaveBeenCalledTimes(alertCount);
+    errors.mockRestore();
+  });
+
   it('does not alert when cleanup is behind by a day or less', async () => {
     await env.DB.batch([
       insertDaily(dayExpiredMidnightsAgo(DAILY_RETENTION_DAYS, 0)),
