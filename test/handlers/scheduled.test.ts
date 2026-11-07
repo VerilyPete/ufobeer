@@ -31,11 +31,21 @@ vi.mock('../../src/audit', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../src/audit')>();
   return { ...real, reapOldAuditLog: vi.fn().mockResolvedValue(0) };
 });
+vi.mock('../../src/db/usage', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/db/usage')>();
+  return {
+    ...real,
+    reapExpiredUsage: vi.fn().mockResolvedValue({
+      usage_daily: 0, usage_installs: 0, usage_batches: 0, usage_ingest_daily: 0,
+    }),
+  };
+});
 
 import { refreshTaplistForStore } from '../../src/handlers/beers';
 import { getCurrentHourCT } from '../../src/utils/date';
 import { reapOldRateLimits } from '../../src/rate-limit';
 import { reapOldAuditLog } from '../../src/audit';
+import { reapExpiredUsage } from '../../src/db/usage';
 
 // ============================================================================
 // Factories
@@ -322,6 +332,48 @@ describe('handleScheduledEnrichment', () => {
 
     await handleScheduledEnrichment(env, createMockCtx());
 
+    expect(refreshTaplistForStore).toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  // ============================================================================
+  // Usage telemetry retention
+  // ============================================================================
+
+  it('reaps expired usage rows on every cron tick', async () => {
+    const env = createScheduledEnv();
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(reapExpiredUsage).toHaveBeenCalledWith(env.DB);
+  });
+
+  it('still reaps usage rows when the kill switch is active', async () => {
+    const env = createScheduledEnv({ ENRICHMENT_ENABLED: 'false' });
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(reapExpiredUsage).toHaveBeenCalledWith(env.DB);
+  });
+
+  it('still reaps usage rows when outside operating hours', async () => {
+    vi.mocked(getCurrentHourCT).mockReturnValueOnce(3); // 3am CT
+    const env = createScheduledEnv();
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(reapExpiredUsage).toHaveBeenCalledWith(env.DB);
+  });
+
+  it('does not let a failing usage reap block the other reapers or the enrichment sweep', async () => {
+    vi.mocked(reapExpiredUsage).mockRejectedValueOnce(new Error('D1 unavailable'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const env = createScheduledEnv();
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(reapOldRateLimits).toHaveBeenCalledWith(env.DB);
+    expect(reapOldAuditLog).toHaveBeenCalledWith(env.DB);
     expect(refreshTaplistForStore).toHaveBeenCalled();
     consoleSpy.mockRestore();
   });

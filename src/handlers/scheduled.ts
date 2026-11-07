@@ -29,6 +29,7 @@ import { refreshTaplistForStore } from './beers';
 import { selectAndQueuePendingEnrichment } from './enrichment';
 import { reapOldRateLimits } from '../rate-limit';
 import { reapOldAuditLog } from '../audit';
+import { reapExpiredUsage } from '../db/usage';
 
 export function computeNextCronTime(
   now: number,
@@ -119,6 +120,14 @@ export async function handleScheduledEnrichment(
     }
   } catch (error) {
     console.error('[cron] audit_log reap failed:', error);
+  }
+  try {
+    const reaped = await reapExpiredUsage(env.DB);
+    if (Object.values(reaped).some((count) => count !== 0)) {
+      console.log('[cron] Reaped expired usage rows', reaped);
+    }
+  } catch (error) {
+    console.error('[cron] usage reap failed:', error);
   }
 
   // Layer 3: Kill switch

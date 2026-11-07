@@ -95,6 +95,29 @@ export const ADMIN_AUDIT_MAX_TARGET_IDS = 100;
  */
 export const RATE_LIMIT_REAP_LIMIT = 10_000;
 
+/**
+ * Per-install usage rows (usage_daily, usage_installs) are kept this long
+ * during the beta. See plans/usage-telemetry.md (Retention).
+ */
+export const USAGE_DAILY_RETENTION_DAYS = 180;
+
+/**
+ * usage_batches dedup window. Compliant clients delete a pending batch after
+ * 7 days, so one extra day covers a resend frozen just before expiry.
+ */
+export const USAGE_BATCH_RETENTION_DAYS = 8;
+
+/** usage_ingest_daily rows only matter for today's post budget. */
+export const USAGE_INGEST_RETENTION_DAYS = 30;
+
+/**
+ * Maximum rows deleted per usage table per cron tick. At the growth budget
+ * usage_daily gains at most 2,000 posts x 25 events = 50,000 rows a day; 72
+ * ticks a day x 5,000 = 360,000 a day, several times worst-case ingest.
+ * Recompute when events are added.
+ */
+export const USAGE_REAP_LIMIT = 5_000;
+
 // =============================================================================
 // D1 Batching Constants
 // =============================================================================
