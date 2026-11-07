@@ -123,21 +123,37 @@ type LetterEvidence = {
   readonly wordHasMojibake: boolean;
 };
 
+const isLetterRepair = (decoded: DecodedRun | null): boolean => decoded !== null && LETTER.test(decoded.repaired);
+
 // A word with one unambiguous repaired letter is mojibake, so a word-final
 // run in it is repaired even when its byte reads as trailing punctuation
 // ("RychtÃ¡Å™" -> "Rychtář"), while a genuine word stays intact ("MAÇÃ”").
-// One left-to-right pass records, for each run, whether an earlier run
-// already repaired to a letter; rescanning every prefix instead grew
-// exponentially on long words of ambiguous runs.
+//
+// A run before an Ã/Å + U+00A0 run needs letter mojibake in the text before
+// it. One left-to-right pass records that for each run, because rescanning
+// every prefix grew exponentially on long words of ambiguous runs. Judged on
+// the text before the current run, only the previous run can differ from its
+// judgement on the whole word: endsWord reads at most two characters after a
+// run, and any earlier run has a whole run of two or more characters between
+// it and the current one. So the previous run alone is judged again.
 function letterEvidence(word: string): LetterEvidence {
-  const earlierByOffset = new Map<number, boolean>();
-  let seen = false;
-  for (const { 0: run, index: offset } of word.matchAll(MOJIBAKE_RUN)) {
-    earlierByOffset.set(offset, seen);
-    const decoded = decodeRun({ run, offset, word, wordHasMojibake: false, earlierLetterMojibake: seen });
-    seen = seen || (decoded !== null && LETTER.test(decoded.repaired));
-  }
-  return { earlierByOffset, wordHasMojibake: seen };
+  const runs = [...word.matchAll(MOJIBAKE_RUN)].map(({ 0: run, index: offset }) => ({ run, offset }));
+  const earlier: boolean[] = [];
+  const letter: boolean[] = [];
+  let seenBeforePrevious = false;
+  runs.forEach(({ run, offset }, index) => {
+    seenBeforePrevious = seenBeforePrevious || (letter[index - 2] ?? false);
+    const previous = runs[index - 1];
+    const previousLetterBeforeRun = previous !== undefined && isLetterRepair(decodeRun({
+      ...previous, word: word.slice(0, offset), wordHasMojibake: false, earlierLetterMojibake: earlier[index - 1] ?? false,
+    }));
+    earlier.push(seenBeforePrevious || previousLetterBeforeRun);
+    letter.push(isLetterRepair(decodeRun({ run, offset, word, wordHasMojibake: false, earlierLetterMojibake: earlier[index] ?? false })));
+  });
+  return {
+    earlierByOffset: new Map(runs.map(({ offset }, index) => [offset, earlier[index] ?? false])),
+    wordHasMojibake: letter.some(Boolean),
+  };
 }
 
 function repairWord(word: string): string {
