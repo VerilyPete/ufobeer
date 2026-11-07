@@ -63,8 +63,9 @@ function isPlausibleRepair(options: {
   readonly before: string;
   readonly after: string;
   readonly wordHasMojibake: boolean;
+  readonly earlierLetterMojibake: boolean;
 }): boolean {
-  const { run, repaired, before, after, wordHasMojibake } = options;
+  const { run, repaired, before, after, wordHasMojibake, earlierLetterMojibake } = options;
   const codePoint = repaired.codePointAt(0) ?? 0;
   if (codePoint >= 0x10000) return inRange(codePoint, EMOJI);
   if (codePoint >= 0x800) return PLAUSIBLE_THREE_BYTE.some(range => inRange(codePoint, range));
@@ -74,7 +75,7 @@ function isPlausibleRepair(options: {
     // A genuine word can end in Ã or Å before a non-breaking space ("MAÇÃ"),
     // whatever follows, so the run is repaired only where no genuine word
     // ends: on its own ("à la", "Šumava"), or after mojibake ("dÃ©jÃ").
-    return !ENDS_WITH_LETTER.test(before) || hasLetterMojibake(before);
+    return !ENDS_WITH_LETTER.test(before) || earlierLetterMojibake;
   }
   if (LATIN_LETTER_LEADS.has(lead)) {
     return LETTER.test(repaired) && inRange(codePoint, [0xc0, 0x17f])
@@ -98,8 +99,9 @@ function decodeRun(options: {
   readonly offset: number;
   readonly word: string;
   readonly wordHasMojibake: boolean;
+  readonly earlierLetterMojibake: boolean;
 }): DecodedRun | null {
-  const { run, offset, word, wordHasMojibake } = options;
+  const { run, offset, word, wordHasMojibake, earlierLetterMojibake } = options;
   const [lead = '', ...continuations] = [...run];
   const needed = continuationsFor(byteOf(lead));
   if (continuations.length < needed) return null;
@@ -109,26 +111,40 @@ function decodeRun(options: {
     const repaired = strictUtf8.decode(new Uint8Array(candidate.map(byteOf)));
     const before = word.slice(0, offset);
     const after = rest + word.slice(offset + run.length);
-    return isPlausibleRepair({ run: candidate.join(''), repaired, before, after, wordHasMojibake }) ? { repaired, rest } : null;
+    return isPlausibleRepair({ run: candidate.join(''), repaired, before, after, wordHasMojibake, earlierLetterMojibake })
+      ? { repaired, rest } : null;
   } catch {
     return null;
   }
 }
 
+type LetterEvidence = {
+  readonly earlierByOffset: ReadonlyMap<number, boolean>;
+  readonly wordHasMojibake: boolean;
+};
+
 // A word with one unambiguous repaired letter is mojibake, so a word-final
 // run in it is repaired even when its byte reads as trailing punctuation
 // ("RychtÃ¡Å™" -> "Rychtář"), while a genuine word stays intact ("MAÇÃ”").
-function hasLetterMojibake(word: string): boolean {
-  return [...word.matchAll(MOJIBAKE_RUN)].some(({ 0: run, index: offset }) => {
-    const decoded = decodeRun({ run, offset, word, wordHasMojibake: false });
-    return decoded !== null && LETTER.test(decoded.repaired);
-  });
+// One left-to-right pass records, for each run, whether an earlier run
+// already repaired to a letter; rescanning every prefix instead grew
+// exponentially on long words of ambiguous runs.
+function letterEvidence(word: string): LetterEvidence {
+  const earlierByOffset = new Map<number, boolean>();
+  let seen = false;
+  for (const { 0: run, index: offset } of word.matchAll(MOJIBAKE_RUN)) {
+    earlierByOffset.set(offset, seen);
+    const decoded = decodeRun({ run, offset, word, wordHasMojibake: false, earlierLetterMojibake: seen });
+    seen = seen || (decoded !== null && LETTER.test(decoded.repaired));
+  }
+  return { earlierByOffset, wordHasMojibake: seen };
 }
 
 function repairWord(word: string): string {
-  const wordHasMojibake = hasLetterMojibake(word);
+  const { earlierByOffset, wordHasMojibake } = letterEvidence(word);
   return word.replace(MOJIBAKE_RUN, (run: string, offset: number) => {
-    const decoded = decodeRun({ run, offset, word, wordHasMojibake });
+    const earlierLetterMojibake = earlierByOffset.get(offset) ?? false;
+    const decoded = decodeRun({ run, offset, word, wordHasMojibake, earlierLetterMojibake });
     return decoded === null ? run : decoded.repaired.replace(BYTE_ORDER_MARK, '') + decoded.rest;
   });
 }

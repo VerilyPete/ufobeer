@@ -60,6 +60,12 @@ describe('repairMojibake', () => {
     expect(repairMojibake(source)).toBe(source);
   });
 
+  it('judges a long word of ambiguous runs in linear time', { timeout: 2000 }, () => {
+    const source = 'aÃ\u00a0'.repeat(1700);
+
+    expect(repairMojibake(source)).toBe(source);
+  });
+
   it('is idempotent', () => {
     const source = 'MÃ¤rzen â€“ purÃ©e, babiÄ\u008dka and proï¬\u0081le';
     expect(repairMojibake(repairMojibake(source))).toBe(repairMojibake(source));
