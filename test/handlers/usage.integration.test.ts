@@ -235,11 +235,14 @@ describe('POST /usage', () => {
       expect(responses.map((response) => response.status)).toEqual(Array(USAGE_RATE_LIMIT_RPM * 2).fill(204));
     });
 
-    it('returns 429 once one IP exceeds the /usage limit', async () => {
+    it('returns 429 once one IP exceeds the /usage limit, however many installs it claims', async () => {
+      const inventedInstall = (n: number): string => `22222222-2222-4222-8222-${n.toString().padStart(12, '0')}`;
       const statuses = await Array.from({ length: USAGE_RATE_LIMIT_RPM + 1 }, (_, i) => i).reduce(
         async (previous, i) => [
           ...(await previous),
-          (await postUsage({ body: JSON.stringify(buildBody({ batch_id: batchId(i + 1) })) })).status,
+          (await postUsage({
+            body: JSON.stringify(buildBody({ install_id: inventedInstall(i + 1), batch_id: batchId(i + 1) })),
+          })).status,
         ],
         Promise.resolve<readonly number[]>([]),
       );

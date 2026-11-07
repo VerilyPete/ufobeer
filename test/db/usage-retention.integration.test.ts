@@ -5,12 +5,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { reapExpiredUsage } from '../../src/db/usage';
-import {
-  USAGE_BATCH_RETENTION_DAYS,
-  USAGE_DAILY_RETENTION_DAYS,
-  USAGE_INGEST_RETENTION_DAYS,
-  USAGE_REAP_LIMIT,
-} from '../../src/constants';
+
+// The windows and limit plans/usage-telemetry.md specifies, written out
+// rather than imported, so a changed constant fails here.
+const USAGE_DAILY_RETENTION_DAYS = 180;
+const USAGE_BATCH_RETENTION_DAYS = 8;
+const USAGE_INGEST_RETENTION_DAYS = 30;
+const USAGE_REAP_LIMIT = 5_000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 10, 7, 18, 0, 0);
