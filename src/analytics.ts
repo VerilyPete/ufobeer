@@ -489,3 +489,34 @@ export function trackAdminTrigger(
     ],
   });
 }
+
+/**
+ * Track the outcome of a POST /usage write.
+ *
+ * Index: "usage:{outcome}". Anything but 'admitted' is a post that was
+ * accepted with a 204 but not counted; 'daily_post_cap' and
+ * 'new_install_cap' drops show an invented-ID flood or real growth past the
+ * growth budget.
+ */
+export function trackUsageIngest(
+  analytics: AnalyticsEngineDataset | undefined,
+  metrics: { outcome: string; eventsAccepted: number; eventsDropped: number }
+): void {
+  safeWriteDataPoint(analytics, {
+    indexes: [`usage:${metrics.outcome}`],
+    blobs: [
+      '/usage',                     // blob1: endpoint
+      'POST',                       // blob2: method
+      '',                           // blob3: store_id (N/A)
+      '2xx',                        // blob4: status_category (always 204)
+      metrics.outcome,              // blob5: outcome
+      '',                           // blob6: client_id (N/A)
+      'usage_ingest',               // blob7: event_type
+      '',                           // blob8: (N/A)
+    ],
+    doubles: [
+      metrics.eventsAccepted,       // double1: events_accepted
+      metrics.eventsDropped,        // double2: events_dropped
+    ],
+  });
+}

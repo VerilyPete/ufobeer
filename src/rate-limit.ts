@@ -47,6 +47,15 @@ export function getPreAuthRateLimitKey(clientIdentifier: string): string {
   return `preauth:${clientIdentifier}`;
 }
 
+/**
+ * Per-IP rate limit key for POST /usage. Keyed by the pre-auth client
+ * identifier (IP), not the API-key hash every install shares, and never by
+ * the client-chosen install_id.
+ */
+export function getUsageRateLimitKey(clientIdentifier: string): string {
+  return `usage:${clientIdentifier}`;
+}
+
 // RATE_LIMIT_REAP_LIMIT now lives in src/constants.ts (imported below) as
 // part of the constants consolidation.
 

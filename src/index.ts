@@ -33,7 +33,7 @@ import {
 import type { Env, EnrichmentMessage, CleanupMessage } from './types';
 import { ENABLED_STORE_IDS } from './config';
 import { getCorsHeaders, withResponseHeaders } from './context';
-import { checkRateLimit, getEndpointRateLimitKey, getPreAuthRateLimitKey } from './rate-limit';
+import { checkRateLimit, getEndpointRateLimitKey, getPreAuthRateLimitKey, getUsageRateLimitKey } from './rate-limit';
 import { writeAuditLog, writeAdminAuditLog, type AdminAuditOutcome } from './audit';
 import {
   handleEnrichmentTrigger,
@@ -47,11 +47,12 @@ import {
   handleHealthCheck,
   handleScheduledEnrichment,
   handleCleanupTrigger,
+  handleUsageReport,
 } from './handlers';
 import { handleLiveness } from './handlers/health';
 import { SYNC_CONSTANTS } from './types';
 import { handleEnrichmentBatch, handleCleanupBatch, handleDlqBatch, handleCleanupDlqBatch } from './queue';
-import { CORS_PREFLIGHT_ROUTES, CORS_ALLOWED_REQUEST_HEADERS } from './constants';
+import { CORS_PREFLIGHT_ROUTES, CORS_ALLOWED_REQUEST_HEADERS, USAGE_RATE_LIMIT_RPM } from './constants';
 
 // CORS_PREFLIGHT_ROUTES and CORS_ALLOWED_REQUEST_HEADERS now live in
 // src/constants.ts (imported above) as part of the constants consolidation.
@@ -289,6 +290,59 @@ export default {
       apiKeyHash: authResult.apiKeyHash,
       clientIdentifier: authResult.apiKeyHash ?? requestContext.clientIdentifier,
     };
+
+    // Route: POST /usage. Routed before the shared per-key limiter: every
+    // install shares one API key, so that bucket is fleet-wide and telemetry
+    // must not eat the budget /beers depends on. /usage gets its own per-IP
+    // bucket instead (keyed by IP, never by the client-chosen install_id),
+    // and still sits behind the pre-auth per-IP limiter above.
+    if (url.pathname === '/usage' && request.method === 'POST') {
+      const usageLimit = await checkRateLimit(
+        env.DB,
+        getUsageRateLimitKey(requestContext.clientIdentifier),
+        USAGE_RATE_LIMIT_RPM
+      );
+      if (!usageLimit.allowed) {
+        trackRateLimit(env.ANALYTICS, requestContext.clientIdentifier, url.pathname);
+        if (usageLimit.degraded) {
+          return respond(
+            { error: 'Service temporarily unavailable', requestId: authedContext.requestId },
+            503,
+            { ...(corsHeaders ?? {}), 'Retry-After': '10' },
+            'Rate limiter unavailable (usage)'
+          );
+        }
+        return respond(
+          { error: 'Rate limit exceeded', requestId: authedContext.requestId },
+          429,
+          {
+            ...(corsHeaders ?? {}),
+            'X-RateLimit-Limit': String(USAGE_RATE_LIMIT_RPM),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': String(Math.floor(usageLimit.resetAt / 1000)),
+            'Retry-After': String(Math.ceil((usageLimit.resetAt - Date.now()) / 1000)),
+          },
+          'Rate limited (usage)'
+        );
+      }
+
+      const result = await handleUsageReport(request, env, withResponseHeaders({
+        ...(corsHeaders ?? {}),
+        'X-RateLimit-Limit': String(USAGE_RATE_LIMIT_RPM),
+        'X-RateLimit-Remaining': String(usageLimit.remaining),
+        'X-RateLimit-Reset': String(Math.floor(usageLimit.resetAt / 1000)),
+        'X-Request-ID': authedContext.requestId,
+      }, 'no-store'), authedContext);
+      trackRequest(env.ANALYTICS, {
+        endpoint: url.pathname,
+        method: request.method,
+        statusCode: result.status,
+        clientId: authedContext.clientIdentifier,
+        responseTimeMs: Date.now() - authedContext.startTime,
+      });
+      ctx.waitUntil(writeAuditLog(env.DB, authedContext, request.method, url.pathname, result.status));
+      return result;
+    }
 
     // Rate limit
     const rateLimit = parseInt(env.RATE_LIMIT_RPM, 10) || 60;

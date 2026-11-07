@@ -118,6 +118,24 @@ export const USAGE_INGEST_RETENTION_DAYS = 30;
  */
 export const USAGE_REAP_LIMIT = 5_000;
 
+/**
+ * Install IDs first seen per UTC day. Install IDs are client-chosen, so
+ * this bounds how fast an invented-ID flood can grow usage_installs and
+ * usage_daily. Posts from installs already known keep counting.
+ */
+export const USAGE_NEW_INSTALL_DAILY_CAP = 500;
+
+/** Usage posts written per UTC day across all installs. */
+export const USAGE_POST_DAILY_CAP = 2_000;
+
+/**
+ * POST /usage requests per minute per client IP, in their own bucket
+ * outside the shared per-API-key limiter. Every install shares one API key,
+ * so a per-key limit would throttle the whole fleet; a normal client sends
+ * about one post per session.
+ */
+export const USAGE_RATE_LIMIT_RPM = 6;
+
 // =============================================================================
 // D1 Batching Constants
 // =============================================================================

@@ -25,6 +25,9 @@ export {
   syncBeersWithBatchHandling,
 } from './beers';
 
+// Usage telemetry
+export { handleUsageReport } from './usage';
+
 // Beer handler types (for testing)
 export type { SyncBatchResult } from './beers';
 
