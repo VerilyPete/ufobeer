@@ -192,6 +192,11 @@ describe('recordUsageReport (real D1)', () => {
 
       expect(await record()).toBe('admitted');
       expect(await postsCharged()).toBe(2000);
+      expect((await dailyRows()).map((row) => [row.event, row.count])).toEqual([['view_home', 2]]);
+
+      expect(await record()).toBe('duplicate');
+      expect((await dailyRows()).map((row) => [row.event, row.count])).toEqual([['view_home', 2]]);
+      expect(await postsCharged()).toBe(2000);
     });
 
     it('drops a new batch once the cap is reached, without recording it', async () => {
@@ -227,6 +232,8 @@ describe('recordUsageReport (real D1)', () => {
       await seedNewInstalls(2);
 
       expect(await record({ installCap: 3 })).toBe('admitted');
+      expect((await dailyRows()).map((row) => [row.event, row.count])).toEqual([['view_home', 2]]);
+      expect(await postsCharged()).toBe(1);
     });
 
     it('drops a post from an unknown install once the cap is reached', async () => {
@@ -244,6 +251,8 @@ describe('recordUsageReport (real D1)', () => {
       await seedNewInstalls(3);
 
       expect(await record({ report: buildReport({ batch_id: batchId(2) }), installCap: 3 })).toBe('admitted');
+      expect((await dailyRows()).map((row) => [row.event, row.count])).toEqual([['view_home', 4]]);
+      expect(await postsCharged()).toBe(2);
     });
 
     it('only counts installs first seen today towards the cap', async () => {
@@ -257,6 +266,39 @@ describe('recordUsageReport (real D1)', () => {
       await seedPosts(2000);
 
       expect(await record({ installCap: 3 })).toBe('daily_post_cap');
+    });
+  });
+
+  describe('outcome classification under concurrency', () => {
+    const withPostAfterBatch = (afterBatch: () => Promise<unknown>): D1Database =>
+      new Proxy(env.DB, {
+        get(target, prop) {
+          if (prop === 'batch') {
+            return async (statements: D1PreparedStatement[]) => {
+              const results = await target.batch(statements);
+              await afterBatch();
+              return results;
+            };
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+
+    it('reports the reason seen inside the write, even if another post fills the budget right after', async () => {
+      await seedNewInstalls(3);
+      const db = withPostAfterBatch(() => seedPosts(2000));
+
+      const outcome = await recordUsageReport(db, {
+        report: buildReport(),
+        day: DAY,
+        requestId: crypto.randomUUID(),
+        now: NOW,
+        installCap: 3,
+        postCap: 2000,
+      });
+
+      expect(outcome).toBe('new_install_cap');
     });
   });
 
