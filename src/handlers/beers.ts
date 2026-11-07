@@ -866,19 +866,26 @@ export async function handleBeerSync(
     const existingIds = validBeers.map(b => b.id);
     const placeholders = existingIds.map(() => '?').join(',');
     const { results: existingRecords } = await env.DB.prepare(
-      `SELECT id, description_cleaned_at, queued_for_cleanup_at
+      `SELECT id, description_cleaned_at, queued_for_cleanup_at, brewer
        FROM enriched_beers
        WHERE id IN (${placeholders})`
     ).bind(...existingIds).all<{
       id: string;
       description_cleaned_at: number | null;
       queued_for_cleanup_at: number | null;
+      brewer: string | null;
     }>();
 
     const existingMap = new Map(existingRecords.map(r => [r.id, r]));
 
+    // A sync item may omit brewer. Fall back to the stored brewer, repaired,
+    // so the row and any queued cleanup work agree.
+    const beersWithBrewer = validBeers.map(beer => beer.brewer !== null
+      ? beer
+      : cleanBeerNames({ ...beer, brewer: existingMap.get(beer.id)?.brewer ?? null }));
+
     // Build statements and determine cleanup needs
-    for (const beer of validBeers) {
+    for (const beer of beersWithBrewer) {
       const descriptionHash = beer.brew_description
         ? await hashDescription(beer.brew_description)
         : null;

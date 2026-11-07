@@ -138,11 +138,21 @@ describe('stored beer names (real D1)', () => {
     ]);
   });
 
-  it('keeps the stored brewer when /beers/sync omits it', async () => {
+  it('keeps the stored brewer, repaired, when /beers/sync omits it', async () => {
     await seedEscaped({ abv: 8.5, enrichmentStatus: 'enriched' });
 
     await sync({ id: 'beer-1', brew_name: ESCAPED.brew_name });
 
-    expect(await storedNames()).toEqual({ brew_name: REPAIRED.brew_name, brewer: ESCAPED.brewer });
+    expect(await storedNames()).toEqual(REPAIRED);
+  });
+
+  it('queues the stored brewer, repaired, for cleanup when /beers/sync omits it', async () => {
+    await seedEscaped({ abv: 8.5, enrichmentStatus: 'enriched' });
+
+    const { sendBatch } = await sync({ id: 'beer-1', brew_name: ESCAPED.brew_name, brew_description: DESCRIPTION });
+
+    expect(sendBatch).toHaveBeenCalledWith([
+      expect.objectContaining({ body: expect.objectContaining({ brewer: REPAIRED.brewer }) }),
+    ]);
   });
 });
