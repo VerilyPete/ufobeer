@@ -119,6 +119,23 @@ export const USAGE_INGEST_RETENTION_DAYS = 30;
 export const USAGE_REAP_LIMIT = 5_000;
 
 /**
+ * UTC hour of the once-a-day usage health check (the cron tick in its first
+ * 20 minutes). Once a day keeps the usage_daily COUNT(*) scan cheap.
+ */
+export const USAGE_HEALTH_CHECK_UTC_HOUR = 17;
+
+/**
+ * usage_daily row count that raises an alert. A beta of a few hundred
+ * installs over the 180-day window stays well under this; a flood of
+ * invented installs at the growth budget (50,000 rows a day) crosses it
+ * within about ten days.
+ */
+export const USAGE_DAILY_ROW_ALERT = 500_000;
+
+/** Alert when a usage table's oldest expired row is overdue by more than this. */
+export const USAGE_REAP_BACKLOG_ALERT_MS = 24 * 60 * 60 * 1000;
+
+/**
  * Install IDs first seen per UTC day. Install IDs are client-chosen, so
  * this bounds how fast an invented-ID flood can grow usage_installs and
  * usage_daily. Posts from installs already known keep counting.

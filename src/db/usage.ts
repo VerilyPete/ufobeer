@@ -15,6 +15,9 @@
 import { z } from 'zod';
 import type { UsageReport } from '../schemas/request';
 import {
+  USAGE_DAILY_ROW_ALERT,
+  USAGE_HEALTH_CHECK_UTC_HOUR,
+  USAGE_REAP_BACKLOG_ALERT_MS,
   USAGE_BATCH_RETENTION_DAYS,
   USAGE_DAILY_RETENTION_DAYS,
   USAGE_INGEST_RETENTION_DAYS,
@@ -152,4 +155,87 @@ export async function reapExpiredUsage(db: D1Database, now: number = Date.now())
     usage_batches: usageBatches,
     usage_ingest_daily: usageIngestDaily,
   };
+}
+
+const CRON_TICK_WINDOW_MS = 20 * 60 * 1000;
+
+/** When rows keyed by this UTC day pass a retention window of `days` days. */
+const dayExpiresAt = (day: string, days: number): number => Date.parse(`${day}T00:00:00Z`) + (days + 1) * DAY_MS;
+
+const overdue = (expiresAt: number | null, now: number): number =>
+  expiresAt === null ? 0 : Math.max(0, now - expiresAt);
+
+export type UsageHealthCheckResult =
+  | Readonly<{ checked: false }>
+  | Readonly<{
+      checked: true;
+      usageDailyRows: number;
+      /** How long each table's oldest expired row has been waiting for cleanup */
+      overdueMs: Readonly<Record<UsageTable, number>>;
+      alerts: readonly string[];
+    }>;
+
+const isHealthCheckTick = (now: number): boolean => {
+  const date = new Date(now);
+  return date.getUTCHours() === USAGE_HEALTH_CHECK_UTC_HOUR
+    && now - Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), USAGE_HEALTH_CHECK_UTC_HOUR) < CRON_TICK_WINDOW_MS;
+};
+
+/**
+ * Once a day (on the first cron tick of USAGE_HEALTH_CHECK_UTC_HOUR), log
+ * the size of usage_daily and how far each usage table's oldest expired row
+ * is past its retention window. Each alert is logged with console.error,
+ * which the error-alerts tail worker emails: a large usage_daily points at
+ * an invented-install flood or growth past the budgets, and a backlog over
+ * a day means cleanup is falling behind ingest.
+ */
+export async function runUsageHealthCheck(
+  db: D1Database,
+  now: number = Date.now(),
+  { usageDailyRowAlert = USAGE_DAILY_ROW_ALERT }: Readonly<{ usageDailyRowAlert?: number }> = {},
+): Promise<UsageHealthCheckResult> {
+  if (!isHealthCheckTick(now)) {
+    return { checked: false };
+  }
+
+  const row = await db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM usage_daily) AS daily_rows,
+      (SELECT MIN(day) FROM usage_daily) AS daily_oldest,
+      (SELECT MIN(last_seen_day) FROM usage_installs) AS installs_oldest,
+      (SELECT MIN(received_at) FROM usage_batches) AS batches_oldest,
+      (SELECT MIN(day) FROM usage_ingest_daily) AS ingest_oldest`)
+    .first<{
+      daily_rows: number;
+      daily_oldest: string | null;
+      installs_oldest: string | null;
+      batches_oldest: number | null;
+      ingest_oldest: string | null;
+    }>();
+
+  const usageDailyRows = row?.daily_rows ?? 0;
+  const dailyOldest = row?.daily_oldest ?? null;
+  const installsOldest = row?.installs_oldest ?? null;
+  const batchesOldest = row?.batches_oldest ?? null;
+  const ingestOldest = row?.ingest_oldest ?? null;
+  const overdueMs: Readonly<Record<UsageTable, number>> = {
+    usage_daily: overdue(dailyOldest === null ? null : dayExpiresAt(dailyOldest, USAGE_DAILY_RETENTION_DAYS), now),
+    usage_installs: overdue(installsOldest === null ? null : dayExpiresAt(installsOldest, USAGE_DAILY_RETENTION_DAYS), now),
+    usage_batches: overdue(batchesOldest === null ? null : batchesOldest + USAGE_BATCH_RETENTION_DAYS * DAY_MS, now),
+    usage_ingest_daily: overdue(ingestOldest === null ? null : dayExpiresAt(ingestOldest, USAGE_INGEST_RETENTION_DAYS), now),
+  };
+
+  const alerts = [
+    ...(usageDailyRows > usageDailyRowAlert
+      ? [`[usage-health] usage_daily has ${usageDailyRows} rows (alert above ${usageDailyRowAlert})`]
+      : []),
+    ...Object.entries(overdueMs)
+      .filter(([, ms]) => ms > USAGE_REAP_BACKLOG_ALERT_MS)
+      .map(([table, ms]) => `[usage-health] ${table} cleanup is behind: oldest expired row overdue by ${(ms / DAY_MS).toFixed(1)} days`),
+  ];
+
+  console.log(JSON.stringify({ event: 'usage_health', usageDailyRows, overdueMs }));
+  alerts.forEach((alert) => console.error(alert));
+
+  return { checked: true, usageDailyRows, overdueMs, alerts };
 }

@@ -29,7 +29,7 @@ import { refreshTaplistForStore } from './beers';
 import { selectAndQueuePendingEnrichment } from './enrichment';
 import { reapOldRateLimits } from '../rate-limit';
 import { reapOldAuditLog } from '../audit';
-import { reapExpiredUsage } from '../db/usage';
+import { reapExpiredUsage, runUsageHealthCheck } from '../db/usage';
 
 export function computeNextCronTime(
   now: number,
@@ -128,6 +128,13 @@ export async function handleScheduledEnrichment(
     }
   } catch (error) {
     console.error('[cron] usage reap failed:', error);
+  }
+  // Once a day (it returns early on every other tick): usage_daily size and
+  // cleanup backlog, alerting through console.error.
+  try {
+    await runUsageHealthCheck(env.DB);
+  } catch (error) {
+    console.error('[cron] usage health check failed:', error);
   }
 
   // Layer 3: Kill switch
