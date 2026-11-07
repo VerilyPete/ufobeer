@@ -1,5 +1,6 @@
 import { CachedBeersArraySchema } from '../schemas/cache';
 import type { CachedBeer } from '../schemas/cache';
+import { cleanBeerNames } from '../utils/beer-name';
 
 export type CachedTaplistRow = {
   readonly store_id: string;
@@ -51,7 +52,7 @@ export function parseCachedBeers(responseJson: string): readonly CachedBeer[] | 
     if (!result.success) {
       return null;
     }
-    return result.data;
+    return result.data.map(cleanBeerNames);
   } catch {
     return null;
   }

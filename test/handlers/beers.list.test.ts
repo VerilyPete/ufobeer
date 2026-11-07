@@ -20,7 +20,6 @@ import {
   FLYING_SAUCER_RESPONSE_MAX_BYTES,
   MAX_FLYING_SAUCER_RESPONSE_ITEMS,
   MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES,
-  TAPLIST_FORMAT_VERSION,
 } from '../../src/constants';
 
 // ============================================================================
@@ -1134,19 +1133,6 @@ describe('handleBeerList', () => {
         'test-request-id'
       );
     });
-
-    it('versions the taplist content hash so caches and ETags from before name repair are replaced', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: vi.fn().mockResolvedValue(createFlyingSaucerResponse([createBeer()])),
-      });
-      const { ctx } = createMockExecutionContext();
-
-      await handleBeerList(mockRequest, createMockEnv(), ctx, mockHeaders, createMockReqCtx(), '13885');
-
-      const rawBody = JSON.stringify(createFlyingSaucerResponse([createBeer()]));
-      expect(hashDescription).toHaveBeenCalledWith(`taplist-v${TAPLIST_FORMAT_VERSION}:${rawBody}`);
-    });
   });
 
   // --------------------------------------------------------------------------
@@ -2039,13 +2025,13 @@ describe('handleBeerList', () => {
 
       await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
-      expect(vi.mocked(hashDescription)).toHaveBeenCalledWith(`taplist-v${TAPLIST_FORMAT_VERSION}:${rawText}`);
+      expect(vi.mocked(hashDescription)).toHaveBeenCalledWith(rawText);
       // The re-serialized form differs in whitespace from rawText -- if the
       // implementation regressed to re-stringifying the parsed object, this
       // call would appear instead of (or in addition to) the raw-bytes call.
       const reSerialized = JSON.stringify(JSON.parse(rawText));
       expect(reSerialized).not.toBe(rawText);
-      expect(vi.mocked(hashDescription)).not.toHaveBeenCalledWith(`taplist-v${TAPLIST_FORMAT_VERSION}:${reSerialized}`);
+      expect(vi.mocked(hashDescription)).not.toHaveBeenCalledWith(reSerialized);
     });
   });
 

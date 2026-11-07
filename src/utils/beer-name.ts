@@ -11,3 +11,12 @@ export function cleanBeerName(name: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/** Apply cleanBeerName to a beer's name and, when present, its brewer. */
+export function cleanBeerNames<T extends { readonly brew_name: string; readonly brewer?: string | null | undefined }>(beer: T): T {
+  return {
+    ...beer,
+    brew_name: cleanBeerName(beer.brew_name),
+    ...(typeof beer.brewer === 'string' ? { brewer: cleanBeerName(beer.brewer) } : {}),
+  };
+}

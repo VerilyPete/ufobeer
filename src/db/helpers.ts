@@ -6,6 +6,7 @@
 import { hashDescription } from '../utils/hash';
 import { shouldSkipEnrichment } from '../config';
 import { D1_MAX_PARAMS_PER_STATEMENT, D1_MAX_STATEMENTS_PER_BATCH, ABV_CONFIDENCE_FROM_DESCRIPTION } from '../constants';
+import { cleanBeerNames } from '../utils/beer-name';
 
 // ============================================================================
 // Enrichment Data Types
@@ -335,9 +336,10 @@ export function extractABV(description: string | undefined): number | null {
  */
 export async function insertPlaceholders(
   db: D1Database,
-  beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string; readonly brew_description?: string | undefined }>,
+  sourceBeers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string; readonly brew_description?: string | undefined }>,
   requestId: string
 ): Promise<InsertPlaceholdersResult> {
+  const beers = sourceBeers.map(cleanBeerNames);
   if (beers.length === 0) {
     return { totalSynced: 0, withAbv: 0, needsEnrichment: [], needsCleanup: [], failed: [] };
   }
@@ -449,6 +451,8 @@ export async function insertPlaceholders(
               `INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
+             brew_name = excluded.brew_name,
+             brewer = excluded.brewer,
              last_seen_at = excluded.last_seen_at`
             )
             .bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description || null, descriptionHash, now, now)
@@ -462,6 +466,8 @@ export async function insertPlaceholders(
               `INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
+             brew_name = excluded.brew_name,
+             brewer = excluded.brewer,
              enrichment_status = 'skipped',
              last_seen_at = excluded.last_seen_at`
             )
@@ -526,7 +532,10 @@ export async function insertPlaceholders(
         break;
 
       case 'unchanged':
-        writeStatements.push(db.prepare(`UPDATE enriched_beers SET last_seen_at = ? WHERE id = ?`).bind(now, beer.id));
+        writeStatements.push(
+          db.prepare(`UPDATE enriched_beers SET last_seen_at = ?, brew_name = ?, brewer = ? WHERE id = ?`)
+            .bind(now, beer.brew_name, beer.brewer, beer.id)
+        );
         break;
     }
 

@@ -356,8 +356,8 @@ export const CLEANUP_VERSION = 1;
 
 /**
  * Version of how GET /beers reshapes upstream fields, folded into the taplist
- * content hash. Bump it whenever served names or other upstream fields change
- * shape, so cached taplists are rewritten and clients' ETags stop matching.
+ * ETag. Bump it whenever served names or other upstream fields change shape,
+ * so clients' ETags from the previous format stop matching.
  *
  * 1: beer names and brewers repaired with cleanBeerName
  */

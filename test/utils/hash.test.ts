@@ -90,9 +90,20 @@ describe('generateETag', () => {
 });
 
 describe('buildCombinedEtag', () => {
-  it('returns content hash alone (quoted) when enrichment hash is null', async () => {
-    const result = await buildCombinedEtag('abc123', null);
-    expect(result).toBe('"abc123"');
+  it('stops matching ETags issued before the current taplist format', async () => {
+    const preFormatEtags = ['"abc123"', `"${await hashDescription('abc123def456')}"`];
+
+    const etags = [await buildCombinedEtag('abc123', null), await buildCombinedEtag('abc123', 'def456')];
+
+    expect(etags.filter(etag => preFormatEtags.includes(etag))).toEqual([]);
+  });
+
+  it('changes with the content hash when enrichment hash is null', async () => {
+    expect(await buildCombinedEtag('abc123', null)).not.toBe(await buildCombinedEtag('abc124', null));
+  });
+
+  it('returns a quoted hash when enrichment hash is null', async () => {
+    expect(await buildCombinedEtag('abc123', null)).toMatch(/^"[0-9a-f]{32}"$/);
   });
 
   it('returns combined hash (quoted) when both hashes are present', async () => {
