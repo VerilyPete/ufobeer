@@ -160,7 +160,7 @@ PERPLEXITY_MAX_CONCURRENCY  # Parallel Perplexity calls (10)
 DAILY_ENRICHMENT_LIMIT  # Perplexity calls/day (500)
 MONTHLY_ENRICHMENT_LIMIT # Perplexity calls/month (2000)
 ENRICHMENT_ENABLED      # Toggle enrichment (true)
-USAGE_ENABLED           # POST /usage ingests only when exactly "true" (false)
+USAGE_ENABLED           # POST /usage ingests only when exactly "true" (true)
 ```
 
 ### Secrets

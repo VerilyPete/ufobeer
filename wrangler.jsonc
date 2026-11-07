@@ -80,7 +80,7 @@
 		"DAILY_ENRICHMENT_LIMIT": "500",
 		"MONTHLY_ENRICHMENT_LIMIT": "2000",
 		"ENRICHMENT_ENABLED": "true",
-		"USAGE_ENABLED": "false",
+		"USAGE_ENABLED": "true",
 	},
 	"triggers": {
 		"crons": [
