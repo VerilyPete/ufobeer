@@ -36,6 +36,17 @@ describe('cleanBeerName', () => {
     expect(cleanBeerName(name)).toBe(name);
   });
 
+  it('scans long runs of backslashes that escape nothing in linear time', () => {
+    const names = Array.from({ length: 200 }, (_, index) => `${index}${'\\'.repeat(5000)}`);
+
+    const started = performance.now();
+    const cleaned = names.map(cleanBeerName);
+    const elapsedMs = performance.now() - started;
+
+    expect(cleaned).toEqual(names);
+    expect(elapsedMs).toBeLessThan(500);
+  });
+
   it.each([
     'Clausthaler Classic N/A (BTL)',
     'Mystery Beer (CAN/BTL)',

@@ -4,7 +4,9 @@ const MAX_REPAIR_PASSES = 4;
 
 function repairPass(name: string): string {
   return repairMojibake(name)
-    .replace(/\\+(['"])/g, '$1')
+    // Match each backslash run once, with or without a quote after it, so a
+    // long run that escapes nothing cannot make the regex backtrack.
+    .replace(/\\+(['"]?)/g, (run: string, quote: string) => quote || run)
     .replace(/\s+/g, ' ')
     .trim();
 }
