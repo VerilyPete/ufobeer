@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { recordUsageReport } from '../../src/db/usage';
-import type { UsageReport } from '../../src/schemas/request';
+import { parseUsageReport, type UsageReport } from '../../src/schemas/request';
 
 const DAY = '2026-11-07';
 const NEXT_DAY = '2026-11-08';
@@ -18,15 +18,23 @@ const NOW = Date.UTC(2026, 10, 7, 18, 0, 0);
 const installId = (n: number): string => `00000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
 const batchId = (n: number): string => `11111111-1111-4111-8111-${n.toString().padStart(12, '0')}`;
 
-const buildReport = (overrides: Partial<UsageReport> = {}): UsageReport => ({
-  installId: installId(1),
-  batchId: batchId(1),
-  appVersion: '2.4.0',
-  aiStatus: 'apple_intelligence',
-  osMajor: 26,
-  events: [{ name: 'view_home', count: 2 }],
-  ...overrides,
-});
+type WireOverrides = Readonly<Record<string, unknown>>;
+
+const buildReport = (overrides: WireOverrides = {}): UsageReport => {
+  const parsed = parseUsageReport({
+    install_id: installId(1),
+    batch_id: batchId(1),
+    app_version: '2.4.0',
+    ai_status: 'apple_intelligence',
+    os_major: 26,
+    events: [{ name: 'view_home', count: 2 }],
+    ...overrides,
+  });
+  if (!parsed.success) {
+    throw new Error(`invalid test report: ${parsed.error.message}`);
+  }
+  return parsed.report;
+};
 
 type RecordOptions = {
   report?: UsageReport;
@@ -110,26 +118,26 @@ describe('recordUsageReport (real D1)', () => {
     });
 
     it('accumulates counts across batches from the same install', async () => {
-      await record({ report: buildReport({ batchId: batchId(1) }) });
-      await record({ report: buildReport({ batchId: batchId(2), events: [{ name: 'view_home', count: 5 }] }) });
+      await record({ report: buildReport({ batch_id: batchId(1) }) });
+      await record({ report: buildReport({ batch_id: batchId(2), events: [{ name: 'view_home', count: 5 }] }) });
 
       expect((await dailyRows()).map((row) => row.count)).toEqual([7]);
       expect(await postsCharged()).toBe(2);
     });
 
     it('keeps separate rows per install and per dimension tuple', async () => {
-      await record({ report: buildReport({ installId: installId(1), batchId: batchId(1) }) });
-      await record({ report: buildReport({ installId: installId(2), batchId: batchId(2) }) });
-      await record({ report: buildReport({ installId: installId(1), batchId: batchId(3), appVersion: '2.5.0' }) });
-      await record({ report: buildReport({ installId: installId(1), batchId: batchId(4), aiStatus: 'other' }) });
-      await record({ report: buildReport({ installId: installId(1), batchId: batchId(5), osMajor: 27 }) });
+      await record({ report: buildReport({ install_id: installId(1), batch_id: batchId(1) }) });
+      await record({ report: buildReport({ install_id: installId(2), batch_id: batchId(2) }) });
+      await record({ report: buildReport({ install_id: installId(1), batch_id: batchId(3), app_version: '2.5.0' }) });
+      await record({ report: buildReport({ install_id: installId(1), batch_id: batchId(4), ai_status: 'brand_new_status' }) });
+      await record({ report: buildReport({ install_id: installId(1), batch_id: batchId(5), os_major: 27 }) });
 
       expect(await dailyRows()).toHaveLength(5);
     });
 
     it('counts the same batch_id from a different install separately', async () => {
-      expect(await record({ report: buildReport({ installId: installId(1) }) })).toBe('admitted');
-      expect(await record({ report: buildReport({ installId: installId(2) }) })).toBe('admitted');
+      expect(await record({ report: buildReport({ install_id: installId(1) }) })).toBe('admitted');
+      expect(await record({ report: buildReport({ install_id: installId(2) }) })).toBe('admitted');
 
       expect(await dailyRows()).toHaveLength(2);
       expect(await postsCharged()).toBe(2);
@@ -144,8 +152,8 @@ describe('recordUsageReport (real D1)', () => {
     });
 
     it('updates last_seen_day without moving first_seen_day for a returning install', async () => {
-      await record({ report: buildReport({ batchId: batchId(1) }), day: DAY });
-      await record({ report: buildReport({ batchId: batchId(2) }), day: NEXT_DAY });
+      await record({ report: buildReport({ batch_id: batchId(1) }), day: DAY });
+      await record({ report: buildReport({ batch_id: batchId(2) }), day: NEXT_DAY });
 
       expect(await installRow(installId(1))).toEqual({ first_seen_day: DAY, last_seen_day: NEXT_DAY });
     });
@@ -196,10 +204,10 @@ describe('recordUsageReport (real D1)', () => {
     });
 
     it('drops a new batch from a known install once the cap is reached', async () => {
-      await record({ report: buildReport({ batchId: batchId(1) }) });
+      await record({ report: buildReport({ batch_id: batchId(1) }) });
       await env.DB.prepare('UPDATE usage_ingest_daily SET posts = ? WHERE day = ?').bind(2000, DAY).run();
 
-      expect(await record({ report: buildReport({ batchId: batchId(2) }) })).toBe('daily_post_cap');
+      expect(await record({ report: buildReport({ batch_id: batchId(2) }) })).toBe('daily_post_cap');
       expect((await dailyRows()).map((row) => row.count)).toEqual([2]);
       expect(await batchCount()).toBe(1);
       expect(await postsCharged()).toBe(2000);
@@ -232,10 +240,10 @@ describe('recordUsageReport (real D1)', () => {
     });
 
     it('keeps counting installs already known after the cap is reached', async () => {
-      await record({ report: buildReport({ batchId: batchId(1) }) });
+      await record({ report: buildReport({ batch_id: batchId(1) }) });
       await seedNewInstalls(3);
 
-      expect(await record({ report: buildReport({ batchId: batchId(2) }), installCap: 3 })).toBe('admitted');
+      expect(await record({ report: buildReport({ batch_id: batchId(2) }), installCap: 3 })).toBe('admitted');
     });
 
     it('only counts installs first seen today towards the cap', async () => {

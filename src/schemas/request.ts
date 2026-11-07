@@ -228,13 +228,20 @@ export const UsageReportEnvelopeSchema = z.object({
   events: z.array(z.unknown()).max(USAGE_MAX_EVENT_ITEMS),
 });
 
+/**
+ * Branded so the write helper only accepts counts that came through this
+ * schema: a plain number (fractional, zero, negative) does not type-check.
+ */
+export const UsageCountSchema = z.number().int().min(1).max(USAGE_MAX_COUNT_PER_EVENT).brand<'UsageCount'>();
+
 export const UsageEventItemSchema = z.object({
   name: z.enum(USAGE_EVENTS),
-  count: z.number().int().min(1).max(USAGE_MAX_COUNT_PER_EVENT),
+  count: UsageCountSchema,
 });
 
 export type UsageEvent = (typeof USAGE_EVENTS)[number];
 export type UsageAiStatus = (typeof USAGE_AI_STATUSES)[number];
+export type UsageCount = z.infer<typeof UsageCountSchema>;
 export type UsageEventCount = Readonly<z.infer<typeof UsageEventItemSchema>>;
 
 export type UsageReport = Readonly<{
@@ -253,10 +260,10 @@ export type UsageReportParseResult =
 const sumRepeatedEvents = (items: readonly UsageEventCount[]): readonly UsageEventCount[] =>
   [...new Set(items.map((item) => item.name))].map((name) => ({
     name,
-    count: Math.min(
+    count: UsageCountSchema.parse(Math.min(
       items.filter((item) => item.name === name).reduce((total, item) => total + item.count, 0),
       USAGE_MAX_COUNT_PER_EVENT,
-    ),
+    )),
   }));
 
 export function parseUsageReport(input: unknown): UsageReportParseResult {

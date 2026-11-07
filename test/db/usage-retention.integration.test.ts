@@ -106,14 +106,18 @@ describe('reapExpiredUsage (real D1)', () => {
     ]);
   });
 
-  it('deletes at most the reap limit per table per call', async () => {
-    const expiredDay = utcDay(USAGE_DAILY_RETENTION_DAYS + 1);
-    const rows = Array.from({ length: USAGE_REAP_LIMIT + 3 }, (_, i) => insertDaily(expiredDay, `install-${i}`));
+  it.each([
+    ['usage_daily', (i: number) => insertDaily(utcDay(USAGE_DAILY_RETENTION_DAYS + 1), `install-${i}`)],
+    ['usage_installs', (i: number) => insertInstall(`install-${i}`, utcDay(USAGE_DAILY_RETENTION_DAYS + 1))],
+    ['usage_batches', (i: number) => insertBatch(`batch-${i}`, 0)],
+    ['usage_ingest_daily', (i: number) => insertIngest(utcDay(USAGE_INGEST_RETENTION_DAYS + 1 + i))],
+  ] as const)('deletes at most the reap limit from %s per call', async (table, insertExpired) => {
+    const rows = Array.from({ length: USAGE_REAP_LIMIT + 3 }, (_, i) => insertExpired(i));
     const chunks = Array.from({ length: Math.ceil(rows.length / 100) }, (_, i) => rows.slice(i * 100, (i + 1) * 100));
     await chunks.reduce((previous, chunk) => previous.then(() => env.DB.batch(chunk)).then(() => undefined), Promise.resolve());
 
-    expect((await reapExpiredUsage(env.DB, NOW)).usage_daily).toBe(USAGE_REAP_LIMIT);
-    expect((await reapExpiredUsage(env.DB, NOW)).usage_daily).toBe(3);
+    expect((await reapExpiredUsage(env.DB, NOW))[table]).toBe(USAGE_REAP_LIMIT);
+    expect((await reapExpiredUsage(env.DB, NOW))[table]).toBe(3);
   });
 
   it('keeps reaping the other tables when one delete fails', async () => {

@@ -160,10 +160,22 @@ describe('parseUsageReport envelope', () => {
 describe('parseUsageReport event items', () => {
   const eventsOf = (events: readonly unknown[]) => parseOk(buildBody({ events }));
 
-  it('accepts every known event name', () => {
-    const result = eventsOf(USAGE_EVENTS.map((name) => ({ name, count: 1 })));
-    expect(result.report.events.map((e) => e.name)).toEqual([...USAGE_EVENTS]);
+  it('accepts every event name the plan specifies, spelled as the app sends it', () => {
+    const specifiedEvents = [
+      'session_started', 'view_home', 'view_all_beers', 'view_beerfinder', 'view_tasted',
+      'view_rewards', 'view_queue', 'view_pending_operations', 'view_missed_credit',
+      'checkin_queued', 'checkin_from_suggestion', 'queue_entry_deleted', 'operation_retried',
+      'reward_queued', 'rewards_refreshed_manual', 'beer_rated', 'missed_credit_resolved',
+      'untappd_opened', 'suggestions_opened', 'apple_intelligence_used', 'local_matching_used',
+      'fallback_deadline_expired', 'fallback_provider_failure', 'fallback_invalid_output',
+      'fallback_context_budget',
+    ];
+
+    const result = eventsOf(specifiedEvents.map((name, i) => ({ name, count: i + 1 })));
+
+    expect(result.report.events).toEqual(specifiedEvents.map((name, i) => ({ name, count: i + 1 })));
     expect(result.droppedCount).toBe(0);
+    expect([...USAGE_EVENTS].sort()).toEqual([...specifiedEvents].sort());
   });
 
   it('drops unknown event names without failing the report', () => {
