@@ -154,3 +154,132 @@ export const CleanupMessageSchema = z.object({
 export type TriggerCleanupRequest = z.infer<typeof TriggerCleanupRequestSchema>;
 export type EnrichmentMessage = z.infer<typeof EnrichmentMessageSchema>;
 export type CleanupMessageBody = z.infer<typeof CleanupMessageSchema>;
+
+// ============================================================================
+// Usage Telemetry (POST /usage)
+// ============================================================================
+//
+// Two layers, like SyncBeersRequestOuterSchema + SyncBeerItemSchema: a strict
+// envelope that is the only source of a 400, and lenient event items that are
+// dropped on failure. Unlike the other request schemas, neither layer is
+// .strict(): the app may ship new fields or events before this worker knows
+// them, and those must be ignored rather than rejected.
+
+export const USAGE_EVENTS = [
+  'session_started',
+  'view_home',
+  'view_all_beers',
+  'view_beerfinder',
+  'view_tasted',
+  'view_rewards',
+  'view_queue',
+  'view_pending_operations',
+  'view_missed_credit',
+  'checkin_queued',
+  'checkin_from_suggestion',
+  'queue_entry_deleted',
+  'operation_retried',
+  'reward_queued',
+  'rewards_refreshed_manual',
+  'beer_rated',
+  'missed_credit_resolved',
+  'untappd_opened',
+  'suggestions_opened',
+  'apple_intelligence_used',
+  'local_matching_used',
+  'fallback_deadline_expired',
+  'fallback_provider_failure',
+  'fallback_invalid_output',
+  'fallback_context_budget',
+] as const;
+
+export const USAGE_AI_STATUSES = [
+  'apple_intelligence',
+  'requires_newer_os',
+  'device_not_eligible',
+  'not_enabled',
+  'model_not_ready',
+  'unsupported_locale',
+  'unavailable',
+] as const;
+
+/** Per event per post, after repeated names are summed. */
+export const USAGE_MAX_COUNT_PER_EVENT = 500;
+
+/** Every known event plus room for a few the worker does not know yet. */
+export const USAGE_MAX_EVENT_ITEMS = 40;
+
+export const USAGE_MIN_OS_MAJOR = 13;
+export const USAGE_MAX_OS_MAJOR = 99;
+
+const USAGE_APP_VERSION_PATTERN = /^\d{1,2}\.\d{1,3}\.\d{1,3}$/;
+
+const knownAiStatuses: ReadonlySet<string> = new Set(USAGE_AI_STATUSES);
+
+const isKnownAiStatus = (value: string): value is UsageAiStatus => knownAiStatuses.has(value);
+
+export const UsageReportEnvelopeSchema = z.object({
+  install_id: z.uuid().transform((id) => id.toLowerCase()),
+  batch_id: z.uuid().transform((id) => id.toLowerCase()),
+  app_version: z.string().regex(USAGE_APP_VERSION_PATTERN),
+  ai_status: z.string().transform((status): UsageAiStatus | 'other' =>
+    isKnownAiStatus(status) ? status : 'other'),
+  os_major: z.number().int().min(USAGE_MIN_OS_MAJOR).max(USAGE_MAX_OS_MAJOR),
+  events: z.array(z.unknown()).max(USAGE_MAX_EVENT_ITEMS),
+});
+
+export const UsageEventItemSchema = z.object({
+  name: z.enum(USAGE_EVENTS),
+  count: z.number().int().min(1).max(USAGE_MAX_COUNT_PER_EVENT),
+});
+
+export type UsageEvent = (typeof USAGE_EVENTS)[number];
+export type UsageAiStatus = (typeof USAGE_AI_STATUSES)[number];
+export type UsageEventCount = Readonly<z.infer<typeof UsageEventItemSchema>>;
+
+export type UsageReport = Readonly<{
+  installId: string;
+  batchId: string;
+  appVersion: string;
+  aiStatus: UsageAiStatus | 'other';
+  osMajor: number;
+  events: readonly UsageEventCount[];
+}>;
+
+export type UsageReportParseResult =
+  | Readonly<{ success: true; report: UsageReport; droppedCount: number }>
+  | Readonly<{ success: false; error: z.ZodError }>;
+
+const sumRepeatedEvents = (items: readonly UsageEventCount[]): readonly UsageEventCount[] =>
+  [...new Set(items.map((item) => item.name))].map((name) => ({
+    name,
+    count: Math.min(
+      items.filter((item) => item.name === name).reduce((total, item) => total + item.count, 0),
+      USAGE_MAX_COUNT_PER_EVENT,
+    ),
+  }));
+
+export function parseUsageReport(input: unknown): UsageReportParseResult {
+  const envelope = UsageReportEnvelopeSchema.safeParse(input);
+  if (!envelope.success) {
+    return { success: false, error: envelope.error };
+  }
+
+  const validItems = envelope.data.events.flatMap((item) => {
+    const parsed = UsageEventItemSchema.safeParse(item);
+    return parsed.success ? [parsed.data] : [];
+  });
+
+  return {
+    success: true,
+    report: {
+      installId: envelope.data.install_id,
+      batchId: envelope.data.batch_id,
+      appVersion: envelope.data.app_version,
+      aiStatus: envelope.data.ai_status,
+      osMajor: envelope.data.os_major,
+      events: sumRepeatedEvents(validItems),
+    },
+    droppedCount: envelope.data.events.length - validItems.length,
+  };
+}
