@@ -93,6 +93,7 @@ describe('POST /usage request contract (app encoder -> worker parser)', () => {
     const names = expected.events.map((event) => event.name);
     const counts = expected.events.map((event) => event.count);
 
+    expect(names.length).toBeGreaterThan(0);
     expect(new Set(names).size).toBe(names.length);
     expect([...counts].sort((a, b) => a - b)).toEqual(counts.map((_, i) => i + 1));
   });

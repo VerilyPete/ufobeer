@@ -621,8 +621,14 @@ to `false` until slice 5 ships.
    - BeerSelector Swift tests (1) encode the canonical batch with the
      production encoder and fail if the output differs from
      `usage-report.request.json` (JSON-equal), so encoder drift breaks the
-     app's build, and (2) fail if the canonical batch misses any case of the
-     app's production event enumeration.
+     app's build; (2) fail if the canonical batch misses any case of the
+     app's production event enumeration; and (3) read
+     `usage-report.expected.json` with a plain JSON reader (not the
+     production decoder) and fail unless its events are exactly the
+     enumeration's cases, once each, with the canonical batch's counts and
+     envelope. Only the app can see its enumeration, so (2) and (3) are what
+     stop the fixtures quietly covering fewer events than the app sends;
+     this repo's test only rules out an empty batch.
    - This repo's `contract-test/usageReport.contract.test.ts`, run by the
      existing Golden Taproom workflow against BeerSelector `main`, parses the
      request fixture with `parseUsageReport` and asserts that the result
