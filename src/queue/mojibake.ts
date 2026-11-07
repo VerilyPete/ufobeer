@@ -63,8 +63,9 @@ function isPlausibleRepair(options: {
   readonly before: string;
   readonly after: string;
   readonly wordHasMojibake: boolean;
+  readonly earlierLetterMojibake: boolean;
 }): boolean {
-  const { run, repaired, before, after, wordHasMojibake } = options;
+  const { run, repaired, before, after, wordHasMojibake, earlierLetterMojibake } = options;
   const codePoint = repaired.codePointAt(0) ?? 0;
   if (codePoint >= 0x10000) return inRange(codePoint, EMOJI);
   if (codePoint >= 0x800) return PLAUSIBLE_THREE_BYTE.some(range => inRange(codePoint, range));
@@ -74,7 +75,7 @@ function isPlausibleRepair(options: {
     // A genuine word can end in Ã or Å before a non-breaking space ("MAÇÃ"),
     // whatever follows, so the run is repaired only where no genuine word
     // ends: on its own ("à la", "Šumava"), or after mojibake ("dÃ©jÃ").
-    return !ENDS_WITH_LETTER.test(before) || hasLetterMojibake(before);
+    return !ENDS_WITH_LETTER.test(before) || earlierLetterMojibake;
   }
   if (LATIN_LETTER_LEADS.has(lead)) {
     return LETTER.test(repaired) && inRange(codePoint, [0xc0, 0x17f])
@@ -98,8 +99,9 @@ function decodeRun(options: {
   readonly offset: number;
   readonly word: string;
   readonly wordHasMojibake: boolean;
+  readonly earlierLetterMojibake: boolean;
 }): DecodedRun | null {
-  const { run, offset, word, wordHasMojibake } = options;
+  const { run, offset, word, wordHasMojibake, earlierLetterMojibake } = options;
   const [lead = '', ...continuations] = [...run];
   const needed = continuationsFor(byteOf(lead));
   if (continuations.length < needed) return null;
@@ -109,26 +111,56 @@ function decodeRun(options: {
     const repaired = strictUtf8.decode(new Uint8Array(candidate.map(byteOf)));
     const before = word.slice(0, offset);
     const after = rest + word.slice(offset + run.length);
-    return isPlausibleRepair({ run: candidate.join(''), repaired, before, after, wordHasMojibake }) ? { repaired, rest } : null;
+    return isPlausibleRepair({ run: candidate.join(''), repaired, before, after, wordHasMojibake, earlierLetterMojibake })
+      ? { repaired, rest } : null;
   } catch {
     return null;
   }
 }
 
+type LetterEvidence = {
+  readonly earlierByOffset: ReadonlyMap<number, boolean>;
+  readonly wordHasMojibake: boolean;
+};
+
+const isLetterRepair = (decoded: DecodedRun | null): boolean => decoded !== null && LETTER.test(decoded.repaired);
+
 // A word with one unambiguous repaired letter is mojibake, so a word-final
 // run in it is repaired even when its byte reads as trailing punctuation
 // ("RychtÃ¡Å™" -> "Rychtář"), while a genuine word stays intact ("MAÇÃ”").
-function hasLetterMojibake(word: string): boolean {
-  return [...word.matchAll(MOJIBAKE_RUN)].some(({ 0: run, index: offset }) => {
-    const decoded = decodeRun({ run, offset, word, wordHasMojibake: false });
-    return decoded !== null && LETTER.test(decoded.repaired);
+//
+// A run before an Ã/Å + U+00A0 run needs letter mojibake in the text before
+// it. One left-to-right pass records that for each run, because rescanning
+// every prefix grew exponentially on long words of ambiguous runs. Judged on
+// the text before the current run, only the previous run can differ from its
+// judgement on the whole word: endsWord reads at most two characters after a
+// run, and any earlier run has a whole run of two or more characters between
+// it and the current one. So the previous run alone is judged again.
+function letterEvidence(word: string): LetterEvidence {
+  const runs = [...word.matchAll(MOJIBAKE_RUN)].map(({ 0: run, index: offset }) => ({ run, offset }));
+  const earlier: boolean[] = [];
+  const letter: boolean[] = [];
+  let seenBeforePrevious = false;
+  runs.forEach(({ run, offset }, index) => {
+    seenBeforePrevious = seenBeforePrevious || (letter[index - 2] ?? false);
+    const previous = runs[index - 1];
+    const previousLetterBeforeRun = previous !== undefined && isLetterRepair(decodeRun({
+      ...previous, word: word.slice(0, offset), wordHasMojibake: false, earlierLetterMojibake: earlier[index - 1] ?? false,
+    }));
+    earlier.push(seenBeforePrevious || previousLetterBeforeRun);
+    letter.push(isLetterRepair(decodeRun({ run, offset, word, wordHasMojibake: false, earlierLetterMojibake: earlier[index] ?? false })));
   });
+  return {
+    earlierByOffset: new Map(runs.map(({ offset }, index) => [offset, earlier[index] ?? false])),
+    wordHasMojibake: letter.some(Boolean),
+  };
 }
 
 function repairWord(word: string): string {
-  const wordHasMojibake = hasLetterMojibake(word);
+  const { earlierByOffset, wordHasMojibake } = letterEvidence(word);
   return word.replace(MOJIBAKE_RUN, (run: string, offset: number) => {
-    const decoded = decodeRun({ run, offset, word, wordHasMojibake });
+    const earlierLetterMojibake = earlierByOffset.get(offset) ?? false;
+    const decoded = decodeRun({ run, offset, word, wordHasMojibake, earlierLetterMojibake });
     return decoded === null ? run : decoded.repaired.replace(BYTE_ORDER_MARK, '') + decoded.rest;
   });
 }
