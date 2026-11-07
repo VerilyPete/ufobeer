@@ -285,6 +285,45 @@ describe('recordUsageReport (real D1)', () => {
         },
       });
 
+    const withPostBeforeBatch = (beforeBatch: () => Promise<unknown>): D1Database =>
+      new Proxy(env.DB, {
+        get(target, prop) {
+          if (prop === 'batch') {
+            return async (statements: D1PreparedStatement[]) => {
+              await beforeBatch();
+              return target.batch(statements);
+            };
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+
+    it('respects a competing post that takes the last budget slot just before this write commits', async () => {
+      await seedPosts(1999);
+      const competingPost = () => recordUsageReport(env.DB, {
+        report: buildReport({ install_id: installId(2), batch_id: batchId(2) }),
+        day: DAY,
+        requestId: crypto.randomUUID(),
+        now: NOW,
+        installCap: 500,
+        postCap: 2000,
+      });
+
+      const outcome = await recordUsageReport(withPostBeforeBatch(competingPost), {
+        report: buildReport(),
+        day: DAY,
+        requestId: crypto.randomUUID(),
+        now: NOW,
+        installCap: 500,
+        postCap: 2000,
+      });
+
+      expect(outcome).toBe('daily_post_cap');
+      expect(await postsCharged()).toBe(2000);
+      expect((await dailyRows()).map((row) => row.install_id)).toEqual([installId(2)]);
+    });
+
     it('reports the reason seen inside the write, even if another post fills the budget right after', async () => {
       await seedNewInstalls(3);
       const db = withPostAfterBatch(() => seedPosts(2000));

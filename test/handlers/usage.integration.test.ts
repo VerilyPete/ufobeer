@@ -214,12 +214,24 @@ describe('POST /usage', () => {
   });
 
   describe('kill switch', () => {
-    it.each([undefined, 'false', 'TRUE', ''])('returns 204 without writing usage when USAGE_ENABLED is %j', async (flag) => {
-      const response = await postUsage({ env: buildEnv({ USAGE_ENABLED: flag }) });
+    const usageTablesSnapshot = async () => ({
+      daily: (await env.DB.prepare('SELECT * FROM usage_daily ORDER BY event').all()).results,
+      installs: (await env.DB.prepare('SELECT * FROM usage_installs').all()).results,
+      batches: (await env.DB.prepare('SELECT * FROM usage_batches').all()).results,
+      ingest: (await env.DB.prepare('SELECT * FROM usage_ingest_daily').all()).results,
+    });
+
+    it.each([undefined, 'false', 'TRUE', ''])('returns 204 and leaves every usage table unchanged when USAGE_ENABLED is %j', async (flag) => {
+      await postUsage();
+      const before = await usageTablesSnapshot();
+
+      const response = await postUsage({
+        env: buildEnv({ USAGE_ENABLED: flag }),
+        body: JSON.stringify(buildBody({ batch_id: batchId(2) })),
+      });
 
       expect(response.status).toBe(204);
-      expect(await tableCount('usage_batches')).toBe(0);
-      expect(await usageCounts()).toEqual([]);
+      expect(await usageTablesSnapshot()).toEqual(before);
     });
   });
 
