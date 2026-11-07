@@ -77,6 +77,16 @@ describe('reapExpiredUsage (real D1)', () => {
     expect(await column('SELECT install_id FROM usage_installs ORDER BY install_id')).toEqual(['boundary', 'recent']);
   });
 
+  it('keeps an install first seen long ago that is still active', async () => {
+    await env.DB.prepare('INSERT INTO usage_installs (install_id, first_seen_day, last_seen_day) VALUES (?, ?, ?)')
+      .bind('veteran', utcDay(USAGE_DAILY_RETENTION_DAYS + 30), utcDay(0)).run();
+
+    const result = await reapExpiredUsage(env.DB, NOW);
+
+    expect(result.usage_installs).toBe(0);
+    expect(await column('SELECT install_id FROM usage_installs')).toEqual(['veteran']);
+  });
+
   it('deletes batches received before the dedup window and keeps the boundary instant', async () => {
     const cutoff = NOW - USAGE_BATCH_RETENTION_DAYS * DAY_MS;
     await env.DB.batch([
