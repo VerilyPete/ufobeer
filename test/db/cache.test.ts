@@ -358,6 +358,22 @@ describe('updateCacheTimestamp — enrichment_hash preservation', () => {
 // ============================================================================
 
 describe('parseCachedBeers', () => {
+  it('repairs names and brewers cached before name repair', () => {
+    const json = JSON.stringify([createEnrichedBeer({ brew_name: "Dragon\\'s Milk ", brewer: "Brasserie D\\'achouffe" })]);
+
+    const result = parseCachedBeers(json);
+
+    expect(result?.[0]).toMatchObject({ brew_name: "Dragon's Milk", brewer: "Brasserie D'achouffe" });
+  });
+
+  it('leaves a cached beer without a brewer without one', () => {
+    const { brewer: _brewer, ...beer } = createEnrichedBeer();
+
+    const result = parseCachedBeers(JSON.stringify([beer]));
+
+    expect(result?.[0]).not.toHaveProperty('brewer');
+  });
+
   it('parses valid JSON and returns beers array', () => {
     const beers = [createEnrichedBeer()];
     const json = JSON.stringify(beers);

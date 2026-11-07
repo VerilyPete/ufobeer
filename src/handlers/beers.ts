@@ -37,6 +37,7 @@ import { readBoundedJson, boundedJsonErrorResponse } from '../utils/body';
 import { readBoundedText, ResponseTooLargeError } from '../utils/bounded-response';
 import { CACHE_TTL_MS, UPSTREAM_TAPLIST_TIMEOUT_MS, SYNC_BODY_MAX_BYTES, SMALL_JSON_BODY_MAX_BYTES, FLYING_SAUCER_RESPONSE_MAX_BYTES } from '../constants';
 import { FlyingSaucerResponseSchema, isFlyingSaucerBeerRecordWithinSizeCap } from '../schemas/external';
+import { cleanBeerNames } from '../utils/beer-name';
 import {
   BatchLookupRequestSchema,
   SyncBeersRequestOuterSchema,
@@ -111,7 +112,7 @@ function buildFlyingSaucerUrl(base: string, storeId: string): FlyingSaucerUrlRes
  */
 async function processBackgroundEnrichment(
   env: Env,
-  beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer: string; readonly brew_description?: string | undefined }>,
+  beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer?: string | undefined; readonly brew_description?: string | undefined }>,
   requestId: string
 ): Promise<void> {
   try {
@@ -332,7 +333,8 @@ async function fetchMergeAndCacheTaplist(
   // passthrough fields the schema itself can't bound) before hashing/caching.
   const rawBeers = rawBeersUnvalidated
     .filter(isValidBeer)
-    .filter(isFlyingSaucerBeerRecordWithinSizeCap);
+    .filter(isFlyingSaucerBeerRecordWithinSizeCap)
+    .map(cleanBeerNames);
 
   // 3. Fetch enrichment data from D1 (bounded query with chunking)
   const beerIds = rawBeers.map(b => b.id);
@@ -825,12 +827,12 @@ export async function handleBeerSync(
       if (!beerParse.success) {
         validationErrors.push(`Beer ${i}: ${beerParse.error.issues[0]?.message ?? 'invalid'}`);
       } else {
-        validBeers.push({
+        validBeers.push(cleanBeerNames({
           id: beerParse.data.id,
           brew_name: beerParse.data.brew_name,
           brewer: beerParse.data.brewer ?? null,
           brew_description: beerParse.data.brew_description ?? null,
-        });
+        }));
       }
     }
 
@@ -864,19 +866,26 @@ export async function handleBeerSync(
     const existingIds = validBeers.map(b => b.id);
     const placeholders = existingIds.map(() => '?').join(',');
     const { results: existingRecords } = await env.DB.prepare(
-      `SELECT id, description_cleaned_at, queued_for_cleanup_at
+      `SELECT id, description_cleaned_at, queued_for_cleanup_at, brewer
        FROM enriched_beers
        WHERE id IN (${placeholders})`
     ).bind(...existingIds).all<{
       id: string;
       description_cleaned_at: number | null;
       queued_for_cleanup_at: number | null;
+      brewer: string | null;
     }>();
 
     const existingMap = new Map(existingRecords.map(r => [r.id, r]));
 
+    // A sync item may omit brewer. Fall back to the stored brewer, repaired,
+    // so the row and any queued cleanup work agree.
+    const beersWithBrewer = validBeers.map(beer => beer.brewer !== null
+      ? beer
+      : cleanBeerNames({ ...beer, brewer: existingMap.get(beer.id)?.brewer ?? null }));
+
     // Build statements and determine cleanup needs
-    for (const beer of validBeers) {
+    for (const beer of beersWithBrewer) {
       const descriptionHash = beer.brew_description
         ? await hashDescription(beer.brew_description)
         : null;

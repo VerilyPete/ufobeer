@@ -1110,6 +1110,29 @@ describe('handleBeerList', () => {
         'test-request-id'
       );
     });
+
+    it('serves and stores repaired beer names and brewers', async () => {
+      const beers = [
+        createBeer({ id: '1', brew_name: "Dragon\\'s Milk Reserve ", brewer: "Brasserie D\\'achouffe", brew_description: 'Rich' }),
+      ];
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
+      });
+      const env = createMockEnv();
+      const { ctx, waitUntilPromises } = createMockExecutionContext();
+
+      const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, createMockReqCtx(), '13885');
+      await Promise.all(waitUntilPromises);
+
+      const body = await result.response.json() as { beers: Array<{ brew_name: string; brewer: string }> };
+      expect(body.beers[0]).toMatchObject({ brew_name: "Dragon's Milk Reserve", brewer: "Brasserie D'achouffe" });
+      expect(insertPlaceholders).toHaveBeenCalledWith(
+        env.DB,
+        [{ id: '1', brew_name: "Dragon's Milk Reserve", brewer: "Brasserie D'achouffe", brew_description: 'Rich' }],
+        'test-request-id'
+      );
+    });
   });
 
   // --------------------------------------------------------------------------
