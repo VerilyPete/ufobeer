@@ -80,6 +80,49 @@ Full sync from Flying Saucer API. Imports all beers and queues for enrichment.
 }
 ```
 
+### POST /usage
+
+Daily per-install feature counts from BeerSelector (beta usage telemetry).
+Counts are **unverified**: the API key ships in the app and install IDs are
+client-chosen, so use them for trends and ratios, not exact figures. Design:
+`plans/usage-telemetry.md`; operations and queries: `.claude/usage-telemetry.md`.
+
+**Request Body:**
+```json
+{
+  "install_id": "3f2b8c1e-5d4a-4e7b-9c0f-1a2b3c4d5e6f",
+  "batch_id": "9a8b7c6d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+  "app_version": "2.4.0",
+  "ai_status": "apple_intelligence",
+  "os_major": 26,
+  "events": [
+    { "name": "suggestions_opened", "count": 3 },
+    { "name": "fallback_deadline_expired", "count": 1 }
+  ]
+}
+```
+
+- `install_id`, `batch_id`: UUIDs (lower-cased on receipt). A repeated
+  `(install_id, batch_id)` is ignored, so the client resends a batch with the
+  same `batch_id` until it gets a 204.
+- `app_version`: `^\d{1,2}\.\d{1,3}\.\d{1,3}$`. `os_major`: integer 13–99.
+- `ai_status`: any string; unknown values are stored as `other`.
+- `events`: at most 40 items. Each item needs a known `name` (the
+  `USAGE_EVENTS` list in `src/schemas/request.ts`) and an integer `count`
+  of 1–500. Bad items are dropped, not rejected. Repeated names are summed
+  and clamped to 500.
+
+**Response:** `204` with no body in every accepted case: counted, duplicate
+batch, `USAGE_ENABLED` not `"true"`, every event dropped, or a daily growth
+budget spent. A 204 tells the client to delete the batch.
+
+| Status | When |
+|---|---|
+| `400` | Malformed JSON or a bad envelope field |
+| `413` / `415` | Body over 64 KiB, or not `application/json` |
+| `429` | More than 6 posts a minute from one IP |
+| `500` / `503` | Write failed, or the rate limiter is unavailable (client resends later) |
+
 ### GET /health
 
 Health check with quota status.
@@ -266,5 +309,9 @@ All errors return JSON with `error` field:
 
 - 60 requests per minute per client
 - Tracked by API key hash (or IP if no key)
+- `POST /usage` is outside that bucket: 6 per minute per IP, under its own
+  `usage:{ip}` key. Every install shares one API key, so the per-key bucket
+  is fleet-wide and telemetry must not spend it. The 30/min pre-auth per-IP
+  limit still covers every route, `/usage` included.
 - Returns `429` with `Retry-After` header when exceeded
 - Check remaining quota in `/health` response
