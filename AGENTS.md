@@ -268,6 +268,16 @@ not a production migration. Beside `contract-test/fixtures.ts`, keep fixtures
 minimal: add the smallest record that exposes a new wire-level distinction,
 not a full production taplist or many equivalent beers.
 
+The `POST /usage` request contract runs the other way:
+`contract-test/usageReport.contract.test.ts` parses BeerSelector's golden
+`native-ios/Tests/Fixtures/usage-report.request.json` (written by the app's
+real Swift encoder) with `parseUsageReport` and requires the result to equal
+`usage-report.expected.json` with nothing dropped or merged; the app's
+events must be a subset of `USAGE_EVENTS`, so a new event lands here and
+deploys before the app adds it. Set
+`USAGE_CONTRACT_FIXTURES_DIR` to try other fixtures. See slice 7 of
+`plans/usage-telemetry.md`.
+
 For local cross-repository runs, check out the siblings in this exact layout:
 
 ```text

@@ -1,5 +1,12 @@
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin';
 import { configDefaults, defineConfig } from 'vitest/config';
+import { fileURLToPath } from 'node:url';
+
+// BeerSelector's golden /usage request fixtures (contract-test/
+// usageReport.contract.test.ts). USAGE_CONTRACT_FIXTURES_DIR overrides the
+// sibling checkout, e.g. to try fixtures before they land in BeerSelector.
+const usageContractFixtures = process.env.USAGE_CONTRACT_FIXTURES_DIR
+	?? fileURLToPath(new URL('../BeerSelector/native-ios/Tests/Fixtures', import.meta.url));
 
 const isGoldenContract = process.env.GOLDEN_CONTRACT === '1';
 const migrations = isGoldenContract
@@ -26,6 +33,9 @@ export default defineConfig({
 				: {}),
 		}),
 	],
+	resolve: {
+		alias: { '@usage-contract-fixtures': usageContractFixtures },
+	},
 	test: {
 		testTimeout: 30000,
 		clearMocks: true,
