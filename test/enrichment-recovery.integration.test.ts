@@ -6,9 +6,9 @@ const day = 86400000;
 beforeAll(async () => {
   await env.DB.exec('CREATE TABLE IF NOT EXISTS enriched_beers (id TEXT PRIMARY KEY,brew_name TEXT,brewer TEXT,description_hash TEXT,enrichment_status TEXT,abv REAL,updated_at INTEGER,last_seen_at INTEGER)');
 });
-async function seed(id:string,status:string,age:number,seenAge=0,abv:number|null=null,name='Great Heights Leo Carillo') {
+async function seed(id:string,status:string,age:number,seenAge=0,abv:number|null=null,name='Great Heights Leo Carillo',brewer:string|null='Great Heights') {
   const now=Date.now();
-  await env.DB.prepare('INSERT INTO enriched_beers VALUES (?,?,?,?,?,?,?,?)').bind(id,name,'Great Heights','source-hash',status,abv,now-age,now-seenAge).run();
+  await env.DB.prepare('INSERT INTO enriched_beers VALUES (?,?,?,?,?,?,?,?)').bind(id,name,brewer,'source-hash',status,abv,now-age,now-seenAge).run();
 }
 function context() {
   const sendBatch=vi.fn().mockResolvedValue(undefined);
@@ -59,5 +59,32 @@ describe('recover temporary ABV lookup misses',()=>{
     expect(await status('mixed')).toBe('skipped');
     expect((await selectAndQueuePendingEnrichment(worker,{limit:2})).beersQueued).toBe(1);
     expect(sendBatch.mock.calls[0]?.[0]).toEqual([expect.objectContaining({body:expect.objectContaining({beerId:'pilsner'})})]);
+  });
+  it('marks misses under placeholder or house-blend brewers skipped and still queues a real beer with no brewer',async()=>{
+    await seed('snakebite','not_found',2*day,0,null,'Snake Bite','unassigned');
+    await seed('blackpale','not_found',2*day,0,null,'Black & Pale','Brewfusion');
+    await seed('anniversary','not_found',2*day,0,null,'(512) 18th Anniversary',null);
+    const {worker,sendBatch}=context();
+    const status=(id:string)=>env.DB.prepare('SELECT enrichment_status FROM enriched_beers WHERE id=?').bind(id).first('enrichment_status');
+    expect(await selectAndQueuePendingEnrichment(worker,{limit:10})).toMatchObject({beersQueued:1,blocklistedMarked:2});
+    expect(await status('snakebite')).toBe('skipped');
+    expect(await status('blackpale')).toBe('skipped');
+    expect(await status('anniversary')).toBe('pending');
+    expect(sendBatch.mock.calls[0]?.[0]).toEqual([expect.objectContaining({body:expect.objectContaining({beerId:'anniversary'})})]);
+  });
+  it('leaves a row eligible when its brewer is corrected between the sweep select and the skip write',async()=>{
+    await seed('snakebite','pending',2*day,0,null,'Snake Bite','unassigned');
+    const {sendBatch}=context();
+    const realDb=env.DB;
+    const racingDb={
+      prepare:(sql:string)=>realDb.prepare(sql),
+      batch:async(statements:D1PreparedStatement[])=>{
+        await realDb.prepare('UPDATE enriched_beers SET brewer=? WHERE id=?').bind('Brooklyn Brewery','snakebite').run();
+        return realDb.batch(statements);
+      },
+    };
+    const worker={...env,DB:racingDb,ENRICHMENT_QUEUE:{sendBatch}} as unknown as Env;
+    expect(await selectAndQueuePendingEnrichment(worker,{limit:10})).toMatchObject({blocklistedMarked:0});
+    expect(await env.DB.prepare('SELECT enrichment_status FROM enriched_beers WHERE id=?').bind('snakebite').first('enrichment_status')).toBe('pending');
   });
 });

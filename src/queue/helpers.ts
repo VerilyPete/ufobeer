@@ -45,7 +45,7 @@ export async function queueBeersForEnrichment(
   }>,
   requestId: string
 ): Promise<{ queued: number; skipped: number }> {
-  const eligible = beers.filter(b => !shouldSkipEnrichment(b.brew_name));
+  const eligible = beers.filter(b => !shouldSkipEnrichment({ brewName: b.brew_name, brewer: b.brewer }));
   const skipped = beers.length - eligible.length;
 
   if (eligible.length === 0) {

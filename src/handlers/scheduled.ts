@@ -27,6 +27,7 @@ import { cleanupOldDlqMessages } from './dlq';
 import { getToday, getCurrentHourCT, isWithinOperatingHours } from '../utils/date';
 import { refreshTaplistForStore } from './beers';
 import { selectAndQueuePendingEnrichment } from './enrichment';
+import { releaseUnblockedSkips } from '../db/skipRecovery';
 import { reapOldRateLimits } from '../rate-limit';
 import { reapOldAuditLog } from '../audit';
 import { reapExpiredUsage, runUsageHealthCheck } from '../db/usage';
@@ -243,6 +244,18 @@ export async function handleScheduledEnrichment(
 
     // Only queue as many as we can process today (max 100)
     const batchSize = Math.min(100, remainingToday);
+
+    // Return skipped rows no rule matches any more to pending first, so the
+    // sweep below queues them through its quota-checked path in this run.
+    // Isolated: a failure here must not block the sweep.
+    try {
+      const recheck = await releaseUnblockedSkips(env.DB);
+      if (recheck.released > 0) {
+        console.log(`[cron] Released ${recheck.released} skipped rows no rule matches`);
+      }
+    } catch (error) {
+      console.error('[cron] skipped-row re-check failed:', error);
+    }
 
     // Select, mark blocklisted, and queue (shared with the admin trigger)
     const queueResult = await selectAndQueuePendingEnrichment(env, { limit: batchSize });

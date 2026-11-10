@@ -42,7 +42,12 @@ vi.mock('../../src/db/usage', async (importOriginal) => {
   };
 });
 
+vi.mock('../../src/db/skipRecovery', () => ({
+  releaseUnblockedSkips: vi.fn().mockResolvedValue({ released: 0, scanned: 0, capReached: false }),
+}));
+
 import { refreshTaplistForStore } from '../../src/handlers/beers';
+import { releaseUnblockedSkips } from '../../src/db/skipRecovery';
 import { getCurrentHourCT } from '../../src/utils/date';
 import { reapOldRateLimits } from '../../src/rate-limit';
 import { reapOldAuditLog } from '../../src/audit';
@@ -200,8 +205,8 @@ describe('handleScheduledEnrichment', () => {
 
     const skipped = db.preparedStatements
       .filter(s => s.sql.includes("enrichment_status = 'skipped'"))
-      .map(s => s.boundArgs);
-    expect(skipped).toEqual([['beer-1'], ['beer-2']]);
+      .map(s => s.boundArgs[0]);
+    expect(skipped).toEqual(['beer-1', 'beer-2']);
     expect(db.batch).toHaveBeenCalledTimes(1);
     expect(env.ENRICHMENT_QUEUE.sendBatch).not.toHaveBeenCalled();
   });
@@ -402,6 +407,51 @@ describe('handleScheduledEnrichment', () => {
     await handleScheduledEnrichment(env, createMockCtx());
 
     expect(refreshTaplistForStore).toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  // ============================================================================
+  // Skipped-row recovery
+  // ============================================================================
+
+  function sweepSelectOrder(db: ReturnType<typeof buildSequencedDb>): number | undefined {
+    const index = db.prepare.mock.calls.findIndex(([sql]) => String(sql).includes('FROM enriched_beers'));
+    return db.prepare.mock.invocationCallOrder[index];
+  }
+
+  it('re-checks skipped rows before the sweep selects pending work', async () => {
+    vi.mocked(releaseUnblockedSkips).mockClear();
+    const db = buildSequencedDb([
+      ...SCHEDULE_DUE_CONFIGS,
+      { firstResult: { total: 0 } },
+      { firstResult: { request_count: 0 } },
+      { allResults: [] },
+    ]);
+    const env = createScheduledEnv({ DB: db as unknown as D1Database });
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(releaseUnblockedSkips).toHaveBeenCalledWith(env.DB);
+    const recheckOrder = vi.mocked(releaseUnblockedSkips).mock.invocationCallOrder[0];
+    expect(recheckOrder).toBeDefined();
+    expect(sweepSelectOrder(db)).toBeGreaterThan(recheckOrder!);
+  });
+
+  it('does not let a failing skipped-row re-check block the sweep', async () => {
+    vi.mocked(releaseUnblockedSkips).mockRejectedValueOnce(new Error('D1 unavailable'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const db = buildSequencedDb([
+      ...SCHEDULE_DUE_CONFIGS,
+      { firstResult: { total: 0 } },
+      { firstResult: { request_count: 0 } },
+      { allResults: [] },
+    ]);
+    const env = createScheduledEnv({ DB: db as unknown as D1Database });
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(sweepSelectOrder(db)).toBeDefined();
+    expect(consoleSpy).toHaveBeenCalledWith('[cron] skipped-row re-check failed:', expect.any(Error));
     consoleSpy.mockRestore();
   });
 });

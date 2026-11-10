@@ -195,6 +195,12 @@ wrangler secret put ADMIN_SECRET     # Admin secret for /admin/* routes (X-Admin
 3. Perplexity API called for ABV lookup
 4. Result stored with confidence score and source
 
+Non-beers (flights, blends, mixed pours) are skipped by `shouldSkipEnrichment({ brewName, brewer })`
+in `src/config.ts`: name rules, placeholder brewers (`n/a`, `unassigned`, `various`, `flights`),
+the Saucer's `Brewfusion` house label, and name-plus-brewer entries. A blank brewer is never a skip
+signal. `skipped` is terminal, so each enrichment run first re-checks recently seen skipped rows
+(`releaseUnblockedSkips`, `src/db/skipRecovery.ts`) and returns any that no rule matches to `pending`.
+
 ### Description Cleanup Pipeline
 1. Beer with raw description queued to `description-cleanup`
 2. Deterministic fixes applied (`applyCleanupFixes` in `src/queue/cleanupGuard.ts`): reviewed spelling pairs, a missing space after a comma or between a percentage and ABV, a final full stop. No model is called.

@@ -87,6 +87,16 @@ describe('categorizeBeer', () => {
 
       expect(result.type).toBe('needs_enrichment_blocklisted');
     });
+
+    it('returns needs_enrichment_blocklisted for a beer under a placeholder brewer', () => {
+      const beer = makeBeer({ brew_name: 'Snake Bite', brewer: 'unassigned' });
+      const hashMap = new Map([['beer-1', 'same-hash']]);
+      const existingMap = new Map<string, ExistingBeerInfo>([
+        ['beer-1', { description_hash: 'same-hash', abv: null, enrichment_status: 'pending' }],
+      ]);
+
+      expect(categorizeBeer(beer, hashMap, existingMap).type).toBe('needs_enrichment_blocklisted');
+    });
   });
 
   describe('new beer with description (any description)', () => {
@@ -164,6 +174,13 @@ describe('categorizeBeer', () => {
       const result = categorizeBeer(beer, hashMap, existingMap);
 
       expect(result.type).toBe('new_needs_enrichment_blocklisted');
+    });
+
+    it('returns new_needs_enrichment_blocklisted for a new beer under a placeholder brewer', () => {
+      const beer = makeBeer({ brew_name: 'Half and Half', brewer: 'Various' });
+      const hashMap = new Map([['beer-1', null]]);
+
+      expect(categorizeBeer(beer, hashMap, new Map<string, ExistingBeerInfo>()).type).toBe('new_needs_enrichment_blocklisted');
     });
   });
 

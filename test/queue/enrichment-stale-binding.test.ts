@@ -364,3 +364,19 @@ describe('producer -> consumer seam (queueBeersForEnrichment -> handleEnrichment
     expect(capturedMessages[0]!.body.descriptionHash).toBeNull();
   });
 });
+
+describe('queueBeersForEnrichment blocklist', () => {
+  it('does not queue a beer whose brewer marks it as a mixed pour', async () => {
+    const sendBatch = vi.fn().mockResolvedValue(undefined);
+    const producerEnv = { ENRICHMENT_QUEUE: { sendBatch } } as unknown as Env;
+
+    const result = await queueBeersForEnrichment(
+      producerEnv,
+      [{ id: 'beer-8', brew_name: 'Black Velvet Pour', brewer: 'Various', descriptionHash: null }],
+      'req-blocklist'
+    );
+
+    expect(result).toEqual({ queued: 0, skipped: 1 });
+    expect(sendBatch).not.toHaveBeenCalled();
+  });
+});

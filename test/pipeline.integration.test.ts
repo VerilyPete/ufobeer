@@ -19,7 +19,7 @@ import type { InsertPlaceholdersResult, BeerEnrichmentData } from '../src/db';
 
 // Mock external dependencies
 vi.mock('../src/config', () => ({
-  shouldSkipEnrichment: vi.fn().mockImplementation((name: string) => {
+  shouldSkipEnrichment: vi.fn().mockImplementation(({ brewName: name }: { brewName: string }) => {
     return name.toLowerCase().includes('flight');
   }),
 }));
@@ -184,7 +184,7 @@ describe('Pipeline Integration', () => {
   describe('insertPlaceholders flow', () => {
     it('should insert new beers and return correct counts', async () => {
       vi.clearAllMocks();
-      vi.mocked(shouldSkipEnrichment).mockImplementation((name: string) => {
+      vi.mocked(shouldSkipEnrichment).mockImplementation(({ brewName: name }) => {
         return name.toLowerCase().includes('flight');
       });
       const mockDb = createMockD1();
@@ -311,7 +311,7 @@ describe('Pipeline Integration', () => {
 
     it('should skip blocklisted beers (flights) for enrichment', async () => {
       vi.clearAllMocks();
-      vi.mocked(shouldSkipEnrichment).mockImplementation((name: string) => {
+      vi.mocked(shouldSkipEnrichment).mockImplementation(({ brewName: name }) => {
         return name.toLowerCase().includes('flight');
       });
       const mockDb = createMockD1();
@@ -497,7 +497,7 @@ describe('Pipeline Integration', () => {
   describe('end-to-end data flow', () => {
     it('should correctly categorize mixed beer batch', async () => {
       vi.clearAllMocks();
-      vi.mocked(shouldSkipEnrichment).mockImplementation((name: string) => {
+      vi.mocked(shouldSkipEnrichment).mockImplementation(({ brewName: name }) => {
         return name.toLowerCase().includes('flight');
       });
       // Setup: one existing beer with ABV
