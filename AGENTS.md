@@ -50,7 +50,11 @@ src/
 
 See [.claude/api-endpoints.md](.claude/api-endpoints.md) for full documentation.
 
-The API has no browser clients and sends no CORS headers; every `OPTIONS` gets 403. The native BeerSelector app is the only application client, and monitoring uses `/health`.
+The API has no browser clients and sends no CORS headers; every `OPTIONS` gets 403.
+`enrichment_source` values beyond the original four (today `exa`) are shown only
+to clients that send `X-Enrichment-Sources: exa`; others get `null`. Once an
+`exa` row exists, never deploy a worker older than that negotiation (see the
+rollback floor in `plans/abv-untappd-fallback.md`). The native BeerSelector app is the only application client, and monitoring uses `/health`.
 
 ### Public (API key required)
 - `GET /beers?store_id=<id>` - Fetch beers with enrichment data

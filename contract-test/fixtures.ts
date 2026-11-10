@@ -29,4 +29,13 @@ export const goldenTaproomBeers = [
     enrichment_source: null,
     is_description_cleaned: false,
   },
+  {
+    id: 'golden-exa',
+    brew_name: 'Fallback Found Ale',
+    brewer: 'Schema Brewing',
+    enriched_abv: 8,
+    enrichment_confidence: 0.8,
+    enrichment_source: 'exa',
+    is_description_cleaned: false,
+  },
 ] as const;

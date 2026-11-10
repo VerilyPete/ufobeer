@@ -28,6 +28,13 @@ import { getCachedTaplist, setCachedTaplist, updateCacheTimestamp, parseCachedBe
 import type { CachedTaplistRow } from '../db/cache';
 import type { CachedBeer } from '../schemas/cache';
 import { hashDescription, buildCombinedEtag } from '../utils/hash';
+import {
+  ENRICHMENT_SOURCES_HEADER,
+  parseAcceptedSources,
+  relabelEnrichmentSources,
+  wireEnrichmentSource,
+  type AcceptedSources,
+} from '../utils/enrichmentSource';
 import { checkConditionalRequest } from '../utils/conditional';
 import { shouldUpdateContent } from '../utils/cache-helpers';
 import { computeEnrichmentHash } from '../utils/enrichment-hash';
@@ -163,10 +170,11 @@ async function serveStaleFallback(
   reqCtx: RequestContext,
   headers: Record<string, string>,
   upstreamLatencyMs: number,
+  acceptedSources: AcceptedSources,
 ): Promise<GetBeersResult> {
   const responseHeaders = { ...headers };
   if (fallbackRow.content_hash) {
-    const etag = await buildCombinedEtag(fallbackRow.content_hash, fallbackRow.enrichment_hash);
+    const etag = await buildCombinedEtag(fallbackRow.content_hash, fallbackRow.enrichment_hash, acceptedSources);
     responseHeaders['ETag'] = etag;
     responseHeaders['Cache-Control'] = 'private, max-age=300';
 
@@ -188,7 +196,7 @@ async function serveStaleFallback(
 
   return {
     response: Response.json({
-      beers: staleBeers,
+      beers: relabelEnrichmentSources(staleBeers, acceptedSources),
       storeId,
       requestId: reqCtx.requestId,
       source: 'stale',
@@ -220,7 +228,8 @@ export type TaplistCoreResult =
       readonly cleanedCount: number;
       readonly enrichmentRecords: number;
       readonly upstreamLatencyMs: number;
-      readonly etag: string;
+      readonly contentHash: string;
+      readonly enrichmentHash: string | null;
     }
   | {
       readonly ok: false;
@@ -394,16 +403,15 @@ async function fetchMergeAndCacheTaplist(
     processBackgroundEnrichment(env, beersForPlaceholders, requestId)
   );
 
-  // 7. Combined ETag for conditional requests (used by GET /beers)
-  const etag = await buildCombinedEtag(rawHash, enrichmentHash);
-
+  // The caller builds the ETag: it varies with the sources the client accepts.
   return {
     ok: true,
     enrichedBeers,
     cleanedCount,
     enrichmentRecords: enrichmentMap.size,
     upstreamLatencyMs,
-    etag,
+    contentHash: rawHash,
+    enrichmentHash,
   };
 }
 
@@ -459,12 +467,16 @@ export async function handleBeerList(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
-  headers: Record<string, string>,
+  baseHeaders: Record<string, string>,
   reqCtx: RequestContext,
   storeId: string,
   freshRequested = false
 ): Promise<GetBeersResult> {
   const upstreamStartTime = Date.now();
+  // Labels and ETags depend on this request header, so every response
+  // (including 304s and errors) says so.
+  const headers: Record<string, string> = { ...baseHeaders, Vary: ENRICHMENT_SOURCES_HEADER };
+  const acceptedSources = parseAcceptedSources(request.headers.get(ENRICHMENT_SOURCES_HEADER));
 
   // Validate store ID format
   if (!isValidStoreId(storeId)) {
@@ -497,7 +509,7 @@ export async function handleBeerList(
       // Check conditional request if we have a content hash
       let cachedEtag: string | null = null;
       if (cachedRow.content_hash) {
-        cachedEtag = await buildCombinedEtag(cachedRow.content_hash, cachedRow.enrichment_hash);
+        cachedEtag = await buildCombinedEtag(cachedRow.content_hash, cachedRow.enrichment_hash, acceptedSources);
         const conditionalResponse = checkConditionalRequest(request, cachedEtag);
         if (conditionalResponse) {
           for (const [key, value] of Object.entries(headers)) {
@@ -521,7 +533,7 @@ export async function handleBeerList(
         }
         return {
           response: Response.json({
-            beers: cachedBeers,
+            beers: relabelEnrichmentSources(cachedBeers, acceptedSources),
             storeId,
             requestId: reqCtx.requestId,
             source: 'cache',
@@ -544,7 +556,7 @@ export async function handleBeerList(
       const fallbackRow = await resolveStaleRow(env.DB, cachedRow, cacheReadSucceeded, storeId);
       if (fallbackRow) {
         const staleBeers = parseCachedBeers(fallbackRow.response_json);
-        if (staleBeers) return await serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, result.upstreamLatencyMs);
+        if (staleBeers) return await serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, result.upstreamLatencyMs, acceptedSources);
       }
 
       return {
@@ -558,7 +570,8 @@ export async function handleBeerList(
       };
     }
 
-    const { enrichedBeers, cleanedCount, enrichmentRecords, upstreamLatencyMs, etag } = result;
+    const { enrichedBeers, cleanedCount, enrichmentRecords, upstreamLatencyMs } = result;
+    const etag = await buildCombinedEtag(result.contentHash, result.enrichmentHash, acceptedSources);
 
     // Per-caller merge logging (the cron path does not log this)
     logWithContext(reqCtx.requestId, 'beers.merge.complete', {
@@ -584,7 +597,7 @@ export async function handleBeerList(
 
     return {
       response: Response.json({
-        beers: enrichedBeers,
+        beers: relabelEnrichmentSources(enrichedBeers, acceptedSources),
         storeId,
         requestId: reqCtx.requestId,
         source: 'live',
@@ -602,7 +615,7 @@ export async function handleBeerList(
     const fallbackRow = await resolveStaleRow(env.DB, cachedRow, cacheReadSucceeded, storeId);
     if (fallbackRow) {
       const staleBeers = parseCachedBeers(fallbackRow.response_json);
-      if (staleBeers) return await serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, Date.now() - upstreamStartTime);
+      if (staleBeers) return await serveStaleFallback(request, fallbackRow, staleBeers, storeId, reqCtx, headers, Date.now() - upstreamStartTime, acceptedSources);
     }
 
     return {
@@ -633,9 +646,11 @@ export async function handleBeerList(
 export async function handleBatchLookup(
   request: Request,
   env: Env,
-  headers: Record<string, string>,
+  baseHeaders: Record<string, string>,
   reqCtx: RequestContext
 ): Promise<Response> {
+  const headers: Record<string, string> = { ...baseHeaders, Vary: ENRICHMENT_SOURCES_HEADER };
+  const acceptedSources = parseAcceptedSources(request.headers.get(ENRICHMENT_SOURCES_HEADER));
   try {
     const bodyResult = await readBoundedJson(request, SMALL_JSON_BODY_MAX_BYTES);
     if (!bodyResult.ok) {
@@ -692,7 +707,7 @@ export async function handleBatchLookup(
       enrichmentData[row.id] = {
         enriched_abv: row.abv,
         enrichment_confidence: row.confidence,
-        enrichment_source: row.enrichment_source,
+        enrichment_source: wireEnrichmentSource(row.enrichment_source, acceptedSources),
         is_verified: Boolean(row.is_verified),
         // Prefer cleaned description, fall back to original (matches GET /beers behavior)
         brew_description: row.brew_description_cleaned ?? row.brew_description_original ?? null,

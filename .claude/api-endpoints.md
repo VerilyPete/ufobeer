@@ -8,6 +8,22 @@ All endpoints require `X-API-Key` header. Admin endpoints require the admin API 
 curl -H "X-API-Key: your-api-key" https://api.ufobeer.app/beers?store_id=1
 ```
 
+### Enrichment source negotiation (`X-Enrichment-Sources`)
+
+`enrichment_source` is always one of `description`, `description-fallback`,
+`perplexity`, `manual` or `null`, unless the client asks for more. A newer stored
+source such as `exa` is sent only to a client that lists it, for example
+`X-Enrichment-Sources: exa`. Every other client gets `null` for that beer, with
+`enriched_abv` and `enrichment_confidence` unchanged.
+
+- The header is comma-separated, case-insensitive and capped at 256 characters
+  and eight sources. Malformed tokens are ignored.
+- `GET /beers` gives each accepted-source set its own `ETag`; headerless ETags
+  are unchanged. `GET /beers` and `POST /beers/batch` send
+  `Vary: X-Enrichment-Sources`.
+- The cache stores the real source. Labels are chosen per response
+  (`src/utils/enrichmentSource.ts`).
+
 ---
 
 ## Public Endpoints
