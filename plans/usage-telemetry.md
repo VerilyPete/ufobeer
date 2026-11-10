@@ -28,9 +28,9 @@ ratios across real installs, not for exact figures.
 | Device class | `ai_status` (Apple Intelligence compatibility, see below) + `os_major` (integer) |
 | Day | UTC (all users are in US Central for now) |
 | Rate limit | Per IP under its own key, outside the shared per-API-key bucket (see Rate limiting) |
-| Growth budget | At most 500 new installs per UTC day and 2,000 accepted posts per UTC day (see Growth budget) |
+| Growth budget | At most 100 new installs per UTC day and 500 accepted posts per UTC day (see Growth budget) |
 | Audit log | Normal auditing (existing 30-day retention) |
-| Retention | Per-install rows kept 180 days during beta (see Retention) |
+| Retention | Per-install rows kept 730 days (see Retention and `plans/usage-dashboards.md`) |
 | Session | Roughly one taproom visit; a new session after 3+ hours in the background, across cold launches (see Session rule) |
 | Schemas | Zod, in `src/schemas/request.ts` |
 
@@ -347,17 +347,22 @@ minute with a new invented install ID each time could otherwise create about
 200,000 `usage_daily` rows a day. Two daily budgets, both constants in
 `src/constants.ts`, cap that:
 
-- **New installs:** at most 500 install IDs first seen per UTC day. A post
+- **New installs:** at most 100 install IDs first seen per UTC day. A post
   from an unknown install ID after the cap is reached is dropped. Installs
   already known keep counting.
-- **Accepted posts:** at most 2,000 posts written per UTC day across all
+- **Accepted posts:** at most 500 posts written per UTC day across all
   installs. After the cap, posts are dropped until the next UTC day.
 
 Dropped posts still get a 204, so clients don't retry. Each drop is logged
 and counted in Analytics Engine with its reason (`new_install_cap`,
-`daily_post_cap`), so an attack, or real growth past the caps, shows up. Under
-sustained abuse, real users lose data for the rest of that day. That is
-acceptable during beta. Worst case is 2,000 posts × the number of known events (25 today) = 50,000 rows a day.
+`daily_post_cap`), so an attack, or real growth past the caps, shows up. The
+daily usage health check also raises an alert when the previous UTC day
+reached either cap. Under sustained abuse, real users lose data for the rest
+of that day. That is acceptable during beta. Worst case is 500 posts × the
+number of known events (25 today) = 12,500 rows a day, about 9.1 million rows
+(roughly 2.7 GB at a measured 300 bytes a row) over the 730-day window.
+Invented install IDs can be reused on later days, so the post cap, not
+retention, is what bounds storage.
 
 Both limits are enforced inside the same transaction as the write (see
 Tables), so they hold under concurrent posts.
@@ -510,18 +515,18 @@ Cleanup jobs follow the existing pattern in `src/handlers/scheduled.ts`
 | Table | Deleted when | Index |
 |---|---|---|
 | `usage_batches` | `received_at` older than 8 days | `idx_usage_batches_received` |
-| `usage_daily` | `day` older than 180 days | primary key (leading `day`) |
-| `usage_installs` | `last_seen_day` older than 180 days | `idx_usage_installs_last_seen` |
-| `usage_ingest_daily` | `day` older than 30 days | primary key |
+| `usage_daily` | `day` older than 730 days | primary key (leading `day`) |
+| `usage_installs` | `last_seen_day` older than 730 days | `idx_usage_installs_last_seen` |
+| `usage_ingest_daily` | `day` older than 730 days, so posts history covers the same days as the counts | primary key |
 
 **Throughput:** cleanup must remove rows faster than they can arrive. At the
-growth budget, `usage_daily` gains at most 2,000 × (known events) rows a
-day, 50,000 with today's 25 events. The cron runs 72 times a day, so each tick
-must delete at least about 700 rows to keep up. Recompute this whenever events
+growth budget, `usage_daily` gains at most 500 × (known events) rows a
+day, 12,500 with today's 25 events. The cron runs 72 times a day, so each tick
+must delete at least about 175 rows to keep up. Recompute this whenever events
 are added. Each reap limit is set to **5,000 rows per tick** (about 360,000 a
-day), several times the worst-case ingest, so a backlog from about a day of
-missed ticks drains within a day. Longer outages take proportionally longer. `usage_batches` gains at most 2,000 rows a day and
-`usage_installs` at most 500, so the same limit is ample. Slice 6's monitoring
+day), many times the worst-case ingest, so a backlog from about a day of
+missed ticks drains within a day. Longer outages take proportionally longer. `usage_batches` gains at most 500 rows a day and
+`usage_installs` at most 100, so the same limit is ample. Slice 6's monitoring
 reports the age of the oldest row past its retention window. If that exceeds
 a day, cleanup is falling behind.
 

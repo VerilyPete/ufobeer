@@ -30,6 +30,7 @@ import {
   MAX_FLYING_SAUCER_RESPONSE_ITEMS,
   MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES,
   FLYING_SAUCER_RESPONSE_MAX_BYTES,
+  USAGE_POSTS_SINCE,
 } from '../src/constants';
 import { SYNC_CONSTANTS } from '../src/types';
 import { BATCH_MAX_IDS, BATCH_ID_MAX_LENGTH } from '../src/schemas/request';
@@ -231,5 +232,11 @@ describe('SMALL_JSON_BODY_MAX_BYTES fixture', () => {
     expect(SMALL_JSON_BODY_MAX_BYTES).toBeGreaterThan(measuredBytes);
     const headroomRatio = SMALL_JSON_BODY_MAX_BYTES / measuredBytes;
     expect(headroomRatio).toBeGreaterThan(4); // more than 4x headroom
+  });
+});
+
+describe('Usage telemetry history constants', () => {
+  it('starts the daily posts history on the oldest usage_ingest_daily day in production', () => {
+    expect(USAGE_POSTS_SINCE).toBe('2026-11-10');
   });
 });

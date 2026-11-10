@@ -213,16 +213,17 @@ wrangler secret put ADMIN_SECRET     # Admin secret for /admin/* routes (X-Admin
   delete its batch; only a bad envelope is a 400.
 - Rate limit: 6/min per IP under `usage:{ip}`, routed before the shared
   per-API-key bucket so telemetry never spends the `/beers` budget.
-- Growth budgets (UTC day, `src/constants.ts`): at most 500 new install IDs
-  and 2,000 counted posts. Over budget is a 204 that writes nothing and is
+- Growth budgets (UTC day, `src/constants.ts`): at most 100 new install IDs
+  and 500 counted posts. Over budget is a 204 that writes nothing and is
   logged plus sent to Analytics Engine with its reason.
 - Writes run in one `db.batch()` transaction (`recordUsageReport` in
   `src/db/usage.ts`); a repeated `(install_id, batch_id)` is ignored.
 - Retention, reaped every cron tick before the enrichment gates, 5,000 rows
-  per table per tick: `usage_daily` and `usage_installs` 180 days,
-  `usage_batches` 8 days (the dedup window), `usage_ingest_daily` 30 days.
+  per table per tick: `usage_daily`, `usage_installs` and `usage_ingest_daily`
+  730 days, `usage_batches` 8 days (the dedup window).
 - Daily health check (17:00 UTC tick) logs `usage_daily` size and cleanup
-  backlog; alerts go out via `console.error` and the error-alerts tail worker.
+  backlog, and alerts when the previous UTC day reached either growth budget;
+  alerts go out via `console.error` and the error-alerts tail worker.
 - Adding an event: add it to `USAGE_EVENTS` in `src/schemas/request.ts` and
   recompute the reap throughput note in `src/constants.ts`. Until deployed,
   the worker drops the unknown event and nothing breaks.

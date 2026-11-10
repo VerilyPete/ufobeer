@@ -13,8 +13,8 @@ import { SMALL_JSON_BODY_MAX_BYTES, USAGE_RATE_LIMIT_RPM } from '../../src/const
 
 // Daily growth budgets plans/usage-telemetry.md specifies, written out so the
 // handler's wiring of the real caps is checked, not just the helper.
-const POST_DAILY_CAP = 2_000;
-const NEW_INSTALL_DAILY_CAP = 500;
+const POST_DAILY_CAP = 500;
+const NEW_INSTALL_DAILY_CAP = 100;
 import { getToday } from '../../src/utils/date';
 
 const API_KEY = 'usage-test-key';
