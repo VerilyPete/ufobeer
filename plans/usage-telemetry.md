@@ -658,16 +658,22 @@ what it is used for:
 | Install ID | `usage_daily`, `usage_installs`, `usage_batches` | Joining one install's usage | Identifiers → Device ID |
 | Feature counts | `usage_daily` | Prioritising features | Usage Data → Product Interaction |
 | App version, `ai_status`, OS major | `usage_daily` | Diagnosing fallbacks by device | Diagnostics → Other Diagnostic Data |
-| Client IP | `audit_log` (30 days), Analytics Engine `client_id` (~3 months), `rate_limits` keys (short-lived) | Security, abuse prevention, debugging | Classify with Apple's guidance on IP addresses; most likely Diagnostics if retained for debugging |
+| Client IP | `audit_log` (30 days), Analytics Engine `client_id` (~3 months), `rate_limits` keys (short-lived) | Security, abuse prevention, debugging | Diagnostics → Other Diagnostic Data |
 | User agent, timing, status, errors | `audit_log` (30 days) | Debugging and abuse prevention | Diagnostics → Performance Data / Other Diagnostic Data |
 
 Purposes: **Analytics** and **App Functionality**. Linked to the user via the
 install ID. **Not used for tracking**: never shared with third parties or
 combined with other companies' data.
 
-The IP row needs checking against Apple's current guidance
-(<https://developer.apple.com/app-store/app-privacy-details/>) before
-submission. It is not settled here.
+The IP row was settled on November 10, 2026 against Apple's guidance
+(<https://developer.apple.com/app-store/app-privacy-details/>): declare a stored
+IP by how it is used. The worker uses it only for security, abuse prevention and
+debugging, and never turns it into a location, so it is Other Diagnostic Data
+with the App Functionality purpose, not Coarse or Precise Location.
+
+`usage_batches.request_id` matches `audit_log.request_id`, so for 30 days an
+install ID can be matched to a client IP. This is kept on purpose, to trace a
+report end to end while debugging.
 
 ## Later
 
