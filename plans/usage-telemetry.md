@@ -671,8 +671,9 @@ IP by how it is used. The worker uses it only for security, abuse prevention and
 debugging, and never turns it into a location, so it is Other Diagnostic Data
 with the App Functionality purpose, not Coarse or Precise Location.
 
-`usage_batches.request_id` matches `audit_log.request_id`, so for 30 days an
-install ID can be matched to a client IP. This is kept on purpose, to trace a
+`usage_batches.request_id` matches `audit_log.request_id`, so an install ID can
+be matched to a client IP until the batch row is deleted, about 8 days after it
+arrives (`USAGE_BATCH_RETENTION_DAYS`). This is kept on purpose, to trace a
 report end to end while debugging.
 
 ## Later
