@@ -5,18 +5,12 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { getCorsHeaders, errorResponse, withResponseHeaders, SECURITY_HEADERS } from '../src/context';
-import type { Env, ErrorResponseOptions } from '../src/types';
+import { errorResponse, withResponseHeaders, SECURITY_HEADERS } from '../src/context';
+import type { ErrorResponseOptions } from '../src/types';
 
 // ============================================================================
 // Factory Functions
 // ============================================================================
-
-const getMockEnv = (overrides?: Partial<Env>): Env => ({
-  ALLOWED_ORIGIN: 'https://ufobeer.app',
-  DB: {} as D1Database,
-  ...overrides,
-} as Env);
 
 const getErrorResponseOptions = (
   overrides?: Partial<ErrorResponseOptions>
@@ -24,91 +18,6 @@ const getErrorResponseOptions = (
   requestId: 'req-test-456',
   headers: { 'Content-Type': 'application/json' },
   ...overrides,
-});
-
-// ============================================================================
-// getCorsHeaders Tests
-// ============================================================================
-
-describe('getCorsHeaders', () => {
-  it('returns Access-Control-Allow-Origin set to env.ALLOWED_ORIGIN when Origin matches', () => {
-    const env = getMockEnv();
-    const result = getCorsHeaders(env, 'https://ufobeer.app');
-    expect(result).not.toBeNull();
-    expect(result!['Access-Control-Allow-Origin']).toBe('https://ufobeer.app');
-  });
-
-  it('returns Access-Control-Allow-Methods containing GET when Origin matches', () => {
-    const env = getMockEnv();
-    const result = getCorsHeaders(env, 'https://ufobeer.app');
-    expect(result).not.toBeNull();
-    expect(result!['Access-Control-Allow-Methods']).toContain('GET');
-  });
-
-  it('returns Access-Control-Allow-Methods containing POST when Origin matches', () => {
-    const env = getMockEnv();
-    const result = getCorsHeaders(env, 'https://ufobeer.app');
-    expect(result).not.toBeNull();
-    expect(result!['Access-Control-Allow-Methods']).toContain('POST');
-  });
-
-  it('returns Access-Control-Allow-Headers containing X-API-Key when Origin matches', () => {
-    const env = getMockEnv();
-    const result = getCorsHeaders(env, 'https://ufobeer.app');
-    expect(result).not.toBeNull();
-    expect(result!['Access-Control-Allow-Headers']).toContain('X-API-Key');
-  });
-
-  it('returns null when ALLOWED_ORIGIN is an empty string', () => {
-    const env = getMockEnv({ ALLOWED_ORIGIN: '' });
-    const result = getCorsHeaders(env, 'https://ufobeer.app');
-    expect(result).toBeNull();
-  });
-
-  it('returns null when ALLOWED_ORIGIN is undefined', () => {
-    const env = getMockEnv({ ALLOWED_ORIGIN: undefined as unknown as string });
-    const result = getCorsHeaders(env, 'https://ufobeer.app');
-    expect(result).toBeNull();
-  });
-
-  it('returns null when Origin does not match ALLOWED_ORIGIN', () => {
-    const env = getMockEnv();
-    const result = getCorsHeaders(env, 'https://evil.com');
-    expect(result).toBeNull();
-  });
-
-  it('returns null when Origin is undefined', () => {
-    const env = getMockEnv();
-    const result = getCorsHeaders(env, undefined);
-    expect(result).toBeNull();
-  });
-
-  it('returns null when Origin is null', () => {
-    const env = getMockEnv();
-    const result = getCorsHeaders(env, null);
-    expect(result).toBeNull();
-  });
-
-  it('does not include X-Client-ID in Access-Control-Allow-Headers', () => {
-    const env = getMockEnv();
-    const result = getCorsHeaders(env, 'https://ufobeer.app');
-    expect(result).not.toBeNull();
-    expect(result!['Access-Control-Allow-Headers']).not.toContain('X-Client-ID');
-  });
-
-  it('does not include X-Admin-Secret in Access-Control-Allow-Headers — browser-based admin tooling is not supported', () => {
-    const env = getMockEnv();
-    const result = getCorsHeaders(env, 'https://ufobeer.app');
-    expect(result).not.toBeNull();
-    expect(result!['Access-Control-Allow-Headers']).not.toContain('X-Admin-Secret');
-  });
-
-  it('does not include DELETE in Access-Control-Allow-Methods — no route uses it', () => {
-    const env = getMockEnv();
-    const result = getCorsHeaders(env, 'https://ufobeer.app');
-    expect(result).not.toBeNull();
-    expect(result!['Access-Control-Allow-Methods']).not.toContain('DELETE');
-  });
 });
 
 // ============================================================================

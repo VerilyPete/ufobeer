@@ -26,7 +26,6 @@ export type Env = {
   readonly ADMIN_SECRET?: string | undefined; // Required for /admin/* routes
 
   // Environment variables (set in wrangler.jsonc vars)
-  readonly ALLOWED_ORIGIN: string;
   readonly RATE_LIMIT_RPM: string;
   // Pre-auth per-IP limit (requests/minute) applied before API key validation;
   // defaults to 30 when unset. Must stay above legitimate per-IP usage since

@@ -32,7 +32,7 @@ import {
 } from './auth';
 import type { Env, EnrichmentMessage, CleanupMessage } from './types';
 import { ENABLED_STORE_IDS } from './config';
-import { getCorsHeaders, withResponseHeaders } from './context';
+import { withResponseHeaders } from './context';
 import { checkRateLimit, getEndpointRateLimitKey, getPreAuthRateLimitKey, getUsageRateLimitKey } from './rate-limit';
 import { writeAuditLog, writeAdminAuditLog, type AdminAuditOutcome } from './audit';
 import {
@@ -52,19 +52,7 @@ import {
 import { handleLiveness } from './handlers/health';
 import { SYNC_CONSTANTS } from './types';
 import { handleEnrichmentBatch, handleCleanupBatch, handleDlqBatch, handleCleanupDlqBatch } from './queue';
-import { CORS_PREFLIGHT_ROUTES, CORS_ALLOWED_REQUEST_HEADERS, USAGE_RATE_LIMIT_RPM } from './constants';
-
-// CORS_PREFLIGHT_ROUTES and CORS_ALLOWED_REQUEST_HEADERS now live in
-// src/constants.ts (imported above) as part of the constants consolidation.
-
-function isPreflightHeadersAllowed(requestedHeaders: string | null): boolean {
-  if (!requestedHeaders) return true;
-  return requestedHeaders
-    .split(',')
-    .map(h => h.trim().toLowerCase())
-    .filter(h => h.length > 0)
-    .every(h => CORS_ALLOWED_REQUEST_HEADERS.has(h));
-}
+import { USAGE_RATE_LIMIT_RPM } from './constants';
 
 // ============================================================================
 // Admin Audit Outcome Classification
@@ -124,7 +112,6 @@ async function parseResponseAnalytics(
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const corsHeaders = getCorsHeaders(env, request.headers.get('Origin'));
     const requestContext = createRequestContext(request);
 
     // Track metrics for analytics
@@ -159,37 +146,24 @@ export default {
       return new Response(body, { status, headers: responseHeaders });
     };
 
-    // Handle CORS preflight
+    // Refuse OPTIONS on every path
     //
-    // OPTIONS stays outside try/catch: it is validated and answered entirely
-    // from request headers/URL, so it has no reason to depend on auth,
-    // handler logic, or D1 reads. It deliberately does NOT call respond()
-    // (and therefore does not schedule writeAuditLog()): persisting a D1
-    // audit row for every routine preflight is an unauthenticated,
-    // unthrottled write-amplification path — high-volume or invalid OPTIONS
-    // traffic must not be able to create audit rows. trackRequest() (an
-    // Analytics Engine write, not D1) still gives cheap visibility.
+    // The API has no browser clients and sends no CORS headers, so no
+    // preflight can succeed: every OPTIONS gets a blanket 403. It stays
+    // outside try/catch and ahead of the D1-backed pre-auth limiter, and it
+    // deliberately does NOT call respond() (and therefore does not schedule
+    // writeAuditLog()): high-volume OPTIONS traffic must not be able to create
+    // D1 audit rows. trackRequest() (an Analytics Engine write, not D1) still
+    // gives cheap visibility.
     if (request.method === 'OPTIONS') {
-      const requestedMethod = request.headers.get('Access-Control-Request-Method');
-      const requestedHeaders = request.headers.get('Access-Control-Request-Headers');
-
-      const isValidPreflight =
-        corsHeaders !== null && // Origin present and matches env.ALLOWED_ORIGIN
-        requestedMethod !== null &&
-        CORS_PREFLIGHT_ROUTES[url.pathname] === requestedMethod &&
-        isPreflightHeadersAllowed(requestedHeaders);
-
-      const status = isValidPreflight ? 204 : 403;
       trackRequest(env.ANALYTICS, {
         endpoint: url.pathname,
         method: 'OPTIONS',
-        statusCode: status,
+        statusCode: 403,
         clientId: requestContext.clientIdentifier,
         responseTimeMs: Date.now() - requestContext.startTime,
       });
-
-      const preflightHeaders = withResponseHeaders(isValidPreflight ? (corsHeaders ?? {}) : {}, 'no-store');
-      return new Response(null, { status, headers: preflightHeaders });
+      return new Response(null, { status: 403, headers: withResponseHeaders({}, 'no-store') });
     }
 
     try {
@@ -209,7 +183,7 @@ export default {
         return respond(
           { error: 'Service temporarily unavailable', requestId: requestContext.requestId },
           503,
-          { ...(corsHeaders ?? {}), 'Retry-After': '10' },
+          { 'Retry-After': '10' },
           'Rate limiter unavailable'
         );
       }
@@ -218,7 +192,6 @@ export default {
         { error: 'Rate limit exceeded', requestId: requestContext.requestId },
         429,
         {
-          ...(corsHeaders ?? {}),
           'X-RateLimit-Limit': String(preAuthLimit),
           'X-RateLimit-Remaining': '0',
           'X-RateLimit-Reset': String(Math.floor(preAuthResult.resetAt / 1000)),
@@ -266,21 +239,16 @@ export default {
         return respond(
           { error: 'fresh=true requires admin credentials', requestId: requestContext.requestId },
           403,
-          corsHeaders ?? {},
+          {},
           'fresh bypass denied'
         );
       }
     }
 
-    // Require CORS config for all other routes
-    if (!env.ALLOWED_ORIGIN) {
-      return respond({ error: 'Server misconfigured: ALLOWED_ORIGIN not set' }, 500, {});
-    }
-
     // Authenticate
     const authResult = await validateApiKey(request, env, requestContext);
     if (!authResult.valid) {
-      return respond({ error: 'Unauthorized' }, 401, corsHeaders ?? {}, 'Invalid API key');
+      return respond({ error: 'Unauthorized' }, 401, {}, 'Invalid API key');
     }
     // Create new context with the authenticated API key hash (RequestContext is readonly).
     // Override clientIdentifier with apiKeyHash for stable per-key rate limiting —
@@ -308,7 +276,7 @@ export default {
           return respond(
             { error: 'Service temporarily unavailable', requestId: authedContext.requestId },
             503,
-            { ...(corsHeaders ?? {}), 'Retry-After': '10' },
+            { 'Retry-After': '10' },
             'Rate limiter unavailable (usage)'
           );
         }
@@ -316,7 +284,6 @@ export default {
           { error: 'Rate limit exceeded', requestId: authedContext.requestId },
           429,
           {
-            ...(corsHeaders ?? {}),
             'X-RateLimit-Limit': String(USAGE_RATE_LIMIT_RPM),
             'X-RateLimit-Remaining': '0',
             'X-RateLimit-Reset': String(Math.floor(usageLimit.resetAt / 1000)),
@@ -327,7 +294,6 @@ export default {
       }
 
       const result = await handleUsageReport(request, env, withResponseHeaders({
-        ...(corsHeaders ?? {}),
         'X-RateLimit-Limit': String(USAGE_RATE_LIMIT_RPM),
         'X-RateLimit-Remaining': String(usageLimit.remaining),
         'X-RateLimit-Reset': String(Math.floor(usageLimit.resetAt / 1000)),
@@ -355,7 +321,7 @@ export default {
         return respond(
           { error: 'Service temporarily unavailable', requestId: authedContext.requestId },
           503,
-          { ...(corsHeaders ?? {}), 'Retry-After': '10' },
+          { 'Retry-After': '10' },
           'Rate limiter unavailable'
         );
       }
@@ -363,7 +329,6 @@ export default {
         { error: 'Rate limit exceeded', requestId: authedContext.requestId },
         429,
         {
-          ...(corsHeaders ?? {}),
           'X-RateLimit-Limit': String(rateLimit),
           'X-RateLimit-Remaining': '0',
           'X-RateLimit-Reset': String(Math.floor(rateLimitResult.resetAt / 1000)),
@@ -389,7 +354,7 @@ export default {
         return respond(
           { error: 'Missing required parameter: sid', requestId: authedContext.requestId },
           400,
-          { ...(corsHeaders ?? {}), ...rateLimitHeaders }
+          rateLimitHeaders
         );
       }
 
@@ -397,13 +362,13 @@ export default {
         return respond(
           { error: 'Invalid store ID', requestId: authedContext.requestId },
           400,
-          { ...(corsHeaders ?? {}), ...rateLimitHeaders }
+          rateLimitHeaders
         );
       }
 
       storeIdForAnalytics = storeId;
       const freshRequested = url.searchParams.get('fresh') === 'true';
-      const result = await handleBeerList(request, env, ctx, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext, storeId, freshRequested);
+      const result = await handleBeerList(request, env, ctx, rateLimitHeaders, authedContext, storeId, freshRequested);
       beersReturnedCount = result.beersReturned;
       upstreamLatency = result.upstreamLatencyMs;
 
@@ -425,7 +390,7 @@ export default {
 
     // Route: POST /beers/batch
     if (url.pathname === '/beers/batch' && request.method === 'POST') {
-      const result = await handleBatchLookup(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
+      const result = await handleBatchLookup(request, env, rateLimitHeaders, authedContext);
       trackRequest(env.ANALYTICS, {
         endpoint: url.pathname,
         method: request.method,
@@ -449,7 +414,7 @@ export default {
           return respond(
             { error: 'Service temporarily unavailable', requestId: authedContext.requestId },
             503,
-            { ...(corsHeaders ?? {}), 'Retry-After': '10' },
+            { 'Retry-After': '10' },
             'Rate limiter unavailable (sync)'
           );
         }
@@ -461,7 +426,6 @@ export default {
           },
           429,
           {
-            ...(corsHeaders ?? {}),
             'X-RateLimit-Limit': String(SYNC_CONSTANTS.RATE_LIMIT_RPM),
             'X-RateLimit-Remaining': '0',
             'X-RateLimit-Reset': String(Math.floor(syncRateLimitResult.resetAt / 1000)),
@@ -472,7 +436,6 @@ export default {
       }
 
       const result = await handleBeerSync(request, env, {
-        ...(corsHeaders ?? {}),
         ...rateLimitHeaders,
         // Override rate limit headers with sync-specific values
         'X-RateLimit-Limit': String(SYNC_CONSTANTS.RATE_LIMIT_RPM),
@@ -510,7 +473,7 @@ export default {
         return respond(
           { error: adminAuth.error || 'Unauthorized', requestId: authedContext.requestId },
           403,
-          { ...(corsHeaders ?? {}), ...rateLimitHeaders },
+          rateLimitHeaders,
           'Admin auth failed'
         );
       }
@@ -518,7 +481,7 @@ export default {
       // Route: GET /admin/dlq
       if (url.pathname === '/admin/dlq' && request.method === 'GET') {
         const operationStart = Date.now();
-        const result = await handleDlqList(env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext, url.searchParams);
+        const result = await handleDlqList(env, rateLimitHeaders, authedContext, url.searchParams);
         let messageCount = 0;
         let body: Record<string, unknown> = {};
         try {
@@ -544,7 +507,7 @@ export default {
       // Route: GET /admin/dlq/stats
       if (url.pathname === '/admin/dlq/stats' && request.method === 'GET') {
         const operationStart = Date.now();
-        const result = await handleDlqStats(env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
+        const result = await handleDlqStats(env, rateLimitHeaders, authedContext);
         const body = result.status === 200 ? {} : await parseResponseAnalytics(result);
         trackAdminDlq(env.ANALYTICS, { operation: 'dlq_stats', success: result.status === 200, messageCount: 0, durationMs: Date.now() - operationStart });
         ctx.waitUntil(writeAdminAuditLog(
@@ -561,7 +524,7 @@ export default {
       // Route: POST /admin/dlq/replay
       if (url.pathname === '/admin/dlq/replay' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleDlqReplay(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
+        const result = await handleDlqReplay(request, env, rateLimitHeaders, authedContext);
         let replayedCount = 0;
         let requestedCount: number | undefined;
         let failedCount: number | undefined;
@@ -591,7 +554,7 @@ export default {
       // Route: POST /admin/dlq/acknowledge
       if (url.pathname === '/admin/dlq/acknowledge' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleDlqAcknowledge(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
+        const result = await handleDlqAcknowledge(request, env, rateLimitHeaders, authedContext);
         let acknowledgedCount = 0;
         let requestedCount: number | undefined;
         let failedCount: number | undefined;
@@ -625,7 +588,7 @@ export default {
       // Route: POST /admin/enrich/trigger
       if (url.pathname === '/admin/enrich/trigger' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleEnrichmentTrigger(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
+        const result = await handleEnrichmentTrigger(request, env, rateLimitHeaders, authedContext);
         let beersQueued = 0;
         let skipReason: 'kill_switch' | 'daily_limit' | 'monthly_limit' | 'no_eligible_beers' | undefined;
         let dailyRemaining = 0;
@@ -661,7 +624,7 @@ export default {
       // Route: POST /admin/cleanup/trigger
       if (url.pathname === '/admin/cleanup/trigger' && request.method === 'POST') {
         const operationStart = Date.now();
-        const result = await handleCleanupTrigger(request, env, { ...(corsHeaders ?? {}), ...rateLimitHeaders }, authedContext);
+        const result = await handleCleanupTrigger(request, env, rateLimitHeaders, authedContext);
 
         // Extract response data for logging and analytics
         let beersQueued = 0;
@@ -717,14 +680,14 @@ export default {
       return respond(
         { error: 'Admin endpoint not found', requestId: authedContext.requestId },
         404,
-        { ...(corsHeaders ?? {}), ...rateLimitHeaders }
+        rateLimitHeaders
       );
     }
 
     return respond(
       { error: 'Not Found', requestId: authedContext.requestId },
       404,
-      { ...(corsHeaders ?? {}), ...rateLimitHeaders }
+      rateLimitHeaders
     );
 
     } catch (error) {
@@ -732,18 +695,9 @@ export default {
       console.error('Unhandled fetch error:', error);
       // Return a generic message — do NOT expose error.message to clients.
       // Raw error text can contain D1 internals, table names, or SQL fragments.
-      //
-      // Compute CORS headers directly from env rather than using the `corsHeaders`
-      // variable: the error may have occurred before getCorsHeaders() ran, or
-      // getCorsHeaders() itself may have thrown.
-      const origin = request.headers.get('Origin');
-      const allowed = env.ALLOWED_ORIGIN;
-      const errorHeaders: Record<string, string> = origin === allowed && allowed
-        ? { 'Access-Control-Allow-Origin': allowed }
-        : {};
       return Response.json(
         { error: 'Internal Server Error', requestId: requestContext.requestId },
-        { status: 500, headers: withResponseHeaders(errorHeaders, 'no-store') }
+        { status: 500, headers: withResponseHeaders({}, 'no-store') }
       );
     }
   },

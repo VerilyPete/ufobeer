@@ -78,7 +78,6 @@
 		],
 	},
 	"vars": {
-		"ALLOWED_ORIGIN": "https://ufobeer.app",
 		"RATE_LIMIT_RPM": "60",
 		"PRE_AUTH_RPM": "30",
 		"PERPLEXITY_MAX_CONCURRENCY": "10",

@@ -2389,7 +2389,7 @@ describe('handleBeerList — ETag support', () => {
     expect(result.cacheOutcome).toBe('hit');
   });
 
-  it('304 response includes CORS and X-Request-ID headers', async () => {
+  it('304 response includes the supplied passthrough and X-Request-ID headers', async () => {
     vi.clearAllMocks();
     vi.mocked(getCachedTaplist).mockResolvedValue({
       store_id: '13885',
@@ -2406,11 +2406,11 @@ describe('handleBeerList — ETag support', () => {
     const env = createMockEnv();
     const { ctx } = createMockExecutionContext();
     const reqCtx = createMockReqCtx();
-    const headersWithCors = { 'Access-Control-Allow-Origin': '*', 'X-Request-ID': 'req-123' };
+    const suppliedHeaders = { 'X-Test-Passthrough': 'kept', 'X-Request-ID': 'req-123' };
 
-    const result = await handleBeerList(mockRequest, env, ctx, headersWithCors, reqCtx, '13885');
+    const result = await handleBeerList(mockRequest, env, ctx, suppliedHeaders, reqCtx, '13885');
 
-    expect(result.response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(result.response.headers.get('X-Test-Passthrough')).toBe('kept');
     expect(result.response.headers.get('X-Request-ID')).toBe('req-123');
   });
 

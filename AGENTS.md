@@ -37,7 +37,7 @@ src/
 ├── analytics.ts       # Analytics Engine tracking
 ├── config.ts          # Store IDs and configuration
 ├── constants.ts       # Magic numbers with documentation
-├── context.ts         # Request context and CORS
+├── context.ts         # Error responses and security headers
 ├── types.ts           # TypeScript types
 ├── utils/
 │   ├── date.ts        # Date formatting utilities
@@ -49,6 +49,8 @@ src/
 ## API Endpoints
 
 See [.claude/api-endpoints.md](.claude/api-endpoints.md) for full documentation.
+
+The API has no browser clients and sends no CORS headers; every `OPTIONS` gets 403. The native BeerSelector app is the only application client, and monitoring uses `/health`.
 
 ### Public (API key required)
 - `GET /beers?store_id=<id>` - Fetch beers with enrichment data
@@ -153,7 +155,6 @@ Defined in `wrangler.jsonc`:
 
 ### Environment Variables
 ```
-ALLOWED_ORIGIN          # CORS origin (https://ufobeer.app)
 RATE_LIMIT_RPM          # Requests per minute per client (60)
 PRE_AUTH_RPM            # Pre-auth requests/min per IP, all routes (30)
 PERPLEXITY_MAX_CONCURRENCY  # Parallel Perplexity calls (10)

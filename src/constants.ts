@@ -371,26 +371,6 @@ export const MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES = 20_000;
  */
 export const FLYING_SAUCER_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 
-// =============================================================================
-// CORS Preflight Contract (src/index.ts)
-// =============================================================================
-
-/**
- * Routes and methods a real browser preflight can legitimately ask for.
- * Deliberately excludes /admin/* and /health: X-Admin-Secret is not in the
- * CORS-allowed header set (browser-based admin tooling is not supported),
- * and /health/livez are simple unauthenticated GETs that never trigger a
- * preflight in the first place.
- */
-export const CORS_PREFLIGHT_ROUTES: Readonly<Record<string, string>> = {
-  '/beers': 'GET',
-  '/beers/batch': 'POST',
-  '/beers/sync': 'POST',
-};
-
-/** Mirrors the Access-Control-Allow-Headers contract in src/context.ts. */
-export const CORS_ALLOWED_REQUEST_HEADERS = new Set(['content-type', 'x-api-key']);
-
 /** Explicit provider unknowns may recover; retry through quota-checked sweeps. */
 export const ABV_LOOKUP_MISS_RETRY_MS = 24 * 60 * 60 * 1000;
 /** Avoid spending lookup quota on beers no longer present in recent taplists. */

@@ -280,6 +280,8 @@ The finding above counts rate-limit write *operations* as the cost. Accumulated 
 
 ### Medium: OPTIONS bypasses rate limiting but still schedules a D1 audit write
 
+> **Resolved 2026-11-10:** CORS was removed ([remove-cors.md](remove-cors.md)). The API has no browser clients; every `OPTIONS` gets a 403 without D1, auth or an audit row.
+
 OPTIONS is handled before the pre-auth limiter (`src/index.ts:120-122` vs `:131`). It calls the shared `respond()` helper, which schedules `writeAuditLog()` against D1 (`src/index.ts:99`), despite the adjacent comment at `src/index.ts:119` stating that the path has no D1 dependency. The currently observed edge 403 masks this behavior. Narrowly allowing preflights at the edge without first fixing the Worker would expose an unauthenticated, unthrottled D1 write-amplification path.
 
 #### Recommended changes
@@ -597,7 +599,7 @@ Each criterion names the artifact, command, or test that proves it. Criteria con
 - **Upstream bounds.** A mocked upstream stream that would yield 200 MB causes the bounded reader to throw after N bytes, and the handler returns the stale cache row.
 - **Spend budget atomicity.** The daily quota `UPDATE` in `src/db/quota.ts` is atomic under concurrency: N parallel increments grant exactly the cap. Daily Workers AI and Perplexity caps are named constants in `src/constants.ts`, enforced in the consumer.
 - **Cache bypass.** `fresh=true` requires an identity unavailable from the public app bundle; an unauthenticated and an app-key request both receive 403.
-- **Preflight.** Legitimate browser preflights succeed only for the documented origin, methods, headers, hostname, and paths, or CORS is removed and the absence of browser clients is documented. Invalid or high-volume OPTIONS requests create no D1 audit rows.
+- **Preflight.** Legitimate browser preflights succeed only for the documented origin, methods, headers, hostname, and paths, or CORS is removed and the absence of browser clients is documented. Invalid or high-volume OPTIONS requests create no D1 audit rows. **Resolved 2026-11-10:** CORS removed and the client contract documented in `AGENTS.md` ([remove-cors.md](remove-cors.md)).
 - **Liveness.** A GET/HEAD liveness endpoint performs no D1 query, and unsupported methods return 405 with an `Allow` header.
 - **Audit fidelity.** Persisted admin audit rows contain the actual outcome/status and distinguish denied, failed, partial, and successful operations. Tests cover a failed and a partial replay against the persisted row, not only Analytics Engine events.
 - **Row growth.** `rate_limits` and `audit_log` reapers run from the cron deterministically; the audit trim executes even when the preceding insert throws.
