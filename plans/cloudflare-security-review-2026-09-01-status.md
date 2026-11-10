@@ -100,8 +100,9 @@ this as a prerequisite.
 - [ ] Cloudflare Access on `/admin/*` — human policy for interactive use, service token for automation.
       Keep `ADMIN_SECRET` as defence in depth during migration. Record the free Zero Trust seat
       allowance from the dashboard.
-- [ ] Investigate the observed OPTIONS 403 in Security Events; the Worker-side fix has shipped, so the
-      edge rule can now be narrowed safely.
+- [x] ~~Investigate the observed OPTIONS 403 in Security Events; the Worker-side fix has shipped, so the
+      edge rule can now be narrowed safely.~~ Resolved 2026-11-10 by removing CORS instead
+      ([remove-cors.md](remove-cors.md)): no browser client exists, so the edge rule stays as it is.
 - [ ] R2 backup: resolve the lock/lifecycle retention period as **one** number (locks take precedence
       over lifecycle; a bucket cannot be emptied while any lock rule is configured). Confirm the bucket
       is private. Perform and date a restore test.

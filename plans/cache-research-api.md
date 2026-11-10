@@ -4,9 +4,9 @@
 
 **Entry point**: `src/index.ts` — `fetch()` handler, path `GET /beers`
 
-1. **CORS preflight** — OPTIONS → 204, no auth required
+1. **CORS preflight** — OPTIONS → 204, no auth required *(historical: CORS removed 2026-11-10; OPTIONS now gets 403)*
 2. **Health check bypass** — `/health` skips auth
-3. **CORS config check** — fails 500 if `ALLOWED_ORIGIN` missing
+3. **CORS config check** — fails 500 if `ALLOWED_ORIGIN` missing *(historical: removed 2026-11-10 with CORS)*
 4. **API key auth** — `validateApiKey()` from `src/auth.ts`; 401 if missing/invalid
 5. **Rate limit check** — `checkRateLimit()` against `rate_limits` D1 table (default 60 RPM)
 6. **`sid` param extraction** — `url.searchParams.get('sid')`; 400 if missing
@@ -75,6 +75,9 @@
 ```
 
 ### Response Headers (all authenticated routes)
+
+*Historical: the `Access-Control-*` lines were removed with CORS on 2026-11-10.*
+
 ```
 Access-Control-Allow-Origin: <ALLOWED_ORIGIN>
 Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS
