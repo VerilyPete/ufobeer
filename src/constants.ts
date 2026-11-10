@@ -14,6 +14,8 @@
  */
 export const ABV_CONFIDENCE_FROM_DESCRIPTION = 0.9;
 export const ABV_CONFIDENCE_FROM_PERPLEXITY = 0.7;
+/** Confidence for an ABV read from an exactly matched Untappd page via Exa. */
+export const ABV_CONFIDENCE_FROM_EXA = 0.8;
 
 // =============================================================================
 // Outbound Fetch Timeouts
@@ -303,6 +305,16 @@ export const MAX_PROMPT_FIELD_LENGTH = 300;
  * response could ever be, applied before JSON.parse.
  */
 export const MAX_PERPLEXITY_RESPONSE_BYTES = 32 * 1024;
+
+/**
+ * Exa Untappd fallback (src/services/exa.ts). A live crawl can take several
+ * seconds. Eight results of at most 1,500 text characters each measured
+ * about 16 KB, so the byte cap leaves room without being unbounded.
+ */
+export const EXA_TIMEOUT_MS = 20_000;
+export const MAX_EXA_RESPONSE_BYTES = 256 * 1024;
+/** Default daily cap on Exa calls (about $0.007 each); override with EXA_DAILY_LIMIT. */
+export const DEFAULT_EXA_DAILY_LIMIT = 50;
 
 /**
  * Truncation length for logged upstream error bodies, independent of the

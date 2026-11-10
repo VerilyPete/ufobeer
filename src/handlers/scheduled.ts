@@ -303,6 +303,15 @@ export async function handleScheduledEnrichment(
       console.log(`Cleaned up ${deleteResult.meta.changes} old enrichment_limits entries`);
     }
 
+    // Same 90-day retention for the Exa fallback's daily cap rows.
+    const fallbackDelete = await env.DB.prepare(
+      'DELETE FROM abv_fallback_limits WHERE date < ?'
+    ).bind(cutoffDate).run();
+
+    if (fallbackDelete.meta.changes > 0) {
+      console.log(`Cleaned up ${fallbackDelete.meta.changes} old abv_fallback_limits entries`);
+    }
+
     // Cleanup old DLQ messages (older than 30 days)
     await cleanupOldDlqMessages(env.DB, cronRequestId);
 

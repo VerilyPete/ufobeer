@@ -64,7 +64,7 @@ export type RequestMetrics = {
  */
 export type EnrichmentMetrics = {
   readonly beerId: string;
-  readonly source: 'perplexity' | 'cache';
+  readonly source: 'perplexity' | 'exa' | 'cache';
   readonly success: boolean;
   readonly durationMs: number;
 };

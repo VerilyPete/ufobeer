@@ -85,6 +85,10 @@
 		"MONTHLY_ENRICHMENT_LIMIT": "2000",
 		"ENRICHMENT_ENABLED": "true",
 		"USAGE_ENABLED": "true",
+		// Exa Untappd fallback after a Perplexity "unknown". Ships off; set to
+		// "true" once EXA_API_KEY is in place (plans/abv-untappd-fallback.md).
+		"ABV_FALLBACK_ENABLED": "false",
+		"EXA_DAILY_LIMIT": "50",
 	},
 	"triggers": {
 		"crons": [

@@ -16,9 +16,11 @@
 
 import type { Env, EnrichmentMessage } from '../types';
 import { fetchAbvFromPerplexity } from '../services/perplexity';
+import { ExaError, fetchAbvFromUntappd } from '../services/exa';
 import { trackEnrichment } from '../analytics';
-import { reserveEnrichmentSlot } from '../db/quota';
-import { ABV_CONFIDENCE_FROM_PERPLEXITY } from '../constants';
+import { reserveAbvFallbackSlot, reserveEnrichmentSlot } from '../db/quota';
+import { SAME_IDENTITY_SQL } from '../db/identity';
+import { ABV_CONFIDENCE_FROM_EXA, ABV_CONFIDENCE_FROM_PERPLEXITY, DEFAULT_EXA_DAILY_LIMIT } from '../constants';
 import { getToday, getMonthStart, getMonthEnd } from '../utils/date';
 
 /**
@@ -158,21 +160,7 @@ export async function handleEnrichmentBatch(
           console.log(`Enriched ${beerId}: ${beerName} -> ABV ${abv}%`);
         }
       } else {
-        const updateResult = await env.DB.prepare(`
-          UPDATE enriched_beers
-          SET enrichment_status = 'not_found', updated_at = ?
-          WHERE id = ? AND enrichment_status = 'pending' AND description_hash IS ?
-        `).bind(Date.now(), beerId, descriptionHash ?? null).run();
-
-        if (updateResult.meta?.changes === 0) {
-          console.warn(JSON.stringify({
-            event: 'enrichment.stale_result',
-            beerId,
-            reason: 'enrichment_status or description_hash changed between pending-check and write; result discarded',
-          }));
-        } else {
-          console.log(`No ABV found for ${beerId}: ${beerName}`);
-        }
+        await recordPerplexityUnknown(env, message.body);
       }
 
       message.ack();
@@ -202,4 +190,106 @@ export async function handleEnrichmentBatch(
       }
     }
   }
+}
+
+// ============================================================================
+// Exa Untappd fallback (runs only after Perplexity's explicit "unknown")
+// ============================================================================
+
+type FallbackOutcome =
+  | { readonly kind: 'abv'; readonly abv: number }
+  | { readonly kind: 'miss' };
+
+function exaDailyLimit(env: Env): number {
+  const parsed = Number.parseInt(env.EXA_DAILY_LIMIT ?? '', 10);
+  return Number.isNaN(parsed) ? DEFAULT_EXA_DAILY_LIMIT : parsed;
+}
+
+/**
+ * The row the message was built from is still the one to enrich: pending,
+ * same description hash, same name and brewer. Cleanup can enrich a row,
+ * and a description or /beers/sync change can replace it, while Perplexity
+ * runs; a stale message must not spend a paid Exa call.
+ */
+async function isStillCurrent(db: D1Database, body: EnrichmentMessage): Promise<boolean> {
+  const current = await db.prepare(
+    `SELECT 1 AS current FROM enriched_beers
+     WHERE id = ? AND enrichment_status = 'pending' AND description_hash IS ? AND ${SAME_IDENTITY_SQL}`
+  ).bind(body.beerId, body.descriptionHash ?? null, body.beerName, body.brewer).first<number>('current');
+  return current !== null;
+}
+
+// Charged to the UTC day of the reservation itself: a message whose
+// Perplexity call crosses midnight must not spend yesterday's allowance.
+async function reserveFallbackSlot(env: Env): Promise<boolean> {
+  try {
+    return await reserveAbvFallbackSlot(env.DB, { date: getToday(), limit: exaDailyLimit(env) });
+  } catch (error) {
+    console.error('[enrichment] Exa slot reservation failed; skipping the fallback:', error);
+    return false;
+  }
+}
+
+/**
+ * Missing key, kill switch and an exhausted cap all mean "fallback
+ * unavailable": the beer takes the ordinary miss path. An Exa failure is a
+ * miss too, never a retry, because a retry would repeat the Perplexity call
+ * that already answered cleanly.
+ */
+async function runExaFallback(env: Env, body: EnrichmentMessage): Promise<FallbackOutcome> {
+  if (!env.EXA_API_KEY || env.ABV_FALLBACK_ENABLED !== 'true') return { kind: 'miss' };
+  // A stale message skips Exa; the guarded write below then changes nothing,
+  // leaving the row to whatever cleanup, a sync or a newer message made it.
+  if (!(await isStillCurrent(env.DB, body))) return { kind: 'miss' };
+  if (!(await reserveFallbackSlot(env))) return { kind: 'miss' };
+
+  const startTime = Date.now();
+  try {
+    const abv = await fetchAbvFromUntappd(env, body.beerName, body.brewer);
+    trackEnrichment(env.ANALYTICS, { beerId: body.beerId, source: 'exa', success: abv !== null, durationMs: Date.now() - startTime });
+    return abv === null ? { kind: 'miss' } : { kind: 'abv', abv };
+  } catch (error) {
+    trackEnrichment(env.ANALYTICS, { beerId: body.beerId, source: 'exa', success: false, durationMs: Date.now() - startTime });
+    console.error(JSON.stringify({
+      event: 'exa.fallback_failed',
+      beerId: body.beerId,
+      kind: error instanceof ExaError ? error.kind : 'transport',
+      status: error instanceof ExaError ? error.status : undefined,
+    }));
+    return { kind: 'miss' };
+  }
+}
+
+/**
+ * Every terminal write here is guarded on the message's status, description
+ * hash, name and brewer: Exa's strict match was made against that identity,
+ * and /beers/sync can change it without touching status or hash. A D1 error
+ * propagates so the caller retries the message.
+ */
+async function recordPerplexityUnknown(env: Env, body: EnrichmentMessage): Promise<void> {
+  const outcome = await runExaFallback(env, body);
+
+  const guard = `WHERE id = ? AND enrichment_status = 'pending' AND description_hash IS ? AND ${SAME_IDENTITY_SQL}`;
+  const guardArgs = [body.beerId, body.descriptionHash ?? null, body.beerName, body.brewer];
+  const result = outcome.kind === 'abv'
+    ? await env.DB.prepare(
+        `UPDATE enriched_beers
+         SET abv = ?, confidence = ${ABV_CONFIDENCE_FROM_EXA}, enrichment_source = 'exa', enrichment_status = 'enriched', updated_at = ?
+         ${guard}`
+      ).bind(outcome.abv, Date.now(), ...guardArgs).run()
+    : await env.DB.prepare(
+        `UPDATE enriched_beers SET enrichment_status = 'not_found', updated_at = ? ${guard}`
+      ).bind(Date.now(), ...guardArgs).run();
+
+  if (result.meta?.changes === 0) {
+    console.warn(JSON.stringify({
+      event: 'enrichment.stale_result',
+      beerId: body.beerId,
+      reason: 'status, description_hash, name or brewer changed since the message; result discarded',
+    }));
+    return;
+  }
+  console.log(outcome.kind === 'abv'
+    ? `Enriched ${body.beerId} via Exa: ${body.beerName} -> ABV ${outcome.abv}%`
+    : `No ABV found for ${body.beerId}: ${body.beerName}`);
 }

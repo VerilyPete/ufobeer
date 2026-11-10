@@ -454,4 +454,23 @@ describe('handleScheduledEnrichment', () => {
     expect(consoleSpy).toHaveBeenCalledWith('[cron] skipped-row re-check failed:', expect.any(Error));
     consoleSpy.mockRestore();
   });
+
+  it('reaps abv_fallback_limits rows older than 90 days alongside enrichment_limits', async () => {
+    const db = buildSequencedDb([
+      ...SCHEDULE_DUE_CONFIGS,
+      { firstResult: { total: 0 } },
+      { firstResult: { request_count: 0 } },
+      { allResults: [{ id: 'beer-1', brew_name: 'Real IPA', brewer: 'Brewery', description_hash: null, enrichment_status: 'pending' }] },
+      { runResult: { meta: { changes: 0 } } },
+    ]);
+    const env = createScheduledEnv({ DB: db as unknown as D1Database });
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    const reap = (table: string) => db.preparedStatements.find(s => s.sql.includes(`DELETE FROM ${table} WHERE date < ?`));
+    expect(reap('enrichment_limits')?.boundArgs).toEqual([ninetyDaysAgo.toISOString().slice(0, 10)]);
+    expect(reap('abv_fallback_limits')?.boundArgs).toEqual(reap('enrichment_limits')?.boundArgs);
+  });
 });

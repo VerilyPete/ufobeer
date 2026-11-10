@@ -12,5 +12,9 @@ ADMIN_SECRET=local-dev-admin-secret
 # Perplexity AI key (optional locally; enrichment returns null without it).
 PERPLEXITY_API_KEY=
 
+# Exa key for the Untappd ABV fallback (optional; without it the fallback is
+# skipped). Also needs ABV_FALLBACK_ENABLED=true.
+EXA_API_KEY=
+
 # Flying Saucer upstream JSON endpoint.
 FLYING_SAUCER_API_BASE=https://fsbs.beerknurd.com
