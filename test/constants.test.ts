@@ -30,8 +30,6 @@ import {
   MAX_FLYING_SAUCER_RESPONSE_ITEMS,
   MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES,
   FLYING_SAUCER_RESPONSE_MAX_BYTES,
-  CORS_PREFLIGHT_ROUTES,
-  CORS_ALLOWED_REQUEST_HEADERS,
 } from '../src/constants';
 import { SYNC_CONSTANTS } from '../src/types';
 import { BATCH_MAX_IDS, BATCH_ID_MAX_LENGTH } from '../src/schemas/request';
@@ -117,22 +115,6 @@ describe('Flying Saucer upstream bounds', () => {
 
   it('should set MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES to 20,000', () => {
     expect(MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES).toBe(20_000);
-  });
-});
-
-describe('CORS preflight contract constants', () => {
-  it('lists /beers, /beers/batch, /beers/sync with their allowed methods', () => {
-    expect(CORS_PREFLIGHT_ROUTES).toEqual({
-      '/beers': 'GET',
-      '/beers/batch': 'POST',
-      '/beers/sync': 'POST',
-    });
-  });
-
-  it('allows content-type and x-api-key request headers', () => {
-    expect(CORS_ALLOWED_REQUEST_HEADERS.has('content-type')).toBe(true);
-    expect(CORS_ALLOWED_REQUEST_HEADERS.has('x-api-key')).toBe(true);
-    expect(CORS_ALLOWED_REQUEST_HEADERS.size).toBe(2);
   });
 });
 

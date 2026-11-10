@@ -5,8 +5,8 @@
  * - Unhandled exceptions in the routing layer are caught and return JSON 500
  * - The 500 response includes a requestId and generic error message
  * - No raw error details are leaked to clients
- * - CORS headers are set when ALLOWED_ORIGIN is configured
- * - CORS preflight (OPTIONS) is NOT affected by the try/catch
+ * - No response carries CORS headers, whatever Origin is sent
+ * - OPTIONS is refused with 403 outside the try/catch, without D1 or auth
  *
  * Strategy: mock `validateApiKey` to throw an uncaught error. Unlike DB
  * operations (which have their own internal error handling in rate-limit.ts and
@@ -18,6 +18,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import worker from '../src/index';
+import { trackRequest } from '../src/analytics';
 import { validateApiKey, authorizeAdmin } from '../src/auth';
 import { writeAuditLog, writeAdminAuditLog } from '../src/audit';
 import { handleBeerList } from '../src/handlers';
@@ -87,8 +88,7 @@ vi.mock('../src/handlers', async (importOriginal) => {
 /**
  * Creates a minimal mock Env.
  */
-function createMockEnv(options: { allowedOrigin?: string; db?: D1Database } = {}): Env {
-  const allowedOrigin = options.allowedOrigin ?? 'https://ufobeer.app';
+function createMockEnv(options: { db?: D1Database } = {}): Env {
   return {
     DB: options.db ?? {
       prepare: vi.fn().mockReturnValue({
@@ -111,7 +111,6 @@ function createMockEnv(options: { allowedOrigin?: string; db?: D1Database } = {}
     AI: {} as Ai,
     API_KEY: 'test-api-key',
     FLYING_SAUCER_API_BASE: 'https://example.com',
-    ALLOWED_ORIGIN: allowedOrigin,
     RATE_LIMIT_RPM: '60',
   } as Env;
 }
@@ -200,42 +199,6 @@ describe('fetch handler top-level error boundary', () => {
     expect(text).not.toContain('audit_log');
     expect(text).not.toContain('D1_ERROR');
     expect(text).not.toContain('SQLite');
-  });
-
-  it('sets CORS header when Origin matches ALLOWED_ORIGIN and an error is thrown', async () => {
-    const env = createMockEnv({ allowedOrigin: 'https://ufobeer.app' });
-    const ctx = createMockCtx();
-    const request = new Request('https://api.ufobeer.app/beers?sid=13879', {
-      method: 'GET',
-      headers: { 'X-API-Key': 'test-api-key', 'Origin': 'https://ufobeer.app' },
-    });
-
-    const response = await worker.fetch(request, env, ctx);
-
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('https://ufobeer.app');
-  });
-
-  it('omits CORS header when Origin does not match ALLOWED_ORIGIN and an error is thrown', async () => {
-    const env = createMockEnv({ allowedOrigin: 'https://ufobeer.app' });
-    const ctx = createMockCtx();
-    const request = new Request('https://api.ufobeer.app/beers?sid=13879', {
-      method: 'GET',
-      headers: { 'X-API-Key': 'test-api-key', 'Origin': 'https://evil.com' },
-    });
-
-    const response = await worker.fetch(request, env, ctx);
-
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
-  });
-
-  it('omits CORS header when ALLOWED_ORIGIN is not configured and an error is thrown', async () => {
-    const env = createMockEnv({ allowedOrigin: '' });
-    const ctx = createMockCtx();
-    const request = createGetRequest('/beers?sid=13879');
-
-    const response = await worker.fetch(request, env, ctx);
-
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
   });
 });
 
@@ -348,144 +311,214 @@ describe('rate limiter wiring', () => {
 });
 
 // ============================================================================
-// Tests: CORS preflight stays outside the try/catch, and is validated
+// Tests: no response carries CORS headers, whatever Origin is sent
 // ============================================================================
 
-/**
- * Builds an OPTIONS preflight request. Defaults to a legitimate preflight
- * for GET /beers from the configured origin; override individual fields to
- * construct an invalid one.
- */
-function createPreflightRequest(overrides: {
-  path?: string;
-  origin?: string | null;
-  requestMethod?: string | null;
-  requestHeaders?: string | null;
-} = {}): Request {
-  const {
-    path = '/beers',
-    origin = 'https://ufobeer.app',
-    requestMethod = 'GET',
-    requestHeaders = null,
-  } = overrides;
-  const headers: Record<string, string> = {};
-  if (origin !== null) headers['Origin'] = origin;
-  if (requestMethod !== null) headers['Access-Control-Request-Method'] = requestMethod;
-  if (requestHeaders !== null) headers['Access-Control-Request-Headers'] = requestHeaders;
+const FORMER_ALLOWED_ORIGIN = 'https://ufobeer.app';
+
+function accessControlHeaderNames(headers: Headers): string[] {
+  return [...headers.keys()].filter(name => name.startsWith('access-control-'));
+}
+
+function createBrowserGetRequest(path: string): Request {
+  return new Request(`https://api.ufobeer.app${path}`, {
+    method: 'GET',
+    headers: {
+      'X-API-Key': 'test-api-key',
+      'X-Client-ID': 'test-client',
+      'Origin': FORMER_ALLOWED_ORIGIN,
+    },
+  });
+}
+
+describe('no CORS headers on any response', () => {
+  it('passes handlers only non-CORS headers for a keyed GET /beers with an Origin', async () => {
+    const { db, first } = createSequencedDbMock();
+    first.mockResolvedValueOnce({ request_count: 1 });
+    first.mockResolvedValueOnce({ request_count: 1 });
+    vi.mocked(validateApiKey).mockResolvedValueOnce({ valid: true, apiKeyHash: 'hash-app' });
+    const env = createMockEnv({ db });
+    const ctx = createMockCtx();
+
+    await worker.fetch(createBrowserGetRequest('/beers?sid=13879'), env, ctx);
+
+    const suppliedHeaders = vi.mocked(handleBeerList).mock.calls[0]?.[3] ?? {};
+    expect(Object.keys(suppliedHeaders).filter(name => name.toLowerCase().startsWith('access-control-'))).toEqual([]);
+    expect(Object.keys(suppliedHeaders).sort()).toEqual([
+      'X-RateLimit-Limit',
+      'X-RateLimit-Remaining',
+      'X-RateLimit-Reset',
+      'X-Request-ID',
+    ]);
+  });
+
+  it('serves a keyed GET /beers from an env with no ALLOWED_ORIGIN', async () => {
+    const { db, first } = createSequencedDbMock();
+    first.mockResolvedValueOnce({ request_count: 1 });
+    first.mockResolvedValueOnce({ request_count: 1 });
+    vi.mocked(validateApiKey).mockResolvedValueOnce({ valid: true, apiKeyHash: 'hash-app' });
+    const env = createMockEnv({ db });
+    const ctx = createMockCtx();
+
+    const response = await worker.fetch(createBrowserGetRequest('/beers?sid=13879'), env, ctx);
+
+    expect('ALLOWED_ORIGIN' in env).toBe(false);
+    expect(response.status).toBe(200);
+  });
+
+  it('sends none on a pre-auth 429 and keeps its rate-limit headers', async () => {
+    const { db, first } = createSequencedDbMock();
+    first.mockResolvedValueOnce({ request_count: 31 });
+    const env = createMockEnv({ db });
+    const ctx = createMockCtx();
+
+    const response = await worker.fetch(createBrowserGetRequest('/beers?sid=13879'), env, ctx);
+
+    expect(response.status).toBe(429);
+    expect(accessControlHeaderNames(response.headers)).toEqual([]);
+    expect(response.headers.get('X-RateLimit-Limit')).toBe('30');
+    expect(response.headers.get('X-RateLimit-Remaining')).toBe('0');
+    expect(response.headers.get('X-RateLimit-Reset')).not.toBeNull();
+    expect(response.headers.get('Retry-After')).not.toBeNull();
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('sends none on an unknown-route 404 and keeps its rate-limit and request-ID headers', async () => {
+    const { db, first } = createSequencedDbMock();
+    first.mockResolvedValueOnce({ request_count: 1 });
+    first.mockResolvedValueOnce({ request_count: 1 });
+    vi.mocked(validateApiKey).mockResolvedValueOnce({ valid: true, apiKeyHash: 'hash-app' });
+    const env = createMockEnv({ db });
+    const ctx = createMockCtx();
+
+    const response = await worker.fetch(createBrowserGetRequest('/no-such-route'), env, ctx);
+
+    expect(response.status).toBe(404);
+    expect(accessControlHeaderNames(response.headers)).toEqual([]);
+    expect(response.headers.get('X-RateLimit-Limit')).toBe('60');
+    expect(response.headers.get('X-RateLimit-Remaining')).not.toBeNull();
+    expect(response.headers.get('X-RateLimit-Reset')).not.toBeNull();
+    expect(response.headers.get('X-Request-ID')).not.toBeNull();
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('sends none on a rate-limiter-degraded 503 and keeps Retry-After', async () => {
+    const { db, first } = createSequencedDbMock();
+    first.mockRejectedValueOnce(new Error('D1 unavailable'));
+    const env = createMockEnv({ db });
+    const ctx = createMockCtx();
+
+    const response = await worker.fetch(createBrowserGetRequest('/beers?sid=13879'), env, ctx);
+
+    expect(response.status).toBe(503);
+    expect(accessControlHeaderNames(response.headers)).toEqual([]);
+    expect(response.headers.get('Retry-After')).toBe('10');
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('sends none on the catch-block 500', async () => {
+    const env = createMockEnv();
+    const ctx = createMockCtx();
+
+    const response = await worker.fetch(createBrowserGetRequest('/beers?sid=13879'), env, ctx);
+
+    expect(response.status).toBe(500);
+    expect(accessControlHeaderNames(response.headers)).toEqual([]);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('sends none on a keyed /beers 304 and keeps its ETag, cache and rate-limit headers', async () => {
+    const { db, first } = createSequencedDbMock();
+    first.mockResolvedValueOnce({ request_count: 1 });
+    first.mockResolvedValueOnce({ request_count: 1 });
+    vi.mocked(validateApiKey).mockResolvedValueOnce({ valid: true, apiKeyHash: 'hash-app' });
+    vi.mocked(handleBeerList).mockImplementationOnce(async (_request, _env, _ctx, headers) => {
+      const notModified = new Response(null, {
+        status: 304,
+        headers: { ETag: '"combined-etag"', 'Cache-Control': 'private, max-age=300' },
+      });
+      for (const [key, value] of Object.entries(headers)) {
+        notModified.headers.set(key, value);
+      }
+      return { response: notModified, beersReturned: 0, upstreamLatencyMs: 0, cacheOutcome: 'conditional' };
+    });
+    const env = createMockEnv({ db });
+    const ctx = createMockCtx();
+
+    const response = await worker.fetch(createBrowserGetRequest('/beers?sid=13879'), env, ctx);
+
+    expect(response.status).toBe(304);
+    expect(accessControlHeaderNames(response.headers)).toEqual([]);
+    expect(response.headers.get('ETag')).toBe('"combined-etag"');
+    expect(response.headers.get('Cache-Control')).toBe('private, max-age=300');
+    expect(response.headers.get('X-Request-ID')).not.toBeNull();
+    expect(response.headers.get('X-RateLimit-Limit')).toBe('60');
+    expect(response.headers.get('X-RateLimit-Remaining')).not.toBeNull();
+    expect(response.headers.get('X-RateLimit-Reset')).not.toBeNull();
+  });
+});
+
+// ============================================================================
+// Tests: OPTIONS is refused outside the try/catch, without D1 or auth
+// ============================================================================
+
+function createOptionsRequest(path: string, headers: Record<string, string> = {}): Request {
   return new Request(`https://api.ufobeer.app${path}`, { method: 'OPTIONS', headers });
 }
 
-describe('fetch handler OPTIONS preflight', () => {
-  it('returns 204 for a legitimate preflight even when the handler would throw', async () => {
+const FULL_PREFLIGHT_HEADERS = {
+  'Origin': FORMER_ALLOWED_ORIGIN,
+  'Access-Control-Request-Method': 'GET',
+  'Access-Control-Request-Headers': 'x-api-key',
+};
+
+describe('fetch handler OPTIONS refusal', () => {
+  it.each([
+    ['a full preflight from the former origin', createOptionsRequest('/beers', FULL_PREFLIGHT_HEADERS)],
+    ['a preflight with no Origin', createOptionsRequest('/beers', { 'Access-Control-Request-Method': 'GET' })],
+    ['a bare OPTIONS', createOptionsRequest('/beers')],
+    ['OPTIONS on an unknown path', createOptionsRequest('/no-such-route', FULL_PREFLIGHT_HEADERS)],
+    ['OPTIONS /admin/dlq', createOptionsRequest('/admin/dlq', FULL_PREFLIGHT_HEADERS)],
+  ])('refuses %s with a bodiless, uncacheable 403 and no CORS headers', async (_name, request) => {
     const env = createMockEnv();
     const ctx = createMockCtx();
-    const request = createPreflightRequest();
-
-    // OPTIONS is handled BEFORE the try block, so it must succeed even
-    // if validateApiKey (mocked to throw) would have been called later.
-    const response = await worker.fetch(request, env, ctx);
-
-    expect(response.status).toBe(204);
-  });
-
-  it('returns the trimmed CORS headers on a valid preflight', async () => {
-    const env = createMockEnv();
-    const ctx = createMockCtx();
-    const request = createPreflightRequest();
-
-    const response = await worker.fetch(request, env, ctx);
-
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('https://ufobeer.app');
-    expect(response.headers.get('Access-Control-Allow-Methods')).not.toContain('DELETE');
-    expect(response.headers.get('Access-Control-Allow-Headers')).not.toContain('X-Admin-Secret');
-    expect(response.headers.get('Access-Control-Allow-Headers')).toContain('X-API-Key');
-  });
-
-  it('sets security headers on a valid preflight response', async () => {
-    const env = createMockEnv();
-    const ctx = createMockCtx();
-    const request = createPreflightRequest();
 
     const response = await worker.fetch(request, env, ctx);
 
+    expect(response.status).toBe(403);
+    expect(accessControlHeaderNames(response.headers)).toEqual([]);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(await response.text()).toBe('');
   });
 
-  it('rejects a preflight with no Origin header (403)', async () => {
-    const env = createMockEnv();
+  it('answers without touching D1, auth or the audit log, and still tracks the request', async () => {
+    const prepare = vi.fn(() => { throw new Error('D1 must not be called'); });
+    const batch = vi.fn(() => { throw new Error('D1 must not be called'); });
+    const env = createMockEnv({ db: { prepare, batch } as unknown as D1Database });
     const ctx = createMockCtx();
-    const request = createPreflightRequest({ origin: null });
 
-    const response = await worker.fetch(request, env, ctx);
+    const response = await worker.fetch(createOptionsRequest('/beers', FULL_PREFLIGHT_HEADERS), env, ctx);
 
     expect(response.status).toBe(403);
-  });
-
-  it('rejects a preflight from a non-configured origin (403)', async () => {
-    const env = createMockEnv();
-    const ctx = createMockCtx();
-    const request = createPreflightRequest({ origin: 'https://evil.com' });
-
-    const response = await worker.fetch(request, env, ctx);
-
-    expect(response.status).toBe(403);
-  });
-
-  it('rejects a preflight requesting a method the route does not use (403)', async () => {
-    const env = createMockEnv();
-    const ctx = createMockCtx();
-    // /beers is GET-only.
-    const request = createPreflightRequest({ requestMethod: 'DELETE' });
-
-    const response = await worker.fetch(request, env, ctx);
-
-    expect(response.status).toBe(403);
-  });
-
-  it('rejects a preflight for a path with no documented CORS contract (403)', async () => {
-    const env = createMockEnv();
-    const ctx = createMockCtx();
-    const request = createPreflightRequest({ path: '/admin/dlq', requestMethod: 'GET' });
-
-    const response = await worker.fetch(request, env, ctx);
-
-    expect(response.status).toBe(403);
-  });
-
-  it('rejects a preflight requesting a disallowed header (X-Admin-Secret)', async () => {
-    const env = createMockEnv();
-    const ctx = createMockCtx();
-    const request = createPreflightRequest({ requestHeaders: 'content-type, x-admin-secret' });
-
-    const response = await worker.fetch(request, env, ctx);
-
-    expect(response.status).toBe(403);
-  });
-
-  it('accepts a preflight requesting only documented headers', async () => {
-    const env = createMockEnv();
-    const ctx = createMockCtx();
-    const request = createPreflightRequest({ requestHeaders: 'content-type, x-api-key' });
-
-    const response = await worker.fetch(request, env, ctx);
-
-    expect(response.status).toBe(204);
-  });
-
-  it('creates no D1 audit row for a valid preflight', async () => {
-    const env = createMockEnv();
-    const ctx = createMockCtx();
-    await worker.fetch(createPreflightRequest(), env, ctx);
-
+    expect(prepare).not.toHaveBeenCalled();
+    expect(batch).not.toHaveBeenCalled();
+    expect(validateApiKey).not.toHaveBeenCalled();
+    expect(authorizeAdmin).not.toHaveBeenCalled();
     expect(writeAuditLog).not.toHaveBeenCalled();
+    expect(trackRequest).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      endpoint: '/beers',
+      method: 'OPTIONS',
+      statusCode: 403,
+    }));
   });
 
-  it('creates no D1 audit row for high-volume or invalid preflight traffic', async () => {
+  it('creates no D1 audit row for high-volume OPTIONS traffic', async () => {
     const env = createMockEnv();
     const ctx = createMockCtx();
 
     for (let i = 0; i < 25; i++) {
-      await worker.fetch(createPreflightRequest({ origin: 'https://evil.com' }), env, ctx);
+      await worker.fetch(createOptionsRequest('/beers', { 'Origin': 'https://evil.com' }), env, ctx);
     }
 
     expect(writeAuditLog).not.toHaveBeenCalled();

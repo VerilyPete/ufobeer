@@ -2,7 +2,6 @@
 // Request Context and Middleware Functions
 // ============================================================================
 // This module handles:
-// - CORS headers configuration
 // - Standardized error responses
 // - Shared security response headers
 //
@@ -10,34 +9,7 @@
 // request handling across routes.
 // ============================================================================
 
-import type { Env, ErrorResponseOptions } from './types';
-
-// ============================================================================
-// CORS Configuration
-// ============================================================================
-
-/**
- * Get CORS headers. Returns null when ALLOWED_ORIGIN is not configured,
- * or when the request Origin does not match ALLOWED_ORIGIN.
- *
- * Non-browser clients (curl, mobile apps) don't send Origin headers —
- * returning null for those requests is correct; CORS headers are meaningless
- * without a browser enforcing the same-origin policy.
- *
- * Methods and headers are trimmed to the documented browser contract:
- * DELETE is not used by any route, and X-Admin-Secret is intentionally
- * excluded — browser-based admin tooling is not supported, so admin routes
- * are reachable only by non-browser clients that don't need a CORS grant.
- */
-export function getCorsHeaders(env: Env, requestOrigin?: string | null): Record<string, string> | null {
-  if (!env.ALLOWED_ORIGIN || requestOrigin !== env.ALLOWED_ORIGIN) return null;
-  return {
-    'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN,
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-API-Key',
-    'Access-Control-Max-Age': '86400',
-  };
-}
+import type { ErrorResponseOptions } from './types';
 
 // ============================================================================
 // Shared Security Response Headers

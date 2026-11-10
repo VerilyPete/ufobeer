@@ -6,7 +6,6 @@ interface __BaseEnv_Env {
 	ANALYTICS: AnalyticsEngineDataset;
 	ENRICHMENT_QUEUE: Queue;
 	CLEANUP_QUEUE: Queue;
-	ALLOWED_ORIGIN: "https://ufobeer.app";
 	RATE_LIMIT_RPM: "60";
 	PRE_AUTH_RPM: "30";
 	PERPLEXITY_MAX_CONCURRENCY: "10";
@@ -28,7 +27,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "ALLOWED_ORIGIN" | "RATE_LIMIT_RPM" | "PRE_AUTH_RPM" | "PERPLEXITY_MAX_CONCURRENCY" | "DAILY_ENRICHMENT_LIMIT" | "MONTHLY_ENRICHMENT_LIMIT" | "ENRICHMENT_ENABLED" | "API_KEY" | "ADMIN_SECRET" | "FLYING_SAUCER_API_BASE">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "RATE_LIMIT_RPM" | "PRE_AUTH_RPM" | "PERPLEXITY_MAX_CONCURRENCY" | "DAILY_ENRICHMENT_LIMIT" | "MONTHLY_ENRICHMENT_LIMIT" | "ENRICHMENT_ENABLED" | "API_KEY" | "ADMIN_SECRET" | "FLYING_SAUCER_API_BASE">> {}
 }
 declare module "*.txt" {
 	const value: string;

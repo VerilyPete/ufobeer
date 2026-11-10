@@ -34,7 +34,6 @@ function createMockEnv(perplexityApiKey: string | undefined = 'test-api-key'): E
     API_KEY: 'test-api-key',
     FLYING_SAUCER_API_BASE: 'https://example.com',
     PERPLEXITY_API_KEY: perplexityApiKey,
-    ALLOWED_ORIGIN: '*',
     RATE_LIMIT_RPM: '60',
   } as Env;
 }
@@ -434,7 +433,6 @@ describe('fetchAbvFromPerplexity', () => {
         AI: {} as Ai,
         API_KEY: 'test-api-key',
         FLYING_SAUCER_API_BASE: 'https://example.com',
-        ALLOWED_ORIGIN: '*',
         RATE_LIMIT_RPM: '60',
       } as Env;
 
