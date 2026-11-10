@@ -331,13 +331,22 @@ function createBrowserGetRequest(path: string): Request {
   });
 }
 
+/**
+ * An env that still carries the removed ALLOWED_ORIGIN var, matching the
+ * Origin these tests send. It proves the Worker ignores leftover config,
+ * not merely that it was given none.
+ */
+function createLegacyConfiguredEnv(options: { db?: D1Database } = {}): Env {
+  return Object.assign(createMockEnv(options), { ALLOWED_ORIGIN: FORMER_ALLOWED_ORIGIN });
+}
+
 describe('no CORS headers on any response', () => {
   it('passes handlers only non-CORS headers for a keyed GET /beers with an Origin', async () => {
     const { db, first } = createSequencedDbMock();
     first.mockResolvedValueOnce({ request_count: 1 });
     first.mockResolvedValueOnce({ request_count: 1 });
     vi.mocked(validateApiKey).mockResolvedValueOnce({ valid: true, apiKeyHash: 'hash-app' });
-    const env = createMockEnv({ db });
+    const env = createLegacyConfiguredEnv({ db });
     const ctx = createMockCtx();
 
     await worker.fetch(createBrowserGetRequest('/beers?sid=13879'), env, ctx);
@@ -369,7 +378,7 @@ describe('no CORS headers on any response', () => {
   it('sends none on a pre-auth 429 and keeps its rate-limit headers', async () => {
     const { db, first } = createSequencedDbMock();
     first.mockResolvedValueOnce({ request_count: 31 });
-    const env = createMockEnv({ db });
+    const env = createLegacyConfiguredEnv({ db });
     const ctx = createMockCtx();
 
     const response = await worker.fetch(createBrowserGetRequest('/beers?sid=13879'), env, ctx);
@@ -388,7 +397,7 @@ describe('no CORS headers on any response', () => {
     first.mockResolvedValueOnce({ request_count: 1 });
     first.mockResolvedValueOnce({ request_count: 1 });
     vi.mocked(validateApiKey).mockResolvedValueOnce({ valid: true, apiKeyHash: 'hash-app' });
-    const env = createMockEnv({ db });
+    const env = createLegacyConfiguredEnv({ db });
     const ctx = createMockCtx();
 
     const response = await worker.fetch(createBrowserGetRequest('/no-such-route'), env, ctx);
@@ -405,7 +414,7 @@ describe('no CORS headers on any response', () => {
   it('sends none on a rate-limiter-degraded 503 and keeps Retry-After', async () => {
     const { db, first } = createSequencedDbMock();
     first.mockRejectedValueOnce(new Error('D1 unavailable'));
-    const env = createMockEnv({ db });
+    const env = createLegacyConfiguredEnv({ db });
     const ctx = createMockCtx();
 
     const response = await worker.fetch(createBrowserGetRequest('/beers?sid=13879'), env, ctx);
@@ -417,7 +426,7 @@ describe('no CORS headers on any response', () => {
   });
 
   it('sends none on the catch-block 500', async () => {
-    const env = createMockEnv();
+    const env = createLegacyConfiguredEnv();
     const ctx = createMockCtx();
 
     const response = await worker.fetch(createBrowserGetRequest('/beers?sid=13879'), env, ctx);
@@ -442,7 +451,7 @@ describe('no CORS headers on any response', () => {
       }
       return { response: notModified, beersReturned: 0, upstreamLatencyMs: 0, cacheOutcome: 'conditional' };
     });
-    const env = createMockEnv({ db });
+    const env = createLegacyConfiguredEnv({ db });
     const ctx = createMockCtx();
 
     const response = await worker.fetch(createBrowserGetRequest('/beers?sid=13879'), env, ctx);
@@ -480,7 +489,7 @@ describe('fetch handler OPTIONS refusal', () => {
     ['OPTIONS on an unknown path', createOptionsRequest('/no-such-route', FULL_PREFLIGHT_HEADERS)],
     ['OPTIONS /admin/dlq', createOptionsRequest('/admin/dlq', FULL_PREFLIGHT_HEADERS)],
   ])('refuses %s with a bodiless, uncacheable 403 and no CORS headers', async (_name, request) => {
-    const env = createMockEnv();
+    const env = createLegacyConfiguredEnv();
     const ctx = createMockCtx();
 
     const response = await worker.fetch(request, env, ctx);
@@ -495,7 +504,7 @@ describe('fetch handler OPTIONS refusal', () => {
   it('answers without touching D1, auth or the audit log, and still tracks the request', async () => {
     const prepare = vi.fn(() => { throw new Error('D1 must not be called'); });
     const batch = vi.fn(() => { throw new Error('D1 must not be called'); });
-    const env = createMockEnv({ db: { prepare, batch } as unknown as D1Database });
+    const env = createLegacyConfiguredEnv({ db: { prepare, batch } as unknown as D1Database });
     const ctx = createMockCtx();
 
     const response = await worker.fetch(createOptionsRequest('/beers', FULL_PREFLIGHT_HEADERS), env, ctx);
@@ -514,7 +523,7 @@ describe('fetch handler OPTIONS refusal', () => {
   });
 
   it('creates no D1 audit row for high-volume OPTIONS traffic', async () => {
-    const env = createMockEnv();
+    const env = createLegacyConfiguredEnv();
     const ctx = createMockCtx();
 
     for (let i = 0; i < 25; i++) {
