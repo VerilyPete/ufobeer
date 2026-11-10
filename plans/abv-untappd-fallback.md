@@ -191,13 +191,15 @@ from the experiment:
 - `isUntappdBeerUrl(url)`: `untappd.com/b/` only. Brewery, venue and
   `business.untappd.com` pages never count.
 - `matchesBeer({ ourName, ourBrewer }, { beer, brewery })`:
-  - **Brewery identity.** Take each side's brewery words, dropping filler
-    such as `brewing`, `brewery`, `co`, `company` and `brouwerij`. The
-    smaller set must be fully contained in the larger one.
-    - `(512) Brewing Co.` → {512} ⊆ `(512) Brewing Company` → {512}.
-    - `Traquair` → {traquair} ⊆ `Traquair House Brewery`.
-    - `Lone Star` does **not** match `Lone Pint`. Sharing one word is not
-      enough.
+  - **Brewery identity.** Take each side's brewery words, dropping generic
+    words (`brewing`, `brewery`, `brewers`, `brew`, `co`, `company`,
+    `brouwerij`, `brasserie`, `beers`). The two sets must be **equal**.
+    (Tightened from "the smaller set contained in the larger" in Codex review
+    of slice 2: containment accepted `Acme Other Brewing` for `Acme Brewing`.)
+    - `(512) Brewing Co.` → {512} = `(512) Brewing Company` → {512}.
+    - `Eureka Heights` = `Eureka Heights Brew Co`.
+    - `Traquair` does **not** match `Traquair House Brewery`, and `Lone Star`
+      does not match `Lone Pint`.
     - Either side empty after filler means no match.
   - **Beer name.** The core tokens must be *equal as an ordered sequence*.
     No set or subset comparison, so `Double Double IPA` is not
@@ -207,10 +209,12 @@ from the experiment:
       own tag (the `(512)` in `(512) 18th Anniversary` by `(512) Brewing
       Co.`). Any other parenthetical, such as a vintage `(2024)` or a
       variant, is kept as part of the name.
-    - brewer words, but only as a *leading prefix* of the name, applied
-      identically to both sides (`Avery Kaiser` → `Kaiser`, `Sierra Nevada
-      Pale Ale` → `Pale Ale`). A brewer word in the middle or at the end of
-      the name is kept (Codex review round 3);
+    - the brewer's *complete* name (its identity words, in order) as a
+      leading prefix of the name, once, applied identically to both sides
+      (`Avery Kaiser` → `Kaiser`, `Sierra Nevada Pale Ale` → `Pale Ale`).
+      A partial brewer name or a brewer word in the middle or at the end is
+      kept: `Double IPA` by Double Mountain stays `Double IPA` (Codex review
+      round 3, and slice 2 review);
     - filler (`the`, `ale`, `beer`, `brewing`, `co`, `company`). Keep `x`
       and Roman numerals as real words: `Reserve X` is not `Reserve`.
       Collaboration names (`Other Half x Parish x …`) don't match Untappd's
@@ -252,7 +256,7 @@ Required test cases:
 | any | `(512) Brewing Company - Austin, TX - Beers and Ratings \| Untappd` (brewery page) | rejected by URL |
 | `(2024) Reserve` / `Acme Brewing` | `(2025) Reserve - Acme Brewing - Untappd` | no match (vintage kept) |
 | `Light` / `Lone Star Brewing` | `Light - Lone Pint Brewery - Untappd` | no match (brewery not contained) |
-| `Traquair House (BTL)` / `Traquair` | `House Ale - Traquair House Brewery - Untappd` | no match (both cores empty) |
+| `Traquair House (BTL)` / `Traquair` | `House Ale - Traquair House Brewery - Untappd` | no match (brewery sets differ) |
 
 | `Double IPA` / `Acme Brewing` | `Double Double IPA - Acme Brewing - Untappd` | no match (ordered sequence) |
 | `Reserve` / `Acme Brewing` | `Reserve X - Acme Brewing - Untappd` | no match (`x` kept) |
