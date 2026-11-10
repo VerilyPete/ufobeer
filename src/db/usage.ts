@@ -21,6 +21,8 @@ import {
   USAGE_BATCH_RETENTION_DAYS,
   USAGE_DAILY_RETENTION_DAYS,
   USAGE_INGEST_RETENTION_DAYS,
+  USAGE_NEW_INSTALL_DAILY_CAP,
+  USAGE_POST_DAILY_CAP,
   USAGE_REAP_LIMIT,
 } from '../constants';
 import { getToday } from '../utils/date';
@@ -184,10 +186,13 @@ const isHealthCheckTick = (now: number): boolean => {
 /**
  * Once a day (on the first cron tick of USAGE_HEALTH_CHECK_UTC_HOUR), log
  * the size of usage_daily and how far each usage table's oldest expired row
- * is past its retention window. Each alert is logged with console.error,
+ * is past its retention window, and check whether the previous UTC day
+ * reached either growth budget. Each alert is logged with console.error,
  * which the error-alerts tail worker emails: a large usage_daily points at
- * an invented-install flood or growth past the budgets, and a backlog over
- * a day means cleanup is falling behind ingest.
+ * an invented-install flood or growth past the budgets, a backlog over a
+ * day means cleanup is falling behind ingest, and a day at a cap means
+ * posts were dropped. A capped post is still a 204 logged at info level,
+ * so this is the only alert for it.
  */
 export async function runUsageHealthCheck(
   db: D1Database,
@@ -198,14 +203,20 @@ export async function runUsageHealthCheck(
     return { checked: false };
   }
 
+  const previousDay = getToday(new Date(now - DAY_MS));
   const row = await db.prepare(`
     SELECT
+      (SELECT posts FROM usage_ingest_daily WHERE day = ?1) AS previous_day_posts,
+      (SELECT COUNT(*) FROM usage_installs WHERE first_seen_day = ?1) AS previous_day_new_installs,
       (SELECT COUNT(*) FROM usage_daily) AS daily_rows,
       (SELECT MIN(day) FROM usage_daily) AS daily_oldest,
       (SELECT MIN(last_seen_day) FROM usage_installs) AS installs_oldest,
       (SELECT MIN(received_at) FROM usage_batches) AS batches_oldest,
       (SELECT MIN(day) FROM usage_ingest_daily) AS ingest_oldest`)
+    .bind(previousDay)
     .first<{
+      previous_day_posts: number | null;
+      previous_day_new_installs: number;
       daily_rows: number;
       daily_oldest: string | null;
       installs_oldest: string | null;
@@ -218,6 +229,8 @@ export async function runUsageHealthCheck(
   const installsOldest = row?.installs_oldest ?? null;
   const batchesOldest = row?.batches_oldest ?? null;
   const ingestOldest = row?.ingest_oldest ?? null;
+  const previousDayPosts = row?.previous_day_posts ?? 0;
+  const previousDayNewInstalls = row?.previous_day_new_installs ?? 0;
   const overdueMs: Readonly<Record<UsageTable, number>> = {
     usage_daily: overdue(dailyOldest === null ? null : dayExpiresAt(dailyOldest, USAGE_DAILY_RETENTION_DAYS), now),
     usage_installs: overdue(installsOldest === null ? null : dayExpiresAt(installsOldest, USAGE_DAILY_RETENTION_DAYS), now),
@@ -232,6 +245,12 @@ export async function runUsageHealthCheck(
     ...Object.entries(overdueMs)
       .filter(([, ms]) => ms > USAGE_REAP_BACKLOG_ALERT_MS)
       .map(([table, ms]) => `[usage-health] ${table} cleanup is behind: oldest expired row overdue by ${(ms / DAY_MS).toFixed(1)} days`),
+    ...(previousDayPosts >= USAGE_POST_DAILY_CAP
+      ? [`[usage-health] usage posts reached the daily cap (${USAGE_POST_DAILY_CAP}) on ${previousDay}; any later posts that day were dropped`]
+      : []),
+    ...(previousDayNewInstalls >= USAGE_NEW_INSTALL_DAILY_CAP
+      ? [`[usage-health] new installs reached the daily cap (${USAGE_NEW_INSTALL_DAILY_CAP}) on ${previousDay}; posts from any further new installs that day were dropped`]
+      : []),
   ];
 
   console.log(JSON.stringify({ event: 'usage_health', usageDailyRows, overdueMs }));

@@ -96,10 +96,18 @@ export const ADMIN_AUDIT_MAX_TARGET_IDS = 100;
 export const RATE_LIMIT_REAP_LIMIT = 10_000;
 
 /**
- * Per-install usage rows (usage_daily, usage_installs) are kept this long
- * during the beta. See plans/usage-telemetry.md (Retention).
+ * Per-install usage rows (usage_daily, usage_installs) are kept this long:
+ * usage_daily by the UTC day received, usage_installs by the last day an
+ * install reported. See plans/usage-dashboards.md (Retention changes).
  */
-export const USAGE_DAILY_RETENTION_DAYS = 180;
+export const USAGE_DAILY_RETENTION_DAYS = 730;
+
+/**
+ * First UTC day of the usage_ingest_daily posts history: the oldest row in
+ * production when retention went to 730 days (telemetry went on that day).
+ * The usage report treats posts on earlier days as unknown, not zero.
+ */
+export const USAGE_POSTS_SINCE = '2026-11-10';
 
 /**
  * usage_batches dedup window. Compliant clients delete a pending batch after
@@ -107,14 +115,18 @@ export const USAGE_DAILY_RETENTION_DAYS = 180;
  */
 export const USAGE_BATCH_RETENTION_DAYS = 8;
 
-/** usage_ingest_daily rows only matter for today's post budget. */
-export const USAGE_INGEST_RETENTION_DAYS = 30;
+/**
+ * usage_ingest_daily rows carry today's post budget and the daily post
+ * history, so they are kept as long as usage_daily: the posts history and
+ * the usage counts cover the same days.
+ */
+export const USAGE_INGEST_RETENTION_DAYS = 730;
 
 /**
  * Maximum rows deleted per usage table per cron tick. At the growth budget
- * usage_daily gains at most 2,000 posts x 25 events = 50,000 rows a day; 72
- * ticks a day x 5,000 = 360,000 a day, several times worst-case ingest.
- * Recompute when events are added.
+ * usage_daily gains at most 500 posts x 25 events = 12,500 rows a day; 72
+ * ticks a day x 5,000 = 360,000 a day, many times worst-case ingest.
+ * Recompute when events are added or the post cap changes.
  */
 export const USAGE_REAP_LIMIT = 5_000;
 
@@ -125,12 +137,14 @@ export const USAGE_REAP_LIMIT = 5_000;
 export const USAGE_HEALTH_CHECK_UTC_HOUR = 17;
 
 /**
- * usage_daily row count that raises an alert. A beta of a few hundred
- * installs over the 180-day window stays well under this; a flood of
- * invented installs at the growth budget (50,000 rows a day) crosses it
- * within about ten days.
+ * usage_daily row count that raises an alert: about 300 MB at the measured
+ * worst case of 300 bytes a row (table plus both indexes), 3% of D1's 10 GB
+ * limit. 100 installs a day writing 7 event rows each reach about 511,000
+ * rows over the 730-day window, so real beta traffic stays under it; a
+ * flood of invented installs at the post cap (12,500 rows a day) crosses it
+ * in about 80 days. The post-cap alert fires on the flood's first day.
  */
-export const USAGE_DAILY_ROW_ALERT = 500_000;
+export const USAGE_DAILY_ROW_ALERT = 1_000_000;
 
 /** Alert when a usage table's oldest expired row is overdue by more than this. */
 export const USAGE_REAP_BACKLOG_ALERT_MS = 24 * 60 * 60 * 1000;
@@ -138,12 +152,19 @@ export const USAGE_REAP_BACKLOG_ALERT_MS = 24 * 60 * 60 * 1000;
 /**
  * Install IDs first seen per UTC day. Install IDs are client-chosen, so
  * this bounds how fast an invented-ID flood can grow usage_installs and
- * usage_daily. Posts from installs already known keep counting.
+ * usage_daily. Posts from installs already known keep counting. The daily
+ * usage health check alerts on a day that reached it.
  */
-export const USAGE_NEW_INSTALL_DAILY_CAP = 500;
+export const USAGE_NEW_INSTALL_DAILY_CAP = 100;
 
-/** Usage posts written per UTC day across all installs. */
-export const USAGE_POST_DAILY_CAP = 2_000;
+/**
+ * Usage posts written per UTC day across all installs. Invented install IDs
+ * can be reused on later days, so this cap is what bounds usage_daily: at
+ * most 500 posts x 25 events = 12,500 rows a day, about 9.1 million rows
+ * (roughly 2.7 GB at 300 bytes a row) over the 730-day window. The daily
+ * usage health check alerts on a day that reached it.
+ */
+export const USAGE_POST_DAILY_CAP = 500;
 
 /**
  * POST /usage requests per minute per client IP, in their own bucket

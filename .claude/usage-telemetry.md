@@ -12,10 +12,10 @@ diagnostics, trends and ratios across real installs, not exact figures.
 
 | Table | One row per | Kept |
 |---|---|---|
-| `usage_daily` | (UTC day received, install, event, `app_version`, `ai_status`, `os_major`) with a summed `count` | 180 days |
-| `usage_installs` | install ID, with `first_seen_day` and `last_seen_day` | 180 days after last seen |
+| `usage_daily` | (UTC day received, install, event, `app_version`, `ai_status`, `os_major`) with a summed `count` | 730 days after the day received |
+| `usage_installs` | install ID, with `first_seen_day` and `last_seen_day` | 730 days after last seen |
 | `usage_batches` | (install, batch) already counted, for deduplication | 8 days |
-| `usage_ingest_daily` | UTC day, with posts counted that day (the post budget) | 30 days |
+| `usage_ingest_daily` | UTC day, with posts counted that day (the post budget and posts history) | 730 days |
 
 `day` is the UTC day the server **received** the counts, not when they
 happened. An install that was offline uploads old counts on the day it
@@ -180,9 +180,16 @@ count and, for each usage table, how long its oldest expired row has been
 waiting for cleanup (`overdueMs`). It raises an alert with `console.error`,
 which the `ufobeer-error-alerts` tail worker emails, when:
 
-- `usage_daily` has more than `USAGE_DAILY_ROW_ALERT` rows (500,000). A
-  beta of a few hundred installs stays well under it. A flood of invented
-  installs at the growth budget crosses it in about ten days.
+- `usage_daily` has more than `USAGE_DAILY_ROW_ALERT` rows (1,000,000,
+  about 300 MB at a measured worst case of 300 bytes a row including both
+  indexes). 100 installs a day over the 730-day window reach about 511,000
+  rows, so beta traffic stays under it. A flood of invented installs at the
+  post cap crosses it in about 80 days.
+- The previous UTC day reached the post cap (`usage_ingest_daily.posts` at
+  `USAGE_POST_DAILY_CAP`, 500) or the new-install cap (installs whose
+  `first_seen_day` is that day at `USAGE_NEW_INSTALL_DAILY_CAP`, 100). Posts
+  over a cap still get a 204 and log at info level, so this is the only
+  alert that posts were dropped.
 - A table's oldest expired row is more than a day overdue
   (`USAGE_REAP_BACKLOG_ALERT_MS`), so cleanup is falling behind ingest. The
   reapers delete 5,000 rows per table per 20-minute tick, several times the

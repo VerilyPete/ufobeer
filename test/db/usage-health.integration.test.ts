@@ -13,10 +13,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // The daily check runs on the first cron tick of 17:00 UTC.
 const CHECK_TICK = Date.UTC(2026, 10, 7, 17, 0, 30);
 
-// Retention windows plans/usage-telemetry.md specifies.
-const DAILY_RETENTION_DAYS = 180;
+// Retention windows and growth budgets plans/usage-dashboards.md specifies.
+const DAILY_RETENTION_DAYS = 730;
 const BATCH_RETENTION_DAYS = 8;
-const INGEST_RETENTION_DAYS = 30;
+const INGEST_RETENTION_DAYS = 730;
+const POST_DAILY_CAP = 500;
+const NEW_INSTALL_DAILY_CAP = 100;
 
 const utcDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
@@ -90,23 +92,27 @@ describe('runUsageHealthCheck (real D1)', () => {
   });
 
   it.each([
-    [500_000, 0],
-    [500_001, 1],
-  ] as const)('alerts above 500,000 usage_daily rows by default (%d rows -> %d alerts)', async (rows, alertCount) => {
+    [1_000_000, 0],
+    [1_000_001, 1],
+  ] as const)('alerts above 1,000,000 usage_daily rows by default (%d rows -> %d alerts)', async (rows, alertCount) => {
     const withDailyRows = new Proxy(env.DB, {
       get(target, prop) {
         if (prop === 'prepare') {
-          return (query: string) => new Proxy(target.prepare(query), {
+          const withRowCount = (prepared: D1PreparedStatement): D1PreparedStatement => new Proxy(prepared, {
             get(statement, statementProp) {
               if (statementProp === 'first') {
                 return async () => ({
                   daily_rows: rows, daily_oldest: null, installs_oldest: null, batches_oldest: null, ingest_oldest: null,
                 });
               }
+              if (statementProp === 'bind') {
+                return (...values: unknown[]) => withRowCount(statement.bind(...values));
+              }
               const value: unknown = Reflect.get(statement, statementProp, statement);
               return typeof value === 'function' ? value.bind(statement) : value;
             },
           });
+          return (query: string) => withRowCount(target.prepare(query));
         }
         const value: unknown = Reflect.get(target, prop, target);
         return typeof value === 'function' ? value.bind(target) : value;
@@ -119,6 +125,56 @@ describe('runUsageHealthCheck (real D1)', () => {
     expect(result.checked && result.alerts).toHaveLength(alertCount);
     expect(errors).toHaveBeenCalledTimes(alertCount);
     errors.mockRestore();
+  });
+
+  describe('growth budget alerts', () => {
+    const yesterday = utcDay(START_OF_TODAY - DAY_MS);
+
+    const setPosts = (day: string, posts: number) =>
+      env.DB.prepare('INSERT INTO usage_ingest_daily (day, posts) VALUES (?, ?)').bind(day, posts);
+
+    const seedInstallsFirstSeen = (day: string, count: number) =>
+      env.DB.batch(Array.from({ length: count }, (_, i) =>
+        env.DB.prepare('INSERT INTO usage_installs (install_id, first_seen_day, last_seen_day) VALUES (?, ?, ?)')
+          .bind(`install-${i}`, day, utcDay(CHECK_TICK))));
+
+    it.each([
+      [POST_DAILY_CAP - 1, []],
+      [POST_DAILY_CAP, [expect.stringContaining(`usage posts reached the daily cap (${POST_DAILY_CAP}) on ${yesterday}`)]],
+    ] as const)('alerts when the previous UTC day reached the post cap (%d posts)', async (posts, alerts) => {
+      await setPosts(yesterday, posts).run();
+      const errors = captureErrors();
+
+      const result = await runUsageHealthCheck(env.DB, CHECK_TICK);
+
+      expect(result.checked && result.alerts).toEqual(alerts);
+      expect(errors).toHaveBeenCalledTimes(alerts.length);
+      errors.mockRestore();
+    });
+
+    it.each([
+      [NEW_INSTALL_DAILY_CAP - 1, []],
+      [NEW_INSTALL_DAILY_CAP, [expect.stringContaining(`new installs reached the daily cap (${NEW_INSTALL_DAILY_CAP}) on ${yesterday}`)]],
+    ] as const)('alerts when the previous UTC day reached the new-install cap (%d installs)', async (installs, alerts) => {
+      await seedInstallsFirstSeen(yesterday, installs);
+      const errors = captureErrors();
+
+      const result = await runUsageHealthCheck(env.DB, CHECK_TICK);
+
+      expect(result.checked && result.alerts).toEqual(alerts);
+      expect(errors).toHaveBeenCalledTimes(alerts.length);
+      errors.mockRestore();
+    });
+
+    it('does not alert on today, which is still in progress', async () => {
+      const today = utcDay(CHECK_TICK);
+      await setPosts(today, POST_DAILY_CAP).run();
+      await seedInstallsFirstSeen(today, NEW_INSTALL_DAILY_CAP);
+
+      const result = await runUsageHealthCheck(env.DB, CHECK_TICK);
+
+      expect(result.checked && result.alerts).toEqual([]);
+    });
   });
 
   it('does not alert when cleanup is behind by a day or less', async () => {
