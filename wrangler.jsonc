@@ -5,13 +5,10 @@
 	// *.workers.dev preview URL so zone-level rules cover all traffic.
 	"workers_dev": false,
 	// Wrangler replaces the Worker's whole Custom Domain set with this list on
-	// every deploy, so a hostname left out here is detached. ufobeer.app stays
-	// until the cutover hands it to the static site
+	// every deploy, so a hostname left out here is detached. ufobeer.app belongs
+	// to the website Worker (ufobeer-site); listing it here would take it back
 	// (plans/api-subdomain-cutover.md).
-	"routes": [
-		{ "pattern": "api.ufobeer.app", "custom_domain": true },
-		{ "pattern": "ufobeer.app", "custom_domain": true },
-	],
+	"routes": [{ "pattern": "api.ufobeer.app", "custom_domain": true }],
 	"compatibility_date": "2026-10-06",
 	"analytics_engine_datasets": [
 		{

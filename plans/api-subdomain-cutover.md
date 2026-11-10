@@ -67,7 +67,7 @@ Gate status (app session report, 2026-10-29):
 - [x] Old builds after cutover fall back to the direct taplist and keep cached ABV. They don't follow redirects, so they never send the key to the site. Covered by `NetworkTests.testRetiredEnrichmentHostFallsBackToDirectTaplistAndKeepsCachedEnrichment`.
 - [x] Build 89 seen in practice calling only `api.ufobeer.app`: in a `wrangler tail` on 2026-10-29 at 17:51Z, all 7 requests with the `BeerSelector/1.1.0 (iOS; Native)` user agent (`/beers` 304, `/beers/batch` 200) went to the api host. None went to the apex.
 - [x] UptimeRobot repointed to `https://api.ufobeer.app/health`. Seen in the tail at 17:54Z, returning 200.
-- [ ] Pete expires every TestFlight build older than 89.
+- [x] Pete expires every TestFlight build older than 89 (confirmed 2026-11-10).
 
 Hazard: in CI, Wrangler runs non-interactively and automatically sets `override_existing_origin`. Any `ufobeer` deploy whose config still lists `ufobeer.app` will **silently take the apex back** from the site. The `ufobeer` config change therefore has to land at the same time as the handover. Freeze other `ufobeer` merges during the cutover.
 
