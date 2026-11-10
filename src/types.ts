@@ -23,6 +23,8 @@ export type Env = {
   readonly API_KEY: string;
   readonly FLYING_SAUCER_API_BASE: string;
   readonly PERPLEXITY_API_KEY?: string | undefined;
+  // Optional: without it the Exa Untappd fallback is simply unavailable.
+  readonly EXA_API_KEY?: string | undefined;
   readonly ADMIN_SECRET?: string | undefined; // Required for /admin/* routes
 
   // Environment variables (set in wrangler.jsonc vars)
@@ -36,6 +38,11 @@ export type Env = {
   readonly DAILY_ENRICHMENT_LIMIT?: string | undefined;
   readonly MONTHLY_ENRICHMENT_LIMIT?: string | undefined;
   readonly ENRICHMENT_ENABLED?: string | undefined;
+
+  // Exa Untappd fallback after a Perplexity "unknown": runs only when exactly
+  // 'true'. EXA_DAILY_LIMIT caps calls per UTC day (default 50).
+  readonly ABV_FALLBACK_ENABLED?: string | undefined;
+  readonly EXA_DAILY_LIMIT?: string | undefined;
 
   // POST /usage kill switch: ingestion runs only when exactly 'true'.
   readonly USAGE_ENABLED?: string | undefined;

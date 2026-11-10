@@ -1,6 +1,6 @@
 # ABV lookup: Untappd fallback via Exa, and a wider enrichment skip list
 
-Status: planned, 2026-11-10. Not started. Reviewed with Codex over 9 fresh-session rounds; round 9 found only nits, applied.
+Status: implemented 2026-11-10 as stacked PRs #68 (slice 1), #69 (slice 3), #70 (slice 2) and #71 (slice 4); not yet deployed. Plan reviewed with Codex over 9 fresh-session rounds; each slice was then review/fix-looped with Codex until only nits remained.
 
 ## Why
 

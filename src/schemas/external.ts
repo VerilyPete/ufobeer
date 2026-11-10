@@ -49,6 +49,21 @@ export const PerplexityResponseSchema = z.object({
 });
 
 /**
+ * Exa /search response: only the fields the Untappd fallback reads. Unknown
+ * fields (costDollars, searchTime, ...) are ignored. Exactly 8 results are
+ * requested (src/services/exa.ts), so a longer array is treated as malformed.
+ */
+export const ExaSearchResponseSchema = z.object({
+  results: z.array(
+    z.object({
+      url: z.string(),
+      title: z.string().nullable().optional(),
+      text: z.string().optional(),
+    })
+  ).max(8),
+});
+
+/**
  * `.passthrough()` is intentional, not an oversight: real Flying Saucer
  * responses nest stock/location data (e.g. `brewInStock`) that the app
  * reads via passthrough fields elsewhere (`types.ts`'s `hasBeerStock`,

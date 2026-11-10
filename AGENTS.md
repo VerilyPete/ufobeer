@@ -79,6 +79,7 @@ D1 SQLite database. Schema is fully documented in `schema.sql`.
 - `enriched_beers` - Core beer data with ABV and cleaned descriptions
 - `rate_limits` - Per-client request tracking
 - `enrichment_limits` - Daily/monthly Perplexity quota tracking
+- `abv_fallback_limits` - Daily Exa fallback call count (migration 0013, 90-day retention)
 - `dlq_messages` - Failed queue messages for admin inspection
 - `audit_log` - Request audit trail
 - `system_state` - Locks and configuration
@@ -166,11 +167,14 @@ DAILY_ENRICHMENT_LIMIT  # Perplexity calls/day (500)
 MONTHLY_ENRICHMENT_LIMIT # Perplexity calls/month (2000)
 ENRICHMENT_ENABLED      # Toggle enrichment (true)
 USAGE_ENABLED           # POST /usage ingests only when exactly "true" (true)
+ABV_FALLBACK_ENABLED    # Exa Untappd fallback runs only when exactly "true" (false)
+EXA_DAILY_LIMIT         # Exa fallback calls/day (50)
 ```
 
 ### Secrets
 ```bash
 wrangler secret put PERPLEXITY_API_KEY
+wrangler secret put EXA_API_KEY      # Optional: Exa Untappd ABV fallback
 wrangler secret put API_KEY          # Client API key
 wrangler secret put ADMIN_SECRET     # Admin secret for /admin/* routes (X-Admin-Secret header)
 ```
@@ -197,7 +201,14 @@ wrangler secret put ADMIN_SECRET     # Admin secret for /admin/* routes (X-Admin
 1. Beer imported via `/beers/sync` or discovered via `/beers`
 2. Missing ABV queued to `beer-enrichment`
 3. Perplexity API called for ABV lookup
-4. Result stored with confidence score and source
+4. On Perplexity's explicit `unknown` only, the Exa fallback (`src/services/exa.ts`) searches
+   untappd.com and reads the ABV from a strictly matched beer page (`src/services/untappdMatch.ts`),
+   stored as source `exa`, confidence 0.8. It runs only with `EXA_API_KEY` set and
+   `ABV_FALLBACK_ENABLED` exactly `"true"`, within `EXA_DAILY_LIMIT` calls per UTC day
+   (`abv_fallback_limits`, migration 0013, reserved by one conditional increment). A miss or
+   any Exa failure marks `not_found` and acknowledges; it never retries the Perplexity call.
+   All its writes are guarded on status, description hash, name and brewer.
+5. Result stored with confidence score and source
 
 Non-beers (flights, blends, mixed pours) are skipped by `shouldSkipEnrichment({ brewName, brewer })`
 in `src/config.ts`: name rules, placeholder brewers (`n/a`, `unassigned`, `various`, `flights`),

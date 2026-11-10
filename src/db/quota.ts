@@ -164,3 +164,28 @@ export async function getEnrichmentQuotaStatus(
     monthly: { used: monthlyUsed, limit: monthlyLimit, remaining: Math.max(0, monthlyLimit - monthlyUsed) }
   };
 }
+
+/**
+ * Atomically reserve one Exa fallback call for `date`, BEFORE the call.
+ *
+ * Unlike reserveEnrichmentSlot, there is no separate read: a slot is granted
+ * only when the conditional increment itself changes a row, so concurrent
+ * callers can never both take the last slot. Throws on a D1 error; the caller
+ * must then not call Exa.
+ */
+export async function reserveAbvFallbackSlot(
+  db: D1Database,
+  { date, limit }: { readonly date: string; readonly limit: number }
+): Promise<boolean> {
+  const now = Date.now();
+  const [, increment] = await db.batch([
+    db.prepare(
+      `INSERT OR IGNORE INTO abv_fallback_limits (date, request_count, last_updated) VALUES (?, 0, ?)`
+    ).bind(date, now),
+    db.prepare(
+      `UPDATE abv_fallback_limits SET request_count = request_count + 1, last_updated = ?
+       WHERE date = ? AND request_count < ? RETURNING request_count`
+    ).bind(now, date, limit),
+  ]);
+  return (increment?.results?.length ?? 0) > 0;
+}
