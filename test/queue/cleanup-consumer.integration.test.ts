@@ -76,6 +76,11 @@ describe('description cleanup consumer (real D1)', () => {
     expect(sendBatch).not.toHaveBeenCalled();
   });
 
+  it('never queues a Flying Saucer house blend, judged by its brewer, for Perplexity', async () => {
+    const { sendBatch } = await clean('Guinness layered on top of a pale ale', { beerName: 'Black & Pale', brewer: 'Brewfusion' });
+    expect(sendBatch).not.toHaveBeenCalled();
+  });
+
   it('logs every applied fix with the beer ID and never the description', async () => {
     const info = vi.spyOn(console, 'log').mockImplementation(() => {});
     await clean('A pleasent ale with Citra,Mosaic hops');

@@ -377,6 +377,14 @@ export const ABV_LOOKUP_MISS_RETRY_MS = 24 * 60 * 60 * 1000;
 export const ABV_LOOKUP_RECENTLY_SEEN_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
+ * Skipped-row recovery scan (src/db/skipRecovery.ts): rows read per keyset
+ * page, and the most rows one cron run visits. Production holds about 42
+ * skipped rows, so reaching the cap means something is wrong and is alerted.
+ */
+export const SKIP_RECHECK_PAGE_SIZE = 200;
+export const SKIP_RECHECK_MAX_ROWS = 2000;
+
+/**
  * Most edits the cleanup guard accepts from the model in one description.
  * Each edit is individually verified, but a model making many changes is
  * rewriting rather than fixing typos, so larger edit sets fall back.

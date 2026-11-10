@@ -238,7 +238,7 @@ export function categorizeBeer(
     if (existing.enrichment_status !== 'pending' && existing.enrichment_status !== null) {
       return { type: 'unchanged', beer, descriptionHash };
     }
-    if (shouldSkipEnrichment(beer.brew_name)) {
+    if (shouldSkipEnrichment({ brewName: beer.brew_name, brewer: beer.brewer })) {
       return { type: 'needs_enrichment_blocklisted', beer, descriptionHash };
     }
     return { type: 'needs_enrichment', beer, descriptionHash };
@@ -252,7 +252,7 @@ export function categorizeBeer(
     if (beer.brew_description) {
       return { type: 'new_needs_cleanup', beer, descriptionHash };
     }
-    if (shouldSkipEnrichment(beer.brew_name)) {
+    if (shouldSkipEnrichment({ brewName: beer.brew_name, brewer: beer.brewer })) {
       return { type: 'new_needs_enrichment_blocklisted', beer, descriptionHash };
     }
     return { type: 'new_needs_enrichment', beer, descriptionHash };

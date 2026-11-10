@@ -14,6 +14,7 @@ import type {
   TriggerEnrichmentData,
 } from '../types';
 import { shouldSkipEnrichment } from '../config';
+import { SAME_IDENTITY_SQL } from '../db/identity';
 import { errorResponse } from '../context';
 import { getToday, getMonthEnd } from '../utils/date';
 import { readBoundedJson, boundedJsonErrorResponse } from '../utils/body';
@@ -34,6 +35,25 @@ export type QueuePendingResult = {
   /** True when nothing was (or could be) queued */
   readonly noEligibleBeers: boolean;
 };
+
+/**
+ * Marks blocklisted rows skipped, guarded on the status, name and brewer that
+ * were selected: a row corrected since the select must not be overwritten
+ * with a terminal skip. Returns the number of rows actually marked.
+ */
+async function markBlocklistedSkipped(
+  env: Env,
+  beers: ReadonlyArray<{ id: string; brew_name: string; brewer: string; enrichment_status?: string }>
+): Promise<number> {
+  if (beers.length === 0) return 0;
+  const results = await env.DB.batch(beers.map(beer =>
+    env.DB.prepare(
+      `UPDATE enriched_beers SET enrichment_status = 'skipped'
+       WHERE id = ? AND enrichment_status IS ? AND ${SAME_IDENTITY_SQL}`
+    ).bind(beer.id, beer.enrichment_status ?? null, beer.brew_name, beer.brewer)
+  ));
+  return results.reduce((count, result) => count + (result.meta?.changes ?? 0), 0);
+}
 
 /**
  * Select pending beers, mark blocklisted ones as skipped, and queue the rest.
@@ -78,7 +98,7 @@ export async function selectAndQueuePendingEnrichment(
 
   // Filter out blocklisted items (flights, mixed drinks, etc.)
   const candidates = beersToEnrich.results.filter(
-    beer => !shouldSkipEnrichment(beer.brew_name)
+    beer => !shouldSkipEnrichment({ brewName: beer.brew_name, brewer: beer.brewer })
   );
 
   const eligibleBeers = [];
@@ -100,19 +120,12 @@ export async function selectAndQueuePendingEnrichment(
   // Done before the no-eligible return: otherwise a selection made up only of
   // blocklisted rows is reselected every sweep and starves valid work.
   const blocklistedBeers = beersToEnrich.results.filter(
-    beer => shouldSkipEnrichment(beer.brew_name)
+    beer => shouldSkipEnrichment({ brewName: beer.brew_name, brewer: beer.brewer })
   );
-  if (blocklistedBeers.length > 0) {
-    const skipStatements = blocklistedBeers.map(beer =>
-      env.DB.prepare(
-        `UPDATE enriched_beers SET enrichment_status = 'skipped' WHERE id = ?`
-      ).bind(beer.id)
-    );
-    await env.DB.batch(skipStatements);
-  }
+  const blocklistedMarked = await markBlocklistedSkipped(env, blocklistedBeers);
 
   if (eligibleBeers.length === 0) {
-    return { beersQueued: 0, blocklistedMarked: blocklistedBeers.length, noEligibleBeers: true };
+    return { beersQueued: 0, blocklistedMarked, noEligibleBeers: true };
   }
 
   await env.ENRICHMENT_QUEUE.sendBatch(
@@ -133,7 +146,7 @@ export async function selectAndQueuePendingEnrichment(
 
   return {
     beersQueued: eligibleBeers.length,
-    blocklistedMarked: blocklistedBeers.length,
+    blocklistedMarked,
     noEligibleBeers: false,
   };
 }

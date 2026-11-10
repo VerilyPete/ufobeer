@@ -79,32 +79,73 @@ export const ENRICHMENT_BLOCKLIST_PATTERNS = [
   /\bclass\s+(?:SL|chit)\b|\bbeer class\b/i, // Beer-class tickets: "Class SL 1", "Beer Class Chit 2" (not beers like "Class 5 Pale Ale")
   /\bmystery (?:beer|cans?)\b/i, // Blind cans: nothing identifiable to look up
   /\badd[- ]?on\b/i,       // Spirit add-ons such as Underberg
+  /\bice cream float\b/i,  // Floats: "Russian Imperial Stout Ice Cream Float"
+];
+
+/**
+ * Brewer values Flying Saucer uses for mixed pours, blends and flights.
+ * Compared trimmed and case-insensitively; a blank brewer is not a signal,
+ * because brewer is optional and `skipped` is terminal.
+ */
+export const PLACEHOLDER_BREWERS = new Set(['n/a', 'unassigned', 'various', 'flights']);
+
+/**
+ * Flying Saucer's own label for layered and blended pours ("Black & Pale"),
+ * compared with case and spaces removed so "Brew Fusion" also counts.
+ */
+export const HOUSE_BLEND_BREWER = 'brewfusion';
+
+/**
+ * Non-beers whose names are also real beers elsewhere, so each is scoped to
+ * the brewer it was seen with: Turk's Head makes a real "Dark Side of the
+ * Moon" and Modist a real "Side by Side by Side".
+ */
+export const ENRICHMENT_BLOCKLIST_BY_BREWER: ReadonlyArray<{ readonly brewName: string; readonly brewer: string }> = [
+  { brewName: 'Dark Side of the Moon', brewer: 'Guinness Ltd' },
+  { brewName: 'Saint Arnold Anniversary Side By Side', brewer: 'Saint Arnold Brewing Co.' },
 ];
 
 // ============================================================================
 // Helper Functions
 // ============================================================================
 
+const normalize = (value: string): string => value.trim().toLowerCase();
+
 /**
- * Check if a beer name should be skipped for enrichment.
+ * Check if a beer should be skipped for enrichment.
  *
  * Returns true if the beer:
  * - Has a blank name
  * - Exact match in ENRICHMENT_BLOCKLIST
  * - Pattern match in ENRICHMENT_BLOCKLIST_PATTERNS
- *
- * @param brewName - The name of the beer to check
- * @returns true if the beer should be skipped, false otherwise
+ * - Has a placeholder or house-blend brewer
+ * - Matches a name-plus-brewer entry in ENRICHMENT_BLOCKLIST_BY_BREWER
  */
-export function shouldSkipEnrichment(brewName: string): boolean {
-  // A blank name gives Perplexity nothing to look up
+export function shouldSkipEnrichment({
+  brewName,
+  brewer,
+}: {
+  readonly brewName: string;
+  readonly brewer?: string | null | undefined;
+}): boolean {
   if (brewName.trim() === '') {
     return true;
   }
-  // Check exact matches
   if (ENRICHMENT_BLOCKLIST.has(brewName)) {
     return true;
   }
-  // Check patterns
-  return ENRICHMENT_BLOCKLIST_PATTERNS.some(pattern => pattern.test(brewName));
+  if (ENRICHMENT_BLOCKLIST_PATTERNS.some(pattern => pattern.test(brewName))) {
+    return true;
+  }
+  const brewerKey = normalize(brewer ?? '');
+  if (PLACEHOLDER_BREWERS.has(brewerKey)) {
+    return true;
+  }
+  if (brewerKey.replace(/\s+/g, '') === HOUSE_BLEND_BREWER) {
+    return true;
+  }
+  const nameKey = normalize(brewName);
+  return ENRICHMENT_BLOCKLIST_BY_BREWER.some(
+    entry => normalize(entry.brewName) === nameKey && normalize(entry.brewer) === brewerKey
+  );
 }

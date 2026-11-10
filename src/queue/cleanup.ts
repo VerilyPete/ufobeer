@@ -214,7 +214,7 @@ function buildBatchOperations(
         WHERE id = ? AND description_hash = ?
       `).bind(cleaned, now, beerId, descriptionHash ?? null),
     });
-    if (!shouldSkipEnrichment(beerName)) {
+    if (!shouldSkipEnrichment({ brewName: beerName, brewer })) {
       // The row's description_hash column is untouched by this UPDATE
       // (only cleanup fields are set above), so the CleanupMessage's
       // own descriptionHash -- which just matched the row for this
