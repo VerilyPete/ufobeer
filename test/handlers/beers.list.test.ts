@@ -2488,7 +2488,7 @@ describe('handleBeerList — ETag support', () => {
 
     const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
-    expect(buildCombinedEtag).toHaveBeenCalledWith('abc123', 'enrich456');
+    expect(buildCombinedEtag).toHaveBeenCalledWith('abc123', 'enrich456', new Set());
     expect(result.response.headers.get('ETag')).toBe('"mock-combined-etag"');
     expect(result.cacheOutcome).toBe('hit');
   });
@@ -2536,7 +2536,7 @@ describe('handleBeerList — ETag support', () => {
 
     await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
-    expect(buildCombinedEtag).toHaveBeenCalledWith('abc123', null);
+    expect(buildCombinedEtag).toHaveBeenCalledWith('abc123', null, new Set());
   });
 
   it('ETag uses combined content + enrichment hash on live fetch', async () => {
@@ -2805,7 +2805,7 @@ describe('handleBeerList — stale fallback ETag with enrichment hash', () => {
 
     const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
-    expect(buildCombinedEtag).toHaveBeenCalledWith('stale-content-hash', 'stale-enrich-hash');
+    expect(buildCombinedEtag).toHaveBeenCalledWith('stale-content-hash', 'stale-enrich-hash', new Set());
     expect(result.response.headers.get('ETag')).toBe('"mock-combined-etag"');
     expect(result.cacheOutcome).toBe('stale');
   });
@@ -2832,7 +2832,7 @@ describe('handleBeerList — stale fallback ETag with enrichment hash', () => {
 
     const result = await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
-    expect(buildCombinedEtag).toHaveBeenCalledWith('stale-content-hash', null);
+    expect(buildCombinedEtag).toHaveBeenCalledWith('stale-content-hash', null, new Set());
     expect(result.response.headers.get('ETag')).toBe('"mock-combined-etag"');
   });
 });

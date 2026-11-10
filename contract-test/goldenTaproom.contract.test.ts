@@ -40,7 +40,10 @@ const goldenEnv: Env = {
 const goldenLiveTaproomBeers = [
   goldenTaproomBeers[0],
   { ...goldenTaproomBeers[1], brew_name: 'Golden Root Beer' },
+  goldenTaproomBeers[2],
 ] as const;
+
+const EXA_HIDDEN = { abv: 8, enrichment_confidence: 0.8, enrichment_source: null };
 
 async function clearGoldenRows(): Promise<void> {
   for (const table of requiredTables) {
@@ -86,9 +89,10 @@ async function seedGoldenEnrichment(): Promise<void> {
       (id, brew_name, brewer, abv, confidence, enrichment_source,
        brew_description_original, brew_description_cleaned)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?),
-            (?, ?, ?, ?, ?, ?, ?, ?)`
+            (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
+      'golden-exa', 'Fallback Found Ale', 'Schema Brewing', 8, 0.8, 'exa', null, null,
       'golden-complete', 'Contract IPA', 'Schema Brewing', 6.5, 0.95, 'manual',
       'Original description', 'Cleaned contract description',
       'golden-nullable', 'Null Island Lager', 'Schema Brewing', null, null, null,
@@ -110,9 +114,10 @@ async function seedGoldenLiveEnrichment(): Promise<void> {
     `INSERT INTO enriched_beers
       (id, brew_name, brewer, abv, confidence, enrichment_source,
        brew_description_original, brew_description_cleaned, description_hash)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
+      'golden-exa', 'Fallback Found Ale', 'Schema Brewing', 8, 0.8, 'exa', null, null, null,
       'golden-complete', 'Contract IPA', 'Schema Brewing', 6.5, 0.95, 'manual',
       completeDescription, 'Cleaned contract description', completeDescriptionHash,
       'golden-nullable', 'Golden Root Beer', 'Schema Brewing', null, null, null,
@@ -255,7 +260,7 @@ describe('Golden Taproom contract fixture', () => {
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
 
-    expect(parsed.data.beers).toHaveLength(2);
+    expect(parsed.data.beers).toHaveLength(3);
     expect(response.headers.get('X-Request-ID')).toBeTruthy();
     const etag = response.headers.get('ETag');
     expect(etag).toMatch(/^".+"$/);
@@ -263,6 +268,7 @@ describe('Golden Taproom contract fixture', () => {
     const mapped = parsed.data.beers.map(mapEnrichedBeerToAppBeer);
     const complete = mapped.find(beer => beer.id === 'golden-complete');
     const nullable = mapped.find(beer => beer.id === 'golden-nullable');
+    expect(mapped.find(beer => beer.id === 'golden-exa')).toMatchObject(EXA_HIDDEN);
     expect(complete).toMatchObject({
       id: 'golden-complete',
       brew_name: 'Contract IPA',
@@ -323,6 +329,7 @@ describe('Golden Taproom contract fixture', () => {
       abv: 6.5,
       enrichment_source: 'manual',
     });
+    expect(mapped.find(beer => beer.id === 'golden-exa')).toMatchObject(EXA_HIDDEN);
     expect(mapped.find(beer => beer.id === 'golden-nullable')).toMatchObject({
       brew_name: 'Golden Root Beer',
       abv: null,
@@ -343,6 +350,7 @@ describe('Golden Taproom contract fixture', () => {
     if (!parsed.success) return;
 
     expect(parsed.data.source).toBe('stale');
+    expect(parsed.data.beers.map(mapEnrichedBeerToAppBeer).find(beer => beer.id === 'golden-exa')).toMatchObject(EXA_HIDDEN);
     expect(parsed.data.cached_at).toBe(new Date(GOLDEN_CACHED_AT - 600_000).toISOString());
     expect(response.headers.get('ETag')).toMatch(/^".+"$/);
   });
@@ -353,6 +361,7 @@ describe('Golden Taproom contract fixture', () => {
     const response = await invokeGoldenRequest(goldenBatchRequest([
       'golden-complete',
       'golden-fallback',
+      'golden-exa',
       'golden-missing',
     ]));
     expect(response.status).toBe(200);
@@ -374,6 +383,11 @@ describe('Golden Taproom contract fixture', () => {
       enriched_abv: 5.5,
       enrichment_confidence: 0.8,
       enrichment_source: 'description',
+    });
+    expect(parsed.data.enrichments['golden-exa']).toMatchObject({
+      enriched_abv: 8,
+      enrichment_confidence: 0.8,
+      enrichment_source: null,
     });
     expect(parsed.data.missing).toEqual(['golden-missing']);
 

@@ -8,6 +8,7 @@
  */
 
 import { TAPLIST_FORMAT_VERSION } from '../constants';
+import { acceptedSourcesKey, type AcceptedSources } from './enrichmentSource';
 
 /**
  * Generate SHA-256 hash of text for change detection.
@@ -57,12 +58,17 @@ export async function generateETag(body: string): Promise<string> {
  *
  * @param contentHash - 32-char hex hash of taplist content
  * @param enrichmentHash - 32-char hex hash of enrichment data, or null if unavailable
+ * @param acceptedSources - Sources the client asked to see; a non-empty set
+ *   gets its own ETag so a client that starts sending the header refetches
  * @returns Quoted ETag string
  */
 export async function buildCombinedEtag(
   contentHash: string,
   enrichmentHash: string | null,
+  acceptedSources: AcceptedSources = new Set(),
 ): Promise<string> {
-  const combined = await hashDescription(`taplist-v${TAPLIST_FORMAT_VERSION}:${contentHash}:${enrichmentHash ?? ''}`);
+  const sourcesKey = acceptedSourcesKey(acceptedSources);
+  const variant = sourcesKey === '' ? '' : `:sources=${sourcesKey}`;
+  const combined = await hashDescription(`taplist-v${TAPLIST_FORMAT_VERSION}:${contentHash}:${enrichmentHash ?? ''}${variant}`);
   return `"${combined}"`;
 }
