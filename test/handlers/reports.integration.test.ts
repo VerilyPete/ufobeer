@@ -81,17 +81,40 @@ const quietly = async <T>(run: () => Promise<T>): Promise<T> => {
 describe('GET /reports/usage', () => {
   beforeEach(async () => {
     await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
-    await env.DB.batch(['rate_limits', 'audit_log'].map((table) => env.DB.prepare(`DELETE FROM ${table}`)));
+    await env.DB.batch(['rate_limits', 'audit_log', 'usage_daily', 'usage_installs', 'usage_ingest_daily']
+      .map((table) => env.DB.prepare(`DELETE FROM ${table}`)));
   });
 
   describe('authorized reads', () => {
-    it.each(VIEWS)('returns an empty JSON array for the %s view, never cached', async (view) => {
+    it.each(VIEWS)('returns a JSON array for the %s view, never cached', async (view) => {
       const response = await getReport({ path: `/reports/usage?view=${view}` });
 
       expect(response.status).toBe(200);
       expect(response.headers.get('Content-Type')).toMatch(/application\/json/);
       expect(response.headers.get('Cache-Control')).toBe('no-store');
-      expect(await response.json()).toEqual([]);
+      expect(Array.isArray(await response.json())).toBe(true);
+    });
+
+    it('serves the daily view for the default range: the last 90 days, one row each, ending today', async () => {
+      const response = await getReport({ path: '/reports/usage?view=daily' });
+      const rows: ReadonlyArray<{ day: string }> = await response.json();
+
+      expect(rows).toHaveLength(90);
+      expect(rows.at(-1)?.day).toBe(new Date().toISOString().slice(0, 10));
+    });
+
+    it('returns the seeded usage for the range asked, without install IDs', async () => {
+      const installId = 'dddddddd-0000-4000-8000-000000000004';
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      await env.DB.prepare(
+        "INSERT INTO usage_daily (day, install_id, event, app_version, ai_status, os_major, count) VALUES (?, ?, 'view_home', '2.5.0', 'other', 26, 3)",
+      ).bind(yesterday, installId).run();
+
+      const response = await getReport({ path: `/reports/usage?view=events&from=${yesterday}&to=${yesterday}` });
+      const text = await response.text();
+
+      expect(JSON.parse(text)).toEqual([{ day: yesterday, event: 'view_home', count: 3, installs: 1 }]);
+      expect(text).not.toContain(installId);
     });
 
     it('records each read in the audit log', async () => {
@@ -235,10 +258,25 @@ describe('parseUsageReportQuery', () => {
     expect(query('view=daily&to=2026-01-01')).toMatchObject({ ok: false });
   });
 
-  it('moves the retention cutoff with the clock, counting the leap day', () => {
+  describe('with the clock moved past 730 days', () => {
     const later = Date.UTC(2028, 10, 20, 0, 0, 0);
 
-    expect(query('view=daily&from=2026-11-21', later)).toMatchObject({ ok: true });
-    expect(query('view=daily&from=2026-11-20', later)).toMatchObject({ ok: false });
+    it('moves the retention cutoff, counting the leap day', () => {
+      expect(query('view=daily&from=2026-11-21', later)).toMatchObject({ ok: true });
+      expect(query('view=daily&from=2026-11-20', later)).toMatchObject({ ok: false });
+    });
+
+    it('rejects a range reaching past the new today', () => {
+      expect(query('view=daily&from=2028-11-01&to=2028-11-20', later)).toMatchObject({ ok: true });
+      expect(query('view=daily&from=2028-11-01&to=2028-11-21', later)).toMatchObject({ ok: false });
+    });
+
+    it('rejects from after to', () => {
+      expect(query('view=daily&from=2028-11-02&to=2028-11-01', later)).toMatchObject({ ok: false });
+    });
+
+    it('rejects a range that was valid two years earlier', () => {
+      expect(query('view=daily&from=2026-11-11&to=2026-11-12', later)).toMatchObject({ ok: false });
+    });
   });
 });

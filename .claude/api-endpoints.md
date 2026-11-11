@@ -107,8 +107,22 @@ is accepted nowhere else and `ADMIN_SECRET` is not accepted here.
 today and must be on or after today minus 730 days; `to` defaults to today
 and can't be later; `from` can't be after `to`.
 
+**Views** (definitions: `plans/usage-dashboards.md`, Read endpoint):
+
+| View | One row per | Fields |
+|---|---|---|
+| `daily` | day in the range, including days with nothing | `day, active_installs, new_installs, sessions, posts, duplicates, dropped_post_cap, dropped_new_install, dropped_all_events, dropped_events` |
+| `events` | day and event used | `day, event, count, installs` |
+| `adoption` | event used in the range | `event, installs_using, active_installs, share, avg_per_session` |
+| `breakdown` | day and dimension value | `day, dimension, value, active_installs` |
+
+In `daily`, `posts` is `null` before 2026-11-10 and the drop counters are
+`null` before 2026-11-12, the days each began. `avg_per_session` is `null`
+when the installs using an event reported no sessions. In `breakdown`, an
+install that changed value during a day counts under each value.
+
 **Responses:** `200` with a JSON array of flat rows and `Cache-Control:
-no-store` (an empty array until slice 4 adds the views); `400` with
+no-store`; `400` with
 `{"error": "Invalid report query", "detail": ...}`; `401` without a valid
 API key or report token; `429` over the report limit.
 

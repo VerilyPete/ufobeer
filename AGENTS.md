@@ -70,8 +70,8 @@ rollback floor in `plans/abv-untappd-fallback.md`). The native BeerSelector app 
   have their own bucket (`USAGE_REPORT_RATE_LIMIT_RPM`, checked after the
   token) outside the shared per-key limiter. `from` defaults to 89 days ago
   (90 days including today) and must be inside the 730-day retention window; `to` defaults to today
-  and can't be later. Views return `[]` until `plans/usage-dashboards.md`
-  slice 4.
+  and can't be later. Queries live in `src/db/usage-report.ts`; metric
+  definitions are in `plans/usage-dashboards.md` (Read endpoint).
 
 ### Admin (admin API key required)
 - `POST /admin/enrich/trigger` - Trigger enrichment processing

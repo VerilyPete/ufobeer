@@ -9,6 +9,13 @@
 
 import { USAGE_DAILY_RETENTION_DAYS, USAGE_REPORT_DEFAULT_DAYS } from '../constants';
 import { getToday } from '../utils/date';
+import {
+  readAdoptionReport,
+  readBreakdownReport,
+  readDailyReport,
+  readEventsReport,
+  type UsageReportRange,
+} from '../db/usage-report';
 
 export const USAGE_REPORT_VIEWS = ['daily', 'events', 'adoption', 'breakdown'] as const;
 
@@ -66,10 +73,19 @@ export function parseUsageReportQuery(params: URLSearchParams, now: number): Usa
   return { ok: true, view, from, to };
 }
 
-/** Rows for a validated query. Each view's query arrives in slice 4. */
+export type UsageReportRow = Readonly<Record<string, string | number | null>>;
+
+const READERS: Readonly<Record<UsageReportView, (db: D1Database, range: UsageReportRange) => Promise<readonly UsageReportRow[]>>> = {
+  daily: readDailyReport,
+  events: readEventsReport,
+  adoption: readAdoptionReport,
+  breakdown: readBreakdownReport,
+};
+
+/** Rows for a validated query, from the view's aggregate query. */
 export async function readUsageReport(
-  _db: D1Database,
-  _query: Extract<UsageReportQuery, { ok: true }>,
-): Promise<readonly Readonly<Record<string, string | number | null>>[]> {
-  return [];
+  db: D1Database,
+  { view, from, to }: Extract<UsageReportQuery, { ok: true }>,
+): Promise<readonly UsageReportRow[]> {
+  return READERS[view](db, { from, to });
 }
