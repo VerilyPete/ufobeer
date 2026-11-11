@@ -7,7 +7,10 @@
  * insert, and carried through the batch by the request ID it records: the
  * event and budget writes only run when the batch row carries this
  * request's ID. The closing SELECT classifies the outcome from the same
- * transaction state, so the reported reason cannot race another post.
+ * transaction state, so the reported reason cannot race another post. The
+ * drop counters on usage_ingest_daily are charged in the same batch from
+ * the same outcome expression, so they always agree with the reason
+ * returned, and roll back with everything else.
  *
  * See plans/usage-telemetry.md (Write: budgeted, deduplicated and atomic).
  */
@@ -40,6 +43,10 @@ export type RecordUsageReportOptions = Readonly<{
   now: number;
   installCap: number;
   postCap: number;
+  /** Event entries validation dropped from this report, added to dropped_events if it is stored */
+  droppedCount: number;
+  /** Each drop counter stops at this value per UTC day */
+  dropCounterCeiling: number;
 }>;
 
 const OutcomeRowSchema = z.object({ outcome: z.enum(USAGE_WRITE_OUTCOMES) });
@@ -68,6 +75,15 @@ const COUNT_EVENT_SQL = `
   ON CONFLICT (day, install_id, event, app_version, ai_status, os_major)
   DO UPDATE SET count = count + excluded.count`;
 
+const COUNT_DROPPED_EVENTS_SQL = `
+  INSERT INTO usage_ingest_daily (day, posts, dropped_events)
+  SELECT ?1, 0, MIN(?5, ?6)
+  WHERE ?6 > 0
+    AND EXISTS (SELECT 1 FROM usage_batches
+                WHERE install_id = ?2 AND batch_id = ?3 AND request_id = ?4)
+  ON CONFLICT (day) DO UPDATE SET dropped_events = MIN(?5, dropped_events + excluded.dropped_events)
+  WHERE dropped_events < ?5`;
+
 const CHARGE_BUDGET_SQL = `
   INSERT INTO usage_ingest_daily (day, posts)
   SELECT ?1, 1
@@ -75,31 +91,54 @@ const CHARGE_BUDGET_SQL = `
                 WHERE install_id = ?2 AND batch_id = ?3 AND request_id = ?4)
   ON CONFLICT (day) DO UPDATE SET posts = posts + 1`;
 
-const CLASSIFY_SQL = `
-  SELECT CASE
+const OUTCOME_SQL = `
+  CASE
     WHEN EXISTS (SELECT 1 FROM usage_batches
                  WHERE install_id = ?1 AND batch_id = ?2 AND request_id = ?3) THEN 'admitted'
     WHEN EXISTS (SELECT 1 FROM usage_batches
                  WHERE install_id = ?1 AND batch_id = ?2) THEN 'duplicate'
     WHEN COALESCE((SELECT posts FROM usage_ingest_daily WHERE day = ?4), 0) >= ?5 THEN 'daily_post_cap'
     WHEN NOT EXISTS (SELECT 1 FROM usage_installs WHERE install_id = ?1) THEN 'new_install_cap'
-  END AS outcome`;
+  END`;
+
+const COUNT_DROPPED_REPORT_SQL = `
+  WITH decided AS (SELECT ${OUTCOME_SQL} AS outcome)
+  INSERT INTO usage_ingest_daily (day, posts, duplicates, dropped_post_cap, dropped_new_install)
+  SELECT ?4, 0, outcome = 'duplicate', outcome = 'daily_post_cap', outcome = 'new_install_cap'
+  FROM decided
+  WHERE outcome IN ('duplicate', 'daily_post_cap', 'new_install_cap')
+  ON CONFLICT (day) DO UPDATE SET
+    duplicates = MIN(?6, duplicates + excluded.duplicates),
+    dropped_post_cap = MIN(?6, dropped_post_cap + excluded.dropped_post_cap),
+    dropped_new_install = MIN(?6, dropped_new_install + excluded.dropped_new_install)
+  WHERE (excluded.duplicates = 1 AND duplicates < ?6)
+     OR (excluded.dropped_post_cap = 1 AND dropped_post_cap < ?6)
+     OR (excluded.dropped_new_install = 1 AND dropped_new_install < ?6)`;
+
+const CLASSIFY_SQL = `SELECT ${OUTCOME_SQL} AS outcome`;
+
+const COUNT_ALL_DROPPED_SQL = `
+  INSERT INTO usage_ingest_daily (day, posts, dropped_all_events) VALUES (?1, 0, 1)
+  ON CONFLICT (day) DO UPDATE SET dropped_all_events = dropped_all_events + 1
+  WHERE dropped_all_events < ?2`;
 
 export async function recordUsageReport(
   db: D1Database,
-  { report, day, requestId, now, installCap, postCap }: RecordUsageReportOptions,
+  { report, day, requestId, now, installCap, postCap, droppedCount, dropCounterCeiling }: RecordUsageReportOptions,
 ): Promise<UsageWriteOutcome> {
   const { installId, batchId } = report;
 
   const results = await db.batch([
     db.prepare(ADMIT_INSTALL_SQL).bind(installId, day, batchId, postCap, installCap),
     db.prepare(ADMIT_POST_SQL).bind(installId, batchId, requestId, now, day, postCap),
+    db.prepare(COUNT_DROPPED_EVENTS_SQL).bind(day, installId, batchId, requestId, dropCounterCeiling, droppedCount),
     ...report.events.map((event) =>
       db.prepare(COUNT_EVENT_SQL).bind(
         day, installId, event.name, report.appVersion, report.aiStatus, report.osMajor, event.count,
         batchId, requestId,
       )),
     db.prepare(CHARGE_BUDGET_SQL).bind(day, installId, batchId, requestId),
+    db.prepare(COUNT_DROPPED_REPORT_SQL).bind(installId, batchId, requestId, day, postCap, dropCounterCeiling),
     db.prepare(CLASSIFY_SQL).bind(installId, batchId, requestId, day, postCap),
   ]);
 
@@ -109,6 +148,17 @@ export async function recordUsageReport(
     throw new Error(`Unclassifiable usage write outcome: ${JSON.stringify(classification)}`);
   }
   return parsed.data.outcome;
+}
+
+/**
+ * Count a parsed report that had no event this worker accepts. Nothing else
+ * is written for it, so this single statement is its only write.
+ */
+export async function recordAllDroppedReport(
+  db: D1Database,
+  { day, dropCounterCeiling }: Readonly<{ day: string; dropCounterCeiling: number }>,
+): Promise<void> {
+  await db.prepare(COUNT_ALL_DROPPED_SQL).bind(day, dropCounterCeiling).run();
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;

@@ -112,6 +112,22 @@ export const USAGE_DAILY_RETENTION_DAYS = 730;
 export const USAGE_POSTS_SINCE = '2026-11-10';
 
 /**
+ * First full UTC day the usage_ingest_daily drop counters were written
+ * (migration 0014 deployed during 2026-11-11 UTC). The usage report treats
+ * drops on earlier days as unknown, not zero: a DEFAULT 0 column can't say
+ * a day had no drops.
+ */
+export const USAGE_DROP_COUNTERS_SINCE = '2026-11-12';
+
+/**
+ * Each usage_ingest_daily drop counter stops at this value per UTC day, so a
+ * saturated counter costs no further row writes under a flood. A value at
+ * the ceiling means "at least this many". Below it, each dropped post costs
+ * one row write on top of the limiter and audit writes it already causes.
+ */
+export const USAGE_DROP_COUNTER_DAILY_CEILING = 10_000;
+
+/**
  * usage_batches dedup window. Compliant clients delete a pending batch after
  * 7 days, so one extra day covers a resend frozen just before expiry.
  */

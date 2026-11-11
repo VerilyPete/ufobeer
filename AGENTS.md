@@ -235,8 +235,13 @@ signal. `skipped` is terminal, so each enrichment run first re-checks recently s
 - Rate limit: 6/min per IP under `usage:{ip}`, routed before the shared
   per-API-key bucket so telemetry never spends the `/beers` budget.
 - Growth budgets (UTC day, `src/constants.ts`): at most 100 new install IDs
-  and 500 counted posts. Over budget is a 204 that writes nothing and is
+  and 500 counted posts. Over budget is a 204 that stores no usage and is
   logged plus sent to Analytics Engine with its reason.
+- Drop counters on `usage_ingest_daily` (`duplicates`, `dropped_post_cap`,
+  `dropped_new_install`, `dropped_all_events`, `dropped_events`) count every
+  post or event entry not stored, per UTC day, saturating at
+  `USAGE_DROP_COUNTER_DAILY_CEILING` (10,000). An all-dropped report now
+  writes its counter and nothing else.
 - Writes run in one `db.batch()` transaction (`recordUsageReport` in
   `src/db/usage.ts`); a repeated `(install_id, batch_id)` is ignored.
 - Retention, reaped every cron tick before the enrichment gates, 5,000 rows

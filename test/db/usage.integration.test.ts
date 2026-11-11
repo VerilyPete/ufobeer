@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { applyD1Migrations, env } from 'cloudflare:test';
-import { recordUsageReport } from '../../src/db/usage';
+import { recordAllDroppedReport, recordUsageReport } from '../../src/db/usage';
 import { parseUsageReport, type UsageReport } from '../../src/schemas/request';
 
 const DAY = '2026-11-07';
@@ -42,6 +42,8 @@ type RecordOptions = {
   requestId?: string;
   installCap?: number;
   postCap?: number;
+  droppedCount?: number;
+  dropCounterCeiling?: number;
 };
 
 const record = ({
@@ -50,8 +52,36 @@ const record = ({
   requestId = crypto.randomUUID(),
   installCap = 500,
   postCap = 2000,
+  droppedCount = 0,
+  dropCounterCeiling = 10_000,
 }: RecordOptions = {}) =>
-  recordUsageReport(env.DB, { report, day, requestId, now: NOW, installCap, postCap });
+  recordUsageReport(env.DB, { report, day, requestId, now: NOW, installCap, postCap, droppedCount, dropCounterCeiling });
+
+type DropCounters = {
+  duplicates: number;
+  dropped_post_cap: number;
+  dropped_new_install: number;
+  dropped_all_events: number;
+  dropped_events: number;
+};
+
+const NO_DROPS: DropCounters = {
+  duplicates: 0, dropped_post_cap: 0, dropped_new_install: 0, dropped_all_events: 0, dropped_events: 0,
+};
+
+const dropCounters = async (day: string = DAY): Promise<DropCounters | null> =>
+  env.DB.prepare(
+    'SELECT duplicates, dropped_post_cap, dropped_new_install, dropped_all_events, dropped_events FROM usage_ingest_daily WHERE day = ?',
+  ).bind(day).first<DropCounters>();
+
+const setCounter = (column: keyof DropCounters, value: number, day: string = DAY) =>
+  env.DB.prepare(`UPDATE usage_ingest_daily SET ${column} = ? WHERE day = ?`).bind(value, day).run();
+
+const blockIngestUpdates = () => env.DB.prepare(
+  "CREATE TRIGGER block_ingest_update BEFORE UPDATE ON usage_ingest_daily BEGIN SELECT RAISE(ABORT, 'ingest row written'); END",
+).run();
+
+const unblockIngestUpdates = () => env.DB.prepare('DROP TRIGGER block_ingest_update').run();
 
 type DailyRow = {
   day: string;
@@ -80,7 +110,8 @@ const installRow = async (id: string) =>
     .bind(id).first<{ first_seen_day: string; last_seen_day: string }>();
 
 const seedPosts = async (posts: number, day: string = DAY): Promise<void> => {
-  await env.DB.prepare('INSERT INTO usage_ingest_daily (day, posts) VALUES (?, ?)').bind(day, posts).run();
+  await env.DB.prepare('INSERT INTO usage_ingest_daily (day, posts) VALUES (?1, ?2) ON CONFLICT (day) DO UPDATE SET posts = ?2')
+    .bind(day, posts).run();
 };
 
 const seedNewInstalls = async (count: number, day: string = DAY): Promise<void> => {
@@ -93,6 +124,8 @@ describe('recordUsageReport (real D1)', () => {
   beforeEach(async () => {
     await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
     await env.DB.batch([
+      ...['block_ingest_update', 'block_dropped_events', 'fail_count', 'fail_budget_charge']
+        .map((trigger) => env.DB.prepare(`DROP TRIGGER IF EXISTS ${trigger}`)),
       env.DB.prepare('DELETE FROM usage_daily'),
       env.DB.prepare('DELETE FROM usage_installs'),
       env.DB.prepare('DELETE FROM usage_batches'),
@@ -307,7 +340,9 @@ describe('recordUsageReport (real D1)', () => {
         requestId: crypto.randomUUID(),
         now: NOW,
         installCap: 500,
-        postCap: 2000,
+          postCap: 2000,
+        droppedCount: 0,
+        dropCounterCeiling: 10_000,
       });
 
       const outcome = await recordUsageReport(withPostBeforeBatch(competingPost), {
@@ -317,11 +352,14 @@ describe('recordUsageReport (real D1)', () => {
         now: NOW,
         installCap: 500,
         postCap: 2000,
+        droppedCount: 0,
+        dropCounterCeiling: 10_000,
       });
 
       expect(outcome).toBe('daily_post_cap');
       expect(await postsCharged()).toBe(2000);
       expect((await dailyRows()).map((row) => row.install_id)).toEqual([installId(2)]);
+      expect(await dropCounters()).toEqual({ ...NO_DROPS, dropped_post_cap: 1 });
     });
 
     it('reports the reason seen inside the write, even if another post fills the budget right after', async () => {
@@ -335,9 +373,193 @@ describe('recordUsageReport (real D1)', () => {
         now: NOW,
         installCap: 3,
         postCap: 2000,
+        droppedCount: 0,
+        dropCounterCeiling: 10_000,
       });
 
       expect(outcome).toBe('new_install_cap');
+      expect(await dropCounters()).toEqual({ ...NO_DROPS, dropped_new_install: 1 });
+    });
+  });
+
+  describe('drop counters', () => {
+    it('counts nothing for the post that brings the day to the cap, then counts the next one', async () => {
+      await seedPosts(1999);
+
+      expect(await record({ report: buildReport({ batch_id: batchId(1) }) })).toBe('admitted');
+      expect(await dropCounters()).toEqual(NO_DROPS);
+
+      expect(await record({ report: buildReport({ batch_id: batchId(2) }) })).toBe('daily_post_cap');
+      expect(await dropCounters()).toEqual({ ...NO_DROPS, dropped_post_cap: 1 });
+      expect(await postsCharged()).toBe(2000);
+    });
+
+    it('counts a duplicate replayed at the cap as a duplicate, not a capped post', async () => {
+      await record();
+      await env.DB.prepare('UPDATE usage_ingest_daily SET posts = ? WHERE day = ?').bind(2000, DAY).run();
+
+      expect(await record()).toBe('duplicate');
+      expect(await dropCounters()).toEqual({ ...NO_DROPS, duplicates: 1 });
+    });
+
+    it('counts a post from an unknown install over the install cap, adding a row with no posts', async () => {
+      await seedNewInstalls(3);
+
+      expect(await record({ installCap: 3 })).toBe('new_install_cap');
+      expect(await dropCounters()).toEqual({ ...NO_DROPS, dropped_new_install: 1 });
+      expect(await postsCharged()).toBe(0);
+    });
+
+    it('counts only the post cap when both caps are spent, matching the reported outcome', async () => {
+      await seedNewInstalls(3);
+      await seedPosts(2000);
+
+      expect(await record({ installCap: 3 })).toBe('daily_post_cap');
+      expect(await dropCounters()).toEqual({ ...NO_DROPS, dropped_post_cap: 1 });
+    });
+
+    type ReportCounter = 'duplicates' | 'dropped_post_cap' | 'dropped_new_install';
+    const REPORT_COUNTERS: readonly ReportCounter[] = ['duplicates', 'dropped_post_cap', 'dropped_new_install'];
+
+    const dropScenarios = [
+      {
+        outcome: 'duplicate',
+        column: 'duplicates',
+        setup: async () => { await record({ report: buildReport({ batch_id: batchId(1) }) }); },
+        drop: (_n: number, dropCounterCeiling: number) =>
+          record({ report: buildReport({ batch_id: batchId(1) }), dropCounterCeiling }),
+      },
+      {
+        outcome: 'daily_post_cap',
+        column: 'dropped_post_cap',
+        setup: () => seedPosts(2000),
+        drop: (n: number, dropCounterCeiling: number) =>
+          record({ report: buildReport({ batch_id: batchId(n) }), dropCounterCeiling }),
+      },
+      {
+        outcome: 'new_install_cap',
+        column: 'dropped_new_install',
+        setup: async () => { await seedNewInstalls(3); await seedPosts(0); },
+        drop: (n: number, dropCounterCeiling: number) =>
+          record({ report: buildReport({ install_id: installId(10 + n), batch_id: batchId(n) }), installCap: 3, dropCounterCeiling }),
+      },
+    ] as const;
+
+    it.each(dropScenarios)('stops $column at the daily ceiling', async ({ column, setup, drop }) => {
+      await setup();
+      await setCounter(column, 2);
+
+      await drop(1, 3);
+      await drop(2, 3);
+
+      expect(await dropCounters()).toMatchObject({ ...NO_DROPS, [column]: 3 });
+    });
+
+    it.each(dropScenarios)('writes nothing for a $outcome once $column is saturated', async ({ outcome, column, setup, drop }) => {
+      await setup();
+      await setCounter(column, 3);
+      const before = await dropCounters();
+      await blockIngestUpdates();
+
+      const result = await drop(1, 3);
+
+      await unblockIngestUpdates();
+      expect(result).toBe(outcome);
+      expect(await dropCounters()).toEqual(before);
+    });
+
+    it.each(dropScenarios)('still counts a $outcome while the other report counters are saturated', async ({ column, setup, drop }) => {
+      await setup();
+      const others = REPORT_COUNTERS.filter((other) => other !== column);
+      await others.reduce((previous, other) => previous.then(() => setCounter(other, 3)), Promise.resolve<unknown>(undefined));
+
+      await drop(1, 3);
+
+      expect(await dropCounters()).toMatchObject({
+        ...Object.fromEntries(others.map((other) => [other, 3])),
+        [column]: 1,
+      });
+    });
+
+    it('adds the event entries dropped from an admitted report', async () => {
+      expect(await record({ droppedCount: 2 })).toBe('admitted');
+
+      expect(await dropCounters()).toEqual({ ...NO_DROPS, dropped_events: 2 });
+      expect(await postsCharged()).toBe(1);
+    });
+
+    it('does not write dropped_events for a stored report with nothing dropped', async () => {
+      await record({ report: buildReport({ batch_id: batchId(1) }) });
+      await env.DB.prepare(
+        "CREATE TRIGGER block_dropped_events BEFORE UPDATE OF dropped_events ON usage_ingest_daily BEGIN SELECT RAISE(ABORT, 'dropped_events written'); END",
+      ).run();
+
+      const outcome = await record({ report: buildReport({ batch_id: batchId(2) }), droppedCount: 0 });
+
+      await env.DB.prepare('DROP TRIGGER block_dropped_events').run();
+      expect(outcome).toBe('admitted');
+      expect(await dropCounters()).toEqual(NO_DROPS);
+    });
+
+    it('does not add dropped event entries from a report that was not stored', async () => {
+      await seedPosts(2000);
+
+      await record({ droppedCount: 2 });
+
+      expect(await dropCounters()).toEqual({ ...NO_DROPS, dropped_post_cap: 1 });
+    });
+
+    it('stops dropped_events at the ceiling when one report would cross it', async () => {
+      await record({ report: buildReport({ batch_id: batchId(1) }), droppedCount: 4, dropCounterCeiling: 5 });
+
+      await record({ report: buildReport({ batch_id: batchId(2) }), droppedCount: 3, dropCounterCeiling: 5 });
+
+      expect((await dropCounters())?.dropped_events).toBe(5);
+    });
+
+    it('does not write dropped_events once it is saturated', async () => {
+      await record({ report: buildReport({ batch_id: batchId(1) }), droppedCount: 5, dropCounterCeiling: 5 });
+      await env.DB.prepare(
+        "CREATE TRIGGER block_dropped_events BEFORE UPDATE OF dropped_events ON usage_ingest_daily BEGIN SELECT RAISE(ABORT, 'dropped_events written'); END",
+      ).run();
+
+      const outcome = await record({ report: buildReport({ batch_id: batchId(2) }), droppedCount: 1, dropCounterCeiling: 5 });
+
+      await env.DB.prepare('DROP TRIGGER block_dropped_events').run();
+      expect(outcome).toBe('admitted');
+      expect(await dropCounters()).toEqual({ ...NO_DROPS, dropped_events: 5 });
+      expect(await postsCharged()).toBe(2);
+    });
+
+    it('leaves the counters unchanged when the write rolls back', async () => {
+      await env.DB.prepare(
+        "CREATE TRIGGER fail_count BEFORE INSERT ON usage_daily BEGIN SELECT RAISE(ABORT, 'count failed'); END",
+      ).run();
+
+      await expect(record({ droppedCount: 2 })).rejects.toThrow(/count failed/);
+
+      await env.DB.prepare('DROP TRIGGER fail_count').run();
+      expect(await dropCounters()).toBeNull();
+    });
+
+    describe('all-dropped reports', () => {
+      it('counts a report with no event the worker accepts', async () => {
+        await recordAllDroppedReport(env.DB, { day: DAY, dropCounterCeiling: 10_000 });
+        await recordAllDroppedReport(env.DB, { day: DAY, dropCounterCeiling: 10_000 });
+
+        expect(await dropCounters()).toEqual({ ...NO_DROPS, dropped_all_events: 2 });
+        expect(await postsCharged()).toBe(0);
+      });
+
+      it('stops at the ceiling and writes nothing once saturated', async () => {
+        await recordAllDroppedReport(env.DB, { day: DAY, dropCounterCeiling: 1 });
+        await blockIngestUpdates();
+
+        await recordAllDroppedReport(env.DB, { day: DAY, dropCounterCeiling: 1 });
+
+        await unblockIngestUpdates();
+        expect((await dropCounters())?.dropped_all_events).toBe(1);
+      });
     });
   });
 
