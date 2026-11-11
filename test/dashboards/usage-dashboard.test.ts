@@ -22,6 +22,7 @@ type Target = {
   url_options: { method: string; params: Param[] };
   columns: Column[];
   root_selector: string;
+  filterExpression?: string;
 };
 type Panel = { title: string; targets?: Target[] };
 
@@ -71,16 +72,21 @@ describe('dashboards/usage.json', () => {
   });
 
   it.each(targets.filter(({ target }) => paramOf(target, 'view') === 'breakdown'))(
-    '$panel selects one breakdown dimension the API returns, always as an array',
+    '$panel filters on one breakdown dimension, through a column it selects',
     ({ target }) => {
-      expect(target.root_selector).toMatch(/^\[\$\[dimension="(app_version|ai_status|os_major)"\]\]$/);
+      expect(target.columns.map((column) => column.selector)).toContain('dimension');
+      expect(target.filterExpression).toMatch(/^dimension == '(app_version|ai_status|os_major)'$/);
     },
   );
 
+  it.each(targets)('$panel reads every row of its view without a rows selector', ({ target }) => {
+    expect(target.root_selector).toBe('');
+  });
+
   it.each(targets.filter(({ target }) => paramOf(target, 'view') !== 'breakdown'))(
-    '$panel reads every row of its view',
+    '$panel does not filter its view',
     ({ target }) => {
-      expect(target.root_selector).toBe('');
+      expect(target.filterExpression).toBeUndefined();
     },
   );
 
