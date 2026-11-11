@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import dashboard from '../../dashboards/usage.json';
+import alerts from '../../dashboards/usage-alerts.json';
 import { USAGE_REPORT_FIELDS } from '../../src/db/usage-report';
 import { USAGE_REPORT_VIEWS, type UsageReportView } from '../../src/handlers/reports';
 
@@ -22,6 +23,7 @@ type Target = {
   url_options: { method: string; params: Param[] };
   columns: Column[];
   root_selector: string;
+  filterExpression?: string;
 };
 type Panel = { title: string; targets?: Target[] };
 
@@ -71,16 +73,21 @@ describe('dashboards/usage.json', () => {
   });
 
   it.each(targets.filter(({ target }) => paramOf(target, 'view') === 'breakdown'))(
-    '$panel selects one breakdown dimension the API returns, always as an array',
+    '$panel filters on one breakdown dimension, through a column it selects',
     ({ target }) => {
-      expect(target.root_selector).toMatch(/^\[\$\[dimension="(app_version|ai_status|os_major)"\]\]$/);
+      expect(target.columns.map((column) => column.selector)).toContain('dimension');
+      expect(target.filterExpression).toMatch(/^dimension == '(app_version|ai_status|os_major)'$/);
     },
   );
 
+  it.each(targets)('$panel reads every row of its view without a rows selector', ({ target }) => {
+    expect(target.root_selector).toBe('');
+  });
+
   it.each(targets.filter(({ target }) => paramOf(target, 'view') !== 'breakdown'))(
-    '$panel reads every row of its view',
+    '$panel does not filter its view',
     ({ target }) => {
-      expect(target.root_selector).toBe('');
+      expect(target.filterExpression).toBeUndefined();
     },
   );
 
@@ -88,5 +95,62 @@ describe('dashboards/usage.json', () => {
     const text = JSON.stringify(dashboard);
 
     expect(text).not.toMatch(/authorization|x-api-key|bearer|secure/i);
+  });
+});
+
+type AlertModel = {
+  type: string;
+  source?: string;
+  parser?: string;
+  url?: string;
+  root_selector?: string;
+  url_options?: { method: string; params: Param[] };
+  columns?: Column[];
+};
+type AlertQuery = { refId: string; datasourceUid: string; relativeTimeRange?: { from: number; to: number }; model: AlertModel };
+type AlertRule = { uid: string; title: string; condition: string; noDataState: string; execErrState: string; data: AlertQuery[]; notification_settings: { receiver: string } };
+
+describe('dashboards/usage-alerts.json', () => {
+  const rules: readonly AlertRule[] = alerts.rules;
+  const queryOf = (rule: AlertRule) => rule.data.find((step) => step.datasourceUid !== '__expr__');
+  const numberColumns = (rule: AlertRule) =>
+    (queryOf(rule)?.model.columns ?? []).filter((column) => column.type === 'number').map((column) => column.selector);
+
+  it('has the no-reports rule and one rule per drop counter, evaluated hourly', () => {
+    expect(alerts.interval).toBe(3600);
+    expect(rules.map((rule) => numberColumns(rule))).toEqual([
+      ['posts'], ['dropped_post_cap'], ['dropped_new_install'], ['dropped_all_events'], ['dropped_events'],
+    ]);
+  });
+
+  it.each(rules)('$title asks for the last complete UTC day through the backend parser', (rule) => {
+    const query = queryOf(rule);
+
+    expect(query?.datasourceUid).toBe('${DS_UFOBEER}');
+    expect(query?.relativeTimeRange).toEqual({ from: 172800, to: 86400 });
+    expect(query?.model).toMatchObject({ type: 'json', source: 'url', parser: 'backend', url: '', root_selector: '' });
+    expect(query?.model.url_options?.params).toEqual([
+      { key: 'view', value: 'daily' }, { key: 'from', value: '${__from}' }, { key: 'to', value: '${__to}' },
+    ]);
+  });
+
+  it.each(rules)('$title reads one number the daily view returns, so each rule yields one series', (rule) => {
+    const columns = numberColumns(rule);
+
+    expect(columns).toHaveLength(1);
+    expect(USAGE_REPORT_FIELDS.daily).toEqual(expect.arrayContaining(columns));
+  });
+
+  it.each(rules)('$title alerts on query errors and notifies the usage contact point', (rule) => {
+    expect(rule.execErrState).toBe('Alerting');
+    expect(rule.notification_settings.receiver).toBe('BeerSelector usage email');
+  });
+
+  it('treats missing data as an alert for reports, but as no drops before the counters existed', () => {
+    expect(rules.map((rule) => rule.noDataState)).toEqual(['Alerting', 'OK', 'OK', 'OK', 'OK']);
+  });
+
+  it('carries no credential', () => {
+    expect(JSON.stringify(alerts)).not.toMatch(/authorization|x-api-key|bearer|secure/i);
   });
 });
