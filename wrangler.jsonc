@@ -101,7 +101,7 @@
 	// disabled; when enabled, a missing key is a configuration failure and
 	// must never mark beers as not_found.
 	"secrets": {
-		"required": ["API_KEY", "ADMIN_SECRET", "FLYING_SAUCER_API_BASE"],
+		"required": ["API_KEY", "ADMIN_SECRET", "FLYING_SAUCER_API_BASE", "USAGE_REPORT_TOKEN"],
 	},
 	"limits": {
 		// Lowered from the platform maximum (60000). cpu_ms bills/limits actual

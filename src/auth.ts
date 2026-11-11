@@ -133,6 +133,25 @@ export async function authorizeAdmin(
   return { authorized: true };
 }
 
+const BEARER_PATTERN = /^Bearer\s+(\S+)$/i;
+
+/**
+ * Authorize GET /reports/usage: `Authorization: Bearer <USAGE_REPORT_TOKEN>`,
+ * compared timing-safe. Fails closed when the token is not configured. The
+ * admin secret is not accepted here, and this token is accepted nowhere else.
+ */
+export async function authorizeUsageReport(request: Request, env: Env): Promise<boolean> {
+  if (!env.USAGE_REPORT_TOKEN) {
+    console.error('USAGE_REPORT_TOKEN not configured - rejecting report request (fail closed)');
+    return false;
+  }
+  const token = BEARER_PATTERN.exec(request.headers.get('Authorization') ?? '')?.[1];
+  if (token === undefined) {
+    return false;
+  }
+  return timingSafeCompare(token, env.USAGE_REPORT_TOKEN);
+}
+
 /**
  * Generate a unique request ID for tracking and correlation.
  *

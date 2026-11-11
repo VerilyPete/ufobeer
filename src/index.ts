@@ -6,6 +6,8 @@
  * - GET /beers - Fetch beers from Flying Saucer with enrichment data
  * - POST /beers/batch - Batch lookup enrichment data
  * - GET /health - Health check with quota status
+ * - POST /usage - Usage telemetry from BeerSelector
+ * - GET /reports/usage - Aggregate usage for Grafana (report token)
  * - POST /admin/enrich/trigger - Manual enrichment trigger
  * - POST /admin/cleanup/trigger - Manual cleanup trigger
  * - GET /admin/dlq - List DLQ messages
@@ -28,12 +30,20 @@ import {
   hashApiKey,
   validateApiKey,
   authorizeAdmin,
+  authorizeUsageReport,
   createRequestContext,
 } from './auth';
 import type { Env, EnrichmentMessage, CleanupMessage } from './types';
 import { ENABLED_STORE_IDS } from './config';
 import { withResponseHeaders } from './context';
-import { checkRateLimit, getEndpointRateLimitKey, getPreAuthRateLimitKey, getUsageRateLimitKey } from './rate-limit';
+import {
+  checkRateLimit,
+  getEndpointRateLimitKey,
+  getPreAuthRateLimitKey,
+  getUsageRateLimitKey,
+  USAGE_REPORT_RATE_LIMIT_KEY,
+} from './rate-limit';
+import { parseUsageReportQuery, readUsageReport } from './handlers/reports';
 import { writeAuditLog, writeAdminAuditLog, type AdminAuditOutcome } from './audit';
 import {
   handleEnrichmentTrigger,
@@ -52,7 +62,7 @@ import {
 import { handleLiveness } from './handlers/health';
 import { SYNC_CONSTANTS } from './types';
 import { handleEnrichmentBatch, handleCleanupBatch, handleDlqBatch, handleCleanupDlqBatch } from './queue';
-import { USAGE_RATE_LIMIT_RPM } from './constants';
+import { USAGE_RATE_LIMIT_RPM, USAGE_REPORT_RATE_LIMIT_RPM } from './constants';
 
 // ============================================================================
 // Admin Audit Outcome Classification
@@ -250,6 +260,54 @@ export default {
     if (!authResult.valid) {
       return respond({ error: 'Unauthorized' }, 401, {}, 'Invalid API key');
     }
+    // Route: GET /reports/usage (Grafana). The report token is checked
+    // before its limiter, so the app's shipped API key alone can't spend the
+    // dashboard's bucket, and the route returns before the shared per-key
+    // limiter, so reports never use /beers capacity.
+    if (url.pathname === '/reports/usage' && request.method === 'GET') {
+      if (!(await authorizeUsageReport(request, env))) {
+        return respond({ error: 'Unauthorized', requestId: requestContext.requestId }, 401, {}, 'Invalid report token');
+      }
+      const reportLimit = await checkRateLimit(env.DB, USAGE_REPORT_RATE_LIMIT_KEY, USAGE_REPORT_RATE_LIMIT_RPM);
+      if (!reportLimit.allowed) {
+        trackRateLimit(env.ANALYTICS, USAGE_REPORT_RATE_LIMIT_KEY, url.pathname);
+        if (reportLimit.degraded) {
+          return respond(
+            { error: 'Service temporarily unavailable', requestId: requestContext.requestId },
+            503,
+            { 'Retry-After': '10' },
+            'Rate limiter unavailable (reports)'
+          );
+        }
+        return respond(
+          { error: 'Rate limit exceeded', requestId: requestContext.requestId },
+          429,
+          {
+            'X-RateLimit-Limit': String(USAGE_REPORT_RATE_LIMIT_RPM),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': String(Math.floor(reportLimit.resetAt / 1000)),
+            'Retry-After': String(Math.ceil((reportLimit.resetAt - Date.now()) / 1000)),
+          },
+          'Rate limited (reports)'
+        );
+      }
+      const reportHeaders = {
+        'X-RateLimit-Limit': String(USAGE_REPORT_RATE_LIMIT_RPM),
+        'X-RateLimit-Remaining': String(reportLimit.remaining),
+        'X-RateLimit-Reset': String(Math.floor(reportLimit.resetAt / 1000)),
+      };
+      const query = parseUsageReportQuery(url.searchParams, Date.now());
+      if (!query.ok) {
+        return respond(
+          { error: 'Invalid report query', detail: query.error, requestId: requestContext.requestId },
+          400,
+          reportHeaders,
+          'Invalid report query'
+        );
+      }
+      return respond(await readUsageReport(env.DB, query), 200, reportHeaders);
+    }
+
     // Create new context with the authenticated API key hash (RequestContext is readonly).
     // Override clientIdentifier with apiKeyHash for stable per-key rate limiting —
     // apiKeyHash is not spoofable (unlike IP-based identifiers in dev/test environments).

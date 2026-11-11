@@ -185,6 +185,18 @@ export const USAGE_NEW_INSTALL_DAILY_CAP = 100;
 export const USAGE_POST_DAILY_CAP = 500;
 
 /**
+ * GET /reports/usage reads per minute, in one bucket for the single client
+ * holding USAGE_REPORT_TOKEN (Grafana). Checked only after the token is
+ * verified, so callers holding just the app's API key cannot spend it, and
+ * outside the shared per-API-key limiter, so dashboards never use /beers
+ * capacity. Each IP is still held to PRE_AUTH_RPM.
+ */
+export const USAGE_REPORT_RATE_LIMIT_RPM = 60;
+
+/** Days a usage report covers when the query gives no `from`. */
+export const USAGE_REPORT_DEFAULT_DAYS = 90;
+
+/**
  * POST /usage requests per minute per client IP, in their own bucket
  * outside the shared per-API-key limiter. Every install shares one API key,
  * so a per-key limit would throttle the whole fleet; a normal client sends
