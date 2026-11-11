@@ -15,6 +15,8 @@ import { SMALL_JSON_BODY_MAX_BYTES, USAGE_RATE_LIMIT_RPM } from '../../src/const
 // handler's wiring of the real caps is checked, not just the helper.
 const POST_DAILY_CAP = 500;
 const NEW_INSTALL_DAILY_CAP = 100;
+// Daily ceiling for each drop counter, plans/usage-dashboards.md (slice 2).
+const DROP_COUNTER_DAILY_CEILING = 10_000;
 import { getToday } from '../../src/utils/date';
 
 const API_KEY = 'usage-test-key';
@@ -85,6 +87,11 @@ const postBatchLookup = (ip: string, workerEnv: Env): Promise<Response> =>
 const usageCounts = async (): Promise<ReadonlyArray<{ event: string; count: number }>> =>
   (await env.DB.prepare('SELECT event, count FROM usage_daily ORDER BY event').all<{ event: string; count: number }>()).results;
 
+const ingestRow = async () =>
+  env.DB.prepare(
+    'SELECT posts, duplicates, dropped_post_cap, dropped_new_install, dropped_all_events, dropped_events FROM usage_ingest_daily WHERE day = ?',
+  ).bind(getToday()).first<Record<string, number>>();
+
 const tableCount = async (table: string): Promise<number> =>
   (await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>())?.n ?? 0;
 
@@ -128,13 +135,14 @@ describe('POST /usage', () => {
       expect(await usageCounts()).toEqual([{ event: 'suggestions_opened', count: 3 }]);
     });
 
-    it('returns 204 without writing usage when every event is dropped', async () => {
+    it('returns 204 and writes only the all-dropped counter when every event is dropped', async () => {
       const response = await postUsage({ body: JSON.stringify(buildBody({ events: [{ name: 'nope', count: 1 }] })) });
 
       expect(response.status).toBe(204);
       expect(await tableCount('usage_batches')).toBe(0);
       expect(await tableCount('usage_installs')).toBe(0);
-      expect(await tableCount('usage_ingest_daily')).toBe(0);
+      expect(await tableCount('usage_daily')).toBe(0);
+      expect(await ingestRow()).toMatchObject({ posts: 0, dropped_all_events: 1 });
     });
 
     it('returns 204 and records nothing when the daily post budget is spent', async () => {
@@ -303,6 +311,71 @@ describe('POST /usage', () => {
       consoleSpy.mockRestore();
       expect(response.status).toBe(500);
       expect(await tableCount('usage_batches')).toBe(0);
+    });
+  });
+
+  describe('drop counters', () => {
+    it('counts a duplicate batch', async () => {
+      await postUsage();
+      await postUsage();
+
+      expect(await ingestRow()).toMatchObject({ posts: 1, duplicates: 1 });
+    });
+
+    it('counts a post dropped at the daily post cap', async () => {
+      await env.DB.prepare('INSERT INTO usage_ingest_daily (day, posts) VALUES (?, ?)')
+        .bind(getToday(), POST_DAILY_CAP).run();
+
+      await postUsage();
+
+      expect(await ingestRow()).toMatchObject({ posts: POST_DAILY_CAP, dropped_post_cap: 1 });
+    });
+
+    it('counts the event entries dropped from a stored report', async () => {
+      await postUsage({
+        body: JSON.stringify(buildBody({
+          events: [{ name: 'suggestions_opened', count: 3 }, { name: 'brand_new_event', count: 1 }, { name: 'view_home', count: 0 }],
+        })),
+      });
+
+      expect(await usageCounts()).toEqual([{ event: 'suggestions_opened', count: 3 }]);
+      expect(await ingestRow()).toMatchObject({ posts: 1, dropped_events: 2 });
+    });
+
+    it('stops each counter at the daily ceiling', async () => {
+      await env.DB.prepare('INSERT INTO usage_ingest_daily (day, posts, dropped_all_events) VALUES (?, 0, ?)')
+        .bind(getToday(), DROP_COUNTER_DAILY_CEILING - 1).run();
+      const allDropped = (n: number) => postUsage({
+        ip: `198.51.100.${n}`,
+        body: JSON.stringify(buildBody({ batch_id: batchId(n), events: [{ name: 'nope', count: 1 }] })),
+      });
+
+      await allDropped(1);
+      await allDropped(2);
+
+      expect(await ingestRow()).toMatchObject({ dropped_all_events: DROP_COUNTER_DAILY_CEILING });
+    });
+  });
+
+  describe('all-dropped write failure', () => {
+    it('returns 500 and counts nothing when the counter write fails, then counts the resend once', async () => {
+      const body = JSON.stringify(buildBody({ events: [{ name: 'nope', count: 1 }] }));
+      await env.DB.prepare(
+        "CREATE TRIGGER fail_counter_write BEFORE INSERT ON usage_ingest_daily BEGIN SELECT RAISE(ABORT, 'counter failed'); END",
+      ).run();
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const failed = await postUsage({ body });
+
+      await env.DB.prepare('DROP TRIGGER fail_counter_write').run();
+      consoleSpy.mockRestore();
+      expect(failed.status).toBe(500);
+      expect(await ingestRow()).toBeNull();
+
+      const resent = await postUsage({ body });
+
+      expect(resent.status).toBe(204);
+      expect(await ingestRow()).toMatchObject({ posts: 0, dropped_all_events: 1 });
     });
   });
 

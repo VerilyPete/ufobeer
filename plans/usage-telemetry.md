@@ -473,10 +473,17 @@ most `install_cap` new installs are admitted per day. Outcomes:
 | Post | Result |
 |---|---|
 | New batch, known install, budget left | Counted; budget charged once |
-| Duplicate batch | Nothing written; budget not charged |
-| New install, install cap reached | Nothing written; budget not charged |
-| Previously unseen batch, post budget spent | Nothing written; batch not recorded. A compliant client deletes it on the 204, so it is lost. It counts the next day only if a resend happens anyway, e.g. after a lost response. |
-| Write fails | Transaction rolls back; nothing recorded; a later resend still counts |
+| Duplicate batch | Only `usage_ingest_daily.duplicates` counted; budget not charged |
+| New install, install cap reached | Only `dropped_new_install` counted; budget not charged |
+| Previously unseen batch, post budget spent | Only `dropped_post_cap` counted; batch not recorded. A compliant client deletes it on the 204, so it is lost. It counts the next day only if a resend happens anyway, e.g. after a lost response. |
+| Write fails | Transaction rolls back, drop counters included; nothing recorded; a later resend still counts |
+| No event the worker accepts (all dropped) | Only `dropped_all_events` counted, in its own single statement |
+
+Since `plans/usage-dashboards.md` slice 2, each drop counter is charged in
+the same batch as the write and from the same outcome expression as the
+reported reason, and stops at `USAGE_DROP_COUNTER_DAILY_CEILING` a day. A
+stored report whose parser dropped some event entries adds that number to
+`dropped_events`.
 
 5. **Classify the outcome** with a final `SELECT` in the same batch, so it
    sees the same transaction state as the writes. First match wins:

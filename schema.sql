@@ -184,8 +184,16 @@ CREATE TABLE IF NOT EXISTS usage_batches (
 CREATE INDEX IF NOT EXISTS idx_usage_batches_received ON usage_batches (received_at);
 
 CREATE TABLE IF NOT EXISTS usage_ingest_daily (
-  day   TEXT    NOT NULL PRIMARY KEY,
-  posts INTEGER NOT NULL
+  day                 TEXT    NOT NULL PRIMARY KEY,
+  posts               INTEGER NOT NULL,
+  -- Drop counters (migration 0014), each saturating at
+  -- USAGE_DROP_COUNTER_DAILY_CEILING a day. The first four count reports;
+  -- dropped_events counts event entries dropped from stored reports.
+  duplicates          INTEGER NOT NULL DEFAULT 0,
+  dropped_post_cap    INTEGER NOT NULL DEFAULT 0,
+  dropped_new_install INTEGER NOT NULL DEFAULT 0,
+  dropped_all_events  INTEGER NOT NULL DEFAULT 0,
+  dropped_events      INTEGER NOT NULL DEFAULT 0
 );
 
 -- ============================================================================

@@ -210,11 +210,24 @@ SELECT
 
 ### Posts not counted (drop reasons)
 
+Since 2026-11-12 (`USAGE_DROP_COUNTERS_SINCE`) the same drops are also
+counted in D1, per UTC day, on `usage_ingest_daily`. `duplicates`,
+`dropped_post_cap`, `dropped_new_install` and `dropped_all_events` count
+reports; `dropped_events` counts event entries dropped from reports whose
+other events were stored. Each stops at 10,000 a day
+(`USAGE_DROP_COUNTER_DAILY_CEILING`), so that value means "at least":
+
+```sql
+SELECT day, posts, duplicates, dropped_post_cap, dropped_new_install,
+       dropped_all_events, dropped_events
+FROM usage_ingest_daily ORDER BY day DESC LIMIT 30;
+```
+
 Every write's outcome goes to the `beer_enrichment_metrics` Analytics
 Engine dataset with `blob7 = 'usage_ingest'` and the outcome in `blob5`:
 `admitted`, `duplicate`, `daily_post_cap`, `new_install_cap`, or
-`all_dropped` (a parsed report with no event this worker accepts; nothing is
-written). Steady
+`all_dropped` (a parsed report with no event this worker accepts; only its
+drop counter is written). Steady
 `duplicate`s are normal (lost responses resent). Any `daily_post_cap` or
 `new_install_cap` means posts were dropped: an invented-install flood, or
 real growth past the budgets in `src/constants.ts`.
