@@ -71,9 +71,9 @@ describe('dashboards/usage.json', () => {
   });
 
   it.each(targets.filter(({ target }) => paramOf(target, 'view') === 'breakdown'))(
-    '$panel selects one breakdown dimension the API returns',
+    '$panel selects one breakdown dimension the API returns, always as an array',
     ({ target }) => {
-      expect(target.root_selector).toMatch(/^\$\[dimension="(app_version|ai_status|os_major)"\]$/);
+      expect(target.root_selector).toMatch(/^\[\$\[dimension="(app_version|ai_status|os_major)"\]\]$/);
     },
   );
 

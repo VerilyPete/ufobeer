@@ -371,7 +371,7 @@
           "parser": "backend",
           "format": "table",
           "url": "",
-          "root_selector": "$[dimension=\"app_version\"]",
+          "root_selector": "[$[dimension=\"app_version\"]]",
           "url_options": {
             "method": "GET",
             "data": "",
@@ -469,7 +469,7 @@
           "parser": "backend",
           "format": "table",
           "url": "",
-          "root_selector": "$[dimension=\"ai_status\"]",
+          "root_selector": "[$[dimension=\"ai_status\"]]",
           "url_options": {
             "method": "GET",
             "data": "",
