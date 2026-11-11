@@ -103,9 +103,11 @@ Needs `X-API-Key` and `Authorization: Bearer <USAGE_REPORT_TOKEN>`; the token
 is accepted nowhere else and `ADMIN_SECRET` is not accepted here.
 
 **Query:** `view` is `daily`, `events`, `adoption` or `breakdown`. `from` and
-`to` are inclusive UTC days (`YYYY-MM-DD`): `from` defaults to 89 days before
-today and must be on or after today minus 730 days; `to` defaults to today
-and can't be later; `from` can't be after `to`.
+`to` are inclusive UTC days, given as `YYYY-MM-DD` or as epoch milliseconds
+(Grafana's `${__from}` and `${__to}`), which become their UTC day on the
+server so the caller's timezone can't shift the range. `from` defaults to 89
+days before today and must be on or after today minus 730 days; `to` defaults
+to today and can't be later; `from` can't be after `to`.
 
 **Views** (definitions: `plans/usage-dashboards.md`, Read endpoint):
 
@@ -128,6 +130,29 @@ API key or report token; `429` over the report limit.
 
 The token is in the macOS login Keychain on Pete's Mac:
 `security find-generic-password -s ufobeer-usage-report-token -w`.
+
+**Grafana** (`plans/usage-dashboards.md`, slice 5). Stack
+`largefireplace1608.grafana.net`, set up 2026-11-11:
+
+1. Data source **ufobeer usage reports** (Infinity): base URL
+   `https://api.ufobeer.app/reports/usage`; custom headers `X-API-Key` (the
+   app's key) and `Authorization` (`Bearer <token>`); allowed hosts
+   `https://api.ufobeer.app`. Infinity's health check does not call the API,
+   so a wrong header still "succeeds"; check a panel instead.
+2. Dashboard: import `dashboards/usage.json` and pick that data source for
+   `DS_UFOBEER`. Panels use the backend (JSONata) parser, which alerting needs.
+3. **Bot Fight Mode is off for the `ufobeer.app` zone** (turned off
+   2026-11-11). It answered Grafana's requests (Amazon ASN, Go HTTP client)
+   with a managed challenge, so Grafana saw 403 and nothing reached the
+   Worker; on the Free plan it can't be skipped for one path. The same
+   setting caused the edge 403 on `OPTIONS` noted in `plans/remove-cors.md`.
+   Turning it back on breaks the dashboard and its alerts. Diagnose with
+   Security Events (`firewallEventsAdaptive`, `source: botFight`) and
+   `audit_log` rows with user agent `Go-http-client`.
+4. When a value field is filled, keep the browser's password manager out of
+   it: these are password-type inputs, and autofill puts a saved password in
+   the header (seen as `Invalid API key` or `Invalid report token` in
+   `audit_log`).
 
 ### POST /usage
 

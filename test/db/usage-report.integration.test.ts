@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { readUsageReport, type UsageReportView } from '../../src/handlers/reports';
+import { USAGE_REPORT_FIELDS } from '../../src/db/usage-report';
 
 const A = 'aaaaaaaa-0000-4000-8000-000000000001';
 const B = 'bbbbbbbb-0000-4000-8000-000000000002';
@@ -156,6 +157,15 @@ describe('readUsageReport (real D1)', () => {
 
   describe('every view', () => {
     const VIEWS: readonly UsageReportView[] = ['daily', 'events', 'adoption', 'breakdown'];
+
+    it.each(VIEWS)('returns exactly the fields USAGE_REPORT_FIELDS lists (%s)', async (view) => {
+      await seed();
+
+      const rows = await read(view);
+
+      expect(rows.length).toBeGreaterThan(0);
+      rows.forEach((row) => expect(Object.keys(row).sort()).toEqual([...USAGE_REPORT_FIELDS[view]].sort()));
+    });
 
     it.each(VIEWS)('never returns an install ID (%s)', async (view) => {
       await seed();
