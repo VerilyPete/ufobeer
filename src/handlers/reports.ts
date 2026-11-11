@@ -39,6 +39,16 @@ const isCalendarDay = (value: string): boolean => {
   return !Number.isNaN(ms) && getToday(new Date(ms)) === value;
 };
 
+const EPOCH_MS_PATTERN = /^\d{1,15}$/;
+
+/**
+ * A day given as YYYY-MM-DD, or as epoch milliseconds (what Grafana sends
+ * for ${__from} and ${__to}), which becomes its UTC day here so the
+ * caller's timezone can't shift the range.
+ */
+const toUtcDay = (value: string): string =>
+  EPOCH_MS_PATTERN.test(value) ? getToday(new Date(Number(value))) : value;
+
 const invalid = (error: string): UsageReportQuery => ({ ok: false, error });
 
 /**
@@ -55,11 +65,13 @@ export function parseUsageReportQuery(params: URLSearchParams, now: number): Usa
 
   const today = getToday(new Date(now));
   const cutoff = getToday(new Date(now - USAGE_DAILY_RETENTION_DAYS * DAY_MS));
-  const from = params.get('from') ?? getToday(new Date(now - (USAGE_REPORT_DEFAULT_DAYS - 1) * DAY_MS));
-  const to = params.get('to') ?? today;
+  const fromParam = params.get('from');
+  const toParam = params.get('to');
+  const from = fromParam === null ? getToday(new Date(now - (USAGE_REPORT_DEFAULT_DAYS - 1) * DAY_MS)) : toUtcDay(fromParam);
+  const to = toParam === null ? today : toUtcDay(toParam);
 
   if (!isCalendarDay(from) || !isCalendarDay(to)) {
-    return invalid('from and to must be calendar days as YYYY-MM-DD');
+    return invalid('from and to must be calendar days as YYYY-MM-DD, or epoch milliseconds');
   }
   if (from < cutoff) {
     return invalid(`from must be on or after ${cutoff}, the start of the retention window`);

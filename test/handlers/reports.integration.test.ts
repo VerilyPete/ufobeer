@@ -230,6 +230,29 @@ describe('parseUsageReportQuery', () => {
   const NOW = Date.UTC(2026, 10, 11, 12, 0, 0);
   const query = (params: string, now: number = NOW) => parseUsageReportQuery(new URLSearchParams(params), now);
 
+  describe('epoch milliseconds, as Grafana sends ${__from} and ${__to}', () => {
+    it('turns each instant into its UTC day, whatever the caller\'s timezone', () => {
+      const lateEveningInChicago = Date.UTC(2026, 10, 11, 3, 30, 0);
+      const weekEarlier = lateEveningInChicago - 7 * 24 * 60 * 60 * 1000;
+
+      expect(query(`view=daily&from=${weekEarlier}&to=${lateEveningInChicago}`)).toEqual({
+        ok: true, view: 'daily', from: '2026-11-04', to: '2026-11-11',
+      });
+    });
+
+    it('applies the same limits after conversion', () => {
+      const tomorrow = NOW + 24 * 60 * 60 * 1000;
+      const beforeCutoff = Date.UTC(2024, 10, 10, 23, 59, 59);
+
+      expect(query(`view=daily&to=${tomorrow}`)).toMatchObject({ ok: false });
+      expect(query(`view=daily&from=${beforeCutoff}`)).toMatchObject({ ok: false });
+    });
+
+    it.each(['99999999999999999999', '-1000', '1.5e12', '12ab'])('rejects %s', (value) => {
+      expect(query(`view=daily&from=${value}`)).toMatchObject({ ok: false });
+    });
+  });
+
   it('defaults to the last 90 UTC days, today included', () => {
     expect(query('view=events')).toEqual({ ok: true, view: 'events', from: '2026-08-14', to: '2026-11-11' });
   });

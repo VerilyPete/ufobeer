@@ -43,6 +43,25 @@ export type BreakdownReportRow = Readonly<{
   active_installs: number;
 }>;
 
+/**
+ * The fields each view returns, in order. The committed Grafana dashboard is
+ * checked against these, and the queries are checked to return exactly them.
+ */
+export const USAGE_REPORT_FIELDS = {
+  daily: [
+    'day', 'active_installs', 'new_installs', 'sessions', 'posts', 'duplicates',
+    'dropped_post_cap', 'dropped_new_install', 'dropped_all_events', 'dropped_events',
+  ],
+  events: ['day', 'event', 'count', 'installs'],
+  adoption: ['event', 'installs_using', 'active_installs', 'share', 'avg_per_session'],
+  breakdown: ['day', 'dimension', 'value', 'active_installs'],
+} as const satisfies Readonly<{
+  daily: readonly (keyof DailyReportRow)[];
+  events: readonly (keyof EventsReportRow)[];
+  adoption: readonly (keyof AdoptionReportRow)[];
+  breakdown: readonly (keyof BreakdownReportRow)[];
+}>;
+
 const counterSince = (column: string, sinceParam: string): string =>
   `CASE WHEN d.day < ${sinceParam} THEN NULL ELSE COALESCE(ingest.${column}, 0) END AS ${column}`;
 
