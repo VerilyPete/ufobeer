@@ -153,6 +153,21 @@ The token is in the macOS login Keychain on Pete's Mac:
    it: these are password-type inputs, and autofill puts a saved password in
    the header (seen as `Invalid API key` or `Invalid report token` in
    `audit_log`).
+5. Alerts: `dashboards/usage-alerts.json` is the rule group
+   `beerselector-usage` (folder `BeerSelector`, evaluated hourly), with five
+   rules on the last complete UTC day: no reports (`posts` below 1; no data
+   or a query error also alerts), and one rule per drop counter (above 0; no
+   data is OK, because counters are `null` before 2026-11-12). One rule per
+   counter because Infinity returns a wide frame's numbers as unlabeled
+   series, which Grafana alerting can't tell apart. Rules notify contact
+   point **BeerSelector usage email**. On this plan an email contact point
+   only accepts addresses of org members.
+   To apply the file, replace `${DS_UFOBEER}` with the data source UID and
+   `PUT /api/v1/provisioning/folder/beerselector/rule-groups/beerselector-usage`
+   with header `X-Disable-Provenance: true` (keeps the rules editable in the
+   UI), adding `folderUID` and `ruleGroup` to each rule. Test a rule with
+   `POST /api/v1/eval` and its `data`: set up 2026-11-11, each rule was
+   normal (or no data) as saved and firing with its threshold tripped.
 
 ### POST /usage
 

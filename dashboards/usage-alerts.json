@@ -1,0 +1,511 @@
+{
+  "title": "beerselector-usage",
+  "interval": 3600,
+  "rules": [
+    {
+      "uid": "beerselector-no-reports",
+      "title": "BeerSelector usage: no reports yesterday",
+      "condition": "C",
+      "for": "0s",
+      "noDataState": "Alerting",
+      "execErrState": "Alerting",
+      "isPaused": false,
+      "labels": {
+        "service": "ufobeer",
+        "area": "usage-telemetry"
+      },
+      "annotations": {
+        "summary": "No usage reports were stored yesterday (UTC).",
+        "description": "GET /reports/usage returned posts = 0, no row, or failed for the last complete UTC day. Check USAGE_ENABLED, the Worker deploy, the error-alerts tail worker, and whether a BeerSelector build stopped sending. A query error usually means the Grafana data source headers or the report token changed."
+      },
+      "notification_settings": {
+        "receiver": "BeerSelector usage email"
+      },
+      "data": [
+        {
+          "refId": "A",
+          "datasourceUid": "${DS_UFOBEER}",
+          "relativeTimeRange": {
+            "from": 172800,
+            "to": 86400
+          },
+          "model": {
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "",
+            "root_selector": "",
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "params": [
+                {
+                  "key": "view",
+                  "value": "daily"
+                },
+                {
+                  "key": "from",
+                  "value": "${__from}"
+                },
+                {
+                  "key": "to",
+                  "value": "${__to}"
+                }
+              ]
+            },
+            "columns": [
+              {
+                "selector": "day",
+                "text": "day",
+                "type": "timestamp"
+              },
+              {
+                "selector": "posts",
+                "text": "posts",
+                "type": "number"
+              }
+            ]
+          }
+        },
+        {
+          "refId": "B",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "B",
+            "type": "reduce",
+            "expression": "A",
+            "reducer": "last",
+            "settings": {
+              "mode": "dropNN"
+            }
+          }
+        },
+        {
+          "refId": "C",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "C",
+            "type": "threshold",
+            "expression": "B",
+            "conditions": [
+              {
+                "evaluator": {
+                  "type": "lt",
+                  "params": [
+                    1
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "uid": "beerselector-dropped-post-cap",
+      "title": "Usage reports dropped at the daily post cap",
+      "condition": "C",
+      "for": "0s",
+      "noDataState": "OK",
+      "execErrState": "Alerting",
+      "isPaused": false,
+      "labels": {
+        "service": "ufobeer",
+        "area": "usage-telemetry"
+      },
+      "annotations": {
+        "summary": "Usage reports dropped at the daily post cap yesterday (UTC): {{ $values.B }}",
+        "description": "Reports arrived after USAGE_POST_DAILY_CAP (500) was reached and were not stored. The counter stops at 10,000 a day. No data before 2026-11-12 (the counters' first full day) is treated as OK. See ufobeer .claude/usage-telemetry.md (Posts not counted)."
+      },
+      "notification_settings": {
+        "receiver": "BeerSelector usage email"
+      },
+      "data": [
+        {
+          "refId": "A",
+          "datasourceUid": "${DS_UFOBEER}",
+          "relativeTimeRange": {
+            "from": 172800,
+            "to": 86400
+          },
+          "model": {
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "",
+            "root_selector": "",
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "params": [
+                {
+                  "key": "view",
+                  "value": "daily"
+                },
+                {
+                  "key": "from",
+                  "value": "${__from}"
+                },
+                {
+                  "key": "to",
+                  "value": "${__to}"
+                }
+              ]
+            },
+            "columns": [
+              {
+                "selector": "day",
+                "text": "day",
+                "type": "timestamp"
+              },
+              {
+                "selector": "dropped_post_cap",
+                "text": "dropped_post_cap",
+                "type": "number"
+              }
+            ]
+          }
+        },
+        {
+          "refId": "B",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "B",
+            "type": "reduce",
+            "expression": "A",
+            "reducer": "last",
+            "settings": {
+              "mode": "dropNN"
+            }
+          }
+        },
+        {
+          "refId": "C",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "C",
+            "type": "threshold",
+            "expression": "B",
+            "conditions": [
+              {
+                "evaluator": {
+                  "type": "gt",
+                  "params": [
+                    0
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "uid": "beerselector-dropped-new-install",
+      "title": "Usage reports dropped at the new-install cap",
+      "condition": "C",
+      "for": "0s",
+      "noDataState": "OK",
+      "execErrState": "Alerting",
+      "isPaused": false,
+      "labels": {
+        "service": "ufobeer",
+        "area": "usage-telemetry"
+      },
+      "annotations": {
+        "summary": "Usage reports dropped at the new-install cap yesterday (UTC): {{ $values.B }}",
+        "description": "Reports from installs first seen after USAGE_NEW_INSTALL_DAILY_CAP (100) was reached were not stored. The counter stops at 10,000 a day. No data before 2026-11-12 (the counters' first full day) is treated as OK. See ufobeer .claude/usage-telemetry.md (Posts not counted)."
+      },
+      "notification_settings": {
+        "receiver": "BeerSelector usage email"
+      },
+      "data": [
+        {
+          "refId": "A",
+          "datasourceUid": "${DS_UFOBEER}",
+          "relativeTimeRange": {
+            "from": 172800,
+            "to": 86400
+          },
+          "model": {
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "",
+            "root_selector": "",
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "params": [
+                {
+                  "key": "view",
+                  "value": "daily"
+                },
+                {
+                  "key": "from",
+                  "value": "${__from}"
+                },
+                {
+                  "key": "to",
+                  "value": "${__to}"
+                }
+              ]
+            },
+            "columns": [
+              {
+                "selector": "day",
+                "text": "day",
+                "type": "timestamp"
+              },
+              {
+                "selector": "dropped_new_install",
+                "text": "dropped_new_install",
+                "type": "number"
+              }
+            ]
+          }
+        },
+        {
+          "refId": "B",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "B",
+            "type": "reduce",
+            "expression": "A",
+            "reducer": "last",
+            "settings": {
+              "mode": "dropNN"
+            }
+          }
+        },
+        {
+          "refId": "C",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "C",
+            "type": "threshold",
+            "expression": "B",
+            "conditions": [
+              {
+                "evaluator": {
+                  "type": "gt",
+                  "params": [
+                    0
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "uid": "beerselector-dropped-all-events",
+      "title": "Usage reports with no known event",
+      "condition": "C",
+      "for": "0s",
+      "noDataState": "OK",
+      "execErrState": "Alerting",
+      "isPaused": false,
+      "labels": {
+        "service": "ufobeer",
+        "area": "usage-telemetry"
+      },
+      "annotations": {
+        "summary": "Usage reports with no known event yesterday (UTC): {{ $values.B }}",
+        "description": "Reports whose every event was unknown to the Worker were not stored; usually an app build ahead of the Worker. The counter stops at 10,000 a day. No data before 2026-11-12 (the counters' first full day) is treated as OK. See ufobeer .claude/usage-telemetry.md (Posts not counted)."
+      },
+      "notification_settings": {
+        "receiver": "BeerSelector usage email"
+      },
+      "data": [
+        {
+          "refId": "A",
+          "datasourceUid": "${DS_UFOBEER}",
+          "relativeTimeRange": {
+            "from": 172800,
+            "to": 86400
+          },
+          "model": {
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "",
+            "root_selector": "",
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "params": [
+                {
+                  "key": "view",
+                  "value": "daily"
+                },
+                {
+                  "key": "from",
+                  "value": "${__from}"
+                },
+                {
+                  "key": "to",
+                  "value": "${__to}"
+                }
+              ]
+            },
+            "columns": [
+              {
+                "selector": "day",
+                "text": "day",
+                "type": "timestamp"
+              },
+              {
+                "selector": "dropped_all_events",
+                "text": "dropped_all_events",
+                "type": "number"
+              }
+            ]
+          }
+        },
+        {
+          "refId": "B",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "B",
+            "type": "reduce",
+            "expression": "A",
+            "reducer": "last",
+            "settings": {
+              "mode": "dropNN"
+            }
+          }
+        },
+        {
+          "refId": "C",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "C",
+            "type": "threshold",
+            "expression": "B",
+            "conditions": [
+              {
+                "evaluator": {
+                  "type": "gt",
+                  "params": [
+                    0
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "uid": "beerselector-dropped-events",
+      "title": "Usage event entries dropped",
+      "condition": "C",
+      "for": "0s",
+      "noDataState": "OK",
+      "execErrState": "Alerting",
+      "isPaused": false,
+      "labels": {
+        "service": "ufobeer",
+        "area": "usage-telemetry"
+      },
+      "annotations": {
+        "summary": "Usage event entries dropped yesterday (UTC): {{ $values.B }}",
+        "description": "Event entries the Worker did not recognise were dropped from otherwise stored reports; usually an app build ahead of the Worker. The counter stops at 10,000 a day. No data before 2026-11-12 (the counters' first full day) is treated as OK. See ufobeer .claude/usage-telemetry.md (Posts not counted)."
+      },
+      "notification_settings": {
+        "receiver": "BeerSelector usage email"
+      },
+      "data": [
+        {
+          "refId": "A",
+          "datasourceUid": "${DS_UFOBEER}",
+          "relativeTimeRange": {
+            "from": 172800,
+            "to": 86400
+          },
+          "model": {
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "parser": "backend",
+            "format": "table",
+            "url": "",
+            "root_selector": "",
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "params": [
+                {
+                  "key": "view",
+                  "value": "daily"
+                },
+                {
+                  "key": "from",
+                  "value": "${__from}"
+                },
+                {
+                  "key": "to",
+                  "value": "${__to}"
+                }
+              ]
+            },
+            "columns": [
+              {
+                "selector": "day",
+                "text": "day",
+                "type": "timestamp"
+              },
+              {
+                "selector": "dropped_events",
+                "text": "dropped_events",
+                "type": "number"
+              }
+            ]
+          }
+        },
+        {
+          "refId": "B",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "B",
+            "type": "reduce",
+            "expression": "A",
+            "reducer": "last",
+            "settings": {
+              "mode": "dropNN"
+            }
+          }
+        },
+        {
+          "refId": "C",
+          "datasourceUid": "__expr__",
+          "model": {
+            "refId": "C",
+            "type": "threshold",
+            "expression": "B",
+            "conditions": [
+              {
+                "evaluator": {
+                  "type": "gt",
+                  "params": [
+                    0
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
