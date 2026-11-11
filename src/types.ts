@@ -26,6 +26,8 @@ export type Env = {
   // Optional: without it the Exa Untappd fallback is simply unavailable.
   readonly EXA_API_KEY?: string | undefined;
   readonly ADMIN_SECRET?: string | undefined; // Required for /admin/* routes
+  // Bearer token for GET /reports/usage (Grafana); accepted nowhere else.
+  readonly USAGE_REPORT_TOKEN?: string | undefined;
 
   // Environment variables (set in wrangler.jsonc vars)
   readonly RATE_LIMIT_RPM: string;

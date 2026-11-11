@@ -96,6 +96,25 @@ Full sync from Flying Saucer API. Imports all beers and queues for enrichment.
 }
 ```
 
+### GET /reports/usage
+
+Aggregate usage for the Grafana dashboard (`plans/usage-dashboards.md`).
+Needs `X-API-Key` and `Authorization: Bearer <USAGE_REPORT_TOKEN>`; the token
+is accepted nowhere else and `ADMIN_SECRET` is not accepted here.
+
+**Query:** `view` is `daily`, `events`, `adoption` or `breakdown`. `from` and
+`to` are inclusive UTC days (`YYYY-MM-DD`): `from` defaults to 89 days before
+today and must be on or after today minus 730 days; `to` defaults to today
+and can't be later; `from` can't be after `to`.
+
+**Responses:** `200` with a JSON array of flat rows and `Cache-Control:
+no-store` (an empty array until slice 4 adds the views); `400` with
+`{"error": "Invalid report query", "detail": ...}`; `401` without a valid
+API key or report token; `429` over the report limit.
+
+The token is in the macOS login Keychain on Pete's Mac:
+`security find-generic-password -s ufobeer-usage-report-token -w`.
+
 ### POST /usage
 
 Daily per-install feature counts from BeerSelector (beta usage telemetry).
@@ -329,5 +348,8 @@ All errors return JSON with `error` field:
   `usage:{ip}` key. Every install shares one API key, so the per-key bucket
   is fleet-wide and telemetry must not spend it. The 30/min pre-auth per-IP
   limit still covers every route, `/usage` included.
+- `GET /reports/usage` is outside it too: 60 per minute in one `reports:usage`
+  bucket, checked only after the report token, so the app's API key alone
+  can't spend it.
 - Returns `429` with `Retry-After` header when exceeded
 - Check remaining quota in `/health` response

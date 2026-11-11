@@ -56,6 +56,12 @@ export function getUsageRateLimitKey(clientIdentifier: string): string {
   return `usage:${clientIdentifier}`;
 }
 
+/**
+ * Rate limit key for GET /reports/usage. One bucket for every read: only
+ * the holder of USAGE_REPORT_TOKEN reaches this limiter.
+ */
+export const USAGE_REPORT_RATE_LIMIT_KEY = 'reports:usage';
+
 // RATE_LIMIT_REAP_LIMIT now lives in src/constants.ts (imported below) as
 // part of the constants consolidation.
 

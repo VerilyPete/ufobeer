@@ -63,6 +63,16 @@ rollback floor in `plans/abv-untappd-fallback.md`). The native BeerSelector app 
 - `GET /health` - Health check with quota status
 - `POST /usage` - Beta usage telemetry from BeerSelector (per-install daily feature counts)
 
+### Reports (API key plus `Authorization: Bearer <USAGE_REPORT_TOKEN>`)
+- `GET /reports/usage?view=daily|events|adoption|breakdown&from=YYYY-MM-DD&to=YYYY-MM-DD` -
+  Aggregate usage for the Grafana dashboard; never returns an install ID.
+  The token works nowhere else, and `ADMIN_SECRET` doesn't work here. Reads
+  have their own bucket (`USAGE_REPORT_RATE_LIMIT_RPM`, checked after the
+  token) outside the shared per-key limiter. `from` defaults to 89 days ago
+  (90 days including today) and must be inside the 730-day retention window; `to` defaults to today
+  and can't be later. Views return `[]` until `plans/usage-dashboards.md`
+  slice 4.
+
 ### Admin (admin API key required)
 - `POST /admin/enrich/trigger` - Trigger enrichment processing
 - `POST /admin/cleanup/trigger` - Trigger description cleanup
@@ -177,6 +187,7 @@ wrangler secret put PERPLEXITY_API_KEY
 wrangler secret put EXA_API_KEY      # Optional: Exa Untappd ABV fallback
 wrangler secret put API_KEY          # Client API key
 wrangler secret put ADMIN_SECRET     # Admin secret for /admin/* routes (X-Admin-Secret header)
+wrangler secret put USAGE_REPORT_TOKEN  # Bearer token for GET /reports/usage (Grafana); required to deploy
 ```
 
 ## Key Patterns
