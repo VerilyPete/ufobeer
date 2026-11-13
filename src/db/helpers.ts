@@ -3,6 +3,7 @@
  * Extracted from index.ts as part of Phase 6 refactoring.
  */
 
+import { unlessVerified } from './verified';
 import { hashDescription } from '../utils/hash';
 import { shouldSkipEnrichment } from '../config';
 import { D1_MAX_PARAMS_PER_STATEMENT, D1_MAX_STATEMENTS_PER_BATCH, ABV_CONFIDENCE_FROM_DESCRIPTION } from '../constants';
@@ -440,7 +441,7 @@ export async function insertPlaceholders(
              description_cleaned_at = NULL,
              cleanup_source = NULL,
              cleanup_version = NULL,
-             enrichment_status = 'pending',
+             enrichment_status = ${unlessVerified('enrichment_status', "'pending'")},
              last_seen_at = excluded.last_seen_at,
              updated_at = excluded.updated_at`
             )
@@ -473,7 +474,7 @@ export async function insertPlaceholders(
            ON CONFLICT(id) DO UPDATE SET
              brew_name = excluded.brew_name,
              brewer = COALESCE(excluded.brewer, enriched_beers.brewer),
-             enrichment_status = 'skipped',
+             enrichment_status = ${unlessVerified('enrichment_status', "'skipped'")},
              last_seen_at = excluded.last_seen_at`
             )
             .bind(beer.id, beer.brew_name, beer.brewer ?? null, beer.brew_description || null, descriptionHash, now, now)

@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS dlq_messages (
 
     -- Replay tracking
     replay_count INTEGER DEFAULT 0,        -- Number of times message has been replayed
+    replay_claim TEXT,                     -- Token of the replay request holding the claim (migration 0015)
+    replay_claimed_at INTEGER,             -- When that claim was taken; the cron releases stale claims
 
     -- Action timestamps (NULL until action taken)
     replayed_at INTEGER,                   -- When message was replayed to main queue

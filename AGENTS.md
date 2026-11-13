@@ -206,6 +206,11 @@ wrangler secret put USAGE_REPORT_TOKEN  # Bearer token for GET /reports/usage (G
 ### Dead Letter Queue
 - Failed messages stored in D1 for inspection
 - Admin can replay or acknowledge via API
+- Replay claims entries under a lease (`replay_claim` token, `replay_claimed_at`,
+  migration 0015); every replay write is guarded on the token, and the cron
+  returns claims older than `DLQ_REPLAY_CLAIM_STALE_MS` to `pending`
+  (`releaseStaleReplayClaims`). Replay never re-opens a beer that already has
+  an ABV or is skipped; those entries are reported in `skipped_resolved`
 - Prevents message loss while enabling debugging
 
 ### ABV Enrichment Pipeline
@@ -226,6 +231,16 @@ in `src/config.ts`: name rules, placeholder brewers (`n/a`, `unassigned`, `vario
 the Saucer's `Brewfusion` house label, and name-plus-brewer entries. A blank brewer is never a skip
 signal. `skipped` is terminal, so each enrichment run first re-checks recently seen skipped rows
 (`releaseUnblockedSkips`, `src/db/skipRecovery.ts`) and returns any that no rule matches to `pending`.
+
+### Hand-Verified Rows
+A row with `is_verified = 1` keeps its `abv`, `confidence`, `enrichment_source`
+and `enrichment_status`: only a human changes them (NULL counts as unverified).
+Every automatic writer enforces this against the live row (`src/db/verified.ts`):
+row-level writes add `NOT_VERIFIED_SQL`; writes that also carry a description or
+names (taplist upserts, the cleanup consumer) use `unlessVerified()` per protected
+column, so the description is still updated and re-cleaned. Selectors skip
+verified rows, the enrichment consumer's preflight acks them before reserving
+quota, and admin DLQ replay reports them in `skipped_verified`.
 
 ### Description Cleanup Pipeline
 1. Beer with raw description queued to `description-cleanup`

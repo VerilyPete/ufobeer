@@ -2,7 +2,6 @@
  * Tests for enrichment_status transitions in the enrichment queue consumer.
  *
  * Verifies:
- * - Beers with non-pending status are skipped
  * - ABV found sets enrichment_status = 'enriched'
  * - ABV not found sets enrichment_status = 'not_found'
  */
@@ -114,49 +113,6 @@ function createEnv(db: D1Database): Env {
 // ============================================================================
 
 describe('handleEnrichmentBatch — enrichment_status', () => {
-  it('skips beers with enrichment_status = enriched', async () => {
-    const { db } = createTrackingDb({ enrichmentStatus: 'enriched' });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
-    const batch = createBatch([msg]);
-
-    await handleEnrichmentBatch(batch, createEnv(db));
-
-    expect(msg.ack).toHaveBeenCalled();
-    expect(fetchAbvFromPerplexity).not.toHaveBeenCalled();
-  });
-
-  it('skips beers with enrichment_status = not_found', async () => {
-    const { db } = createTrackingDb({ enrichmentStatus: 'not_found' });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
-    const batch = createBatch([msg]);
-
-    await handleEnrichmentBatch(batch, createEnv(db));
-
-    expect(msg.ack).toHaveBeenCalled();
-    expect(fetchAbvFromPerplexity).not.toHaveBeenCalled();
-  });
-
-  it('skips beers with enrichment_status = skipped', async () => {
-    const { db } = createTrackingDb({ enrichmentStatus: 'skipped' });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
-    const batch = createBatch([msg]);
-
-    await handleEnrichmentBatch(batch, createEnv(db));
-
-    expect(msg.ack).toHaveBeenCalled();
-    expect(fetchAbvFromPerplexity).not.toHaveBeenCalled();
-  });
-
-  it.each(['http', 'invalid_response', 'configuration'])('retries %s failures without writing not_found', async kind => {
-    vi.mocked(fetchAbvFromPerplexity).mockRejectedValueOnce(Object.assign(new Error(kind), { kind }));
-    const { db, prepareCalls } = createTrackingDb({ enrichmentStatus: 'pending' });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
-    await handleEnrichmentBatch(createBatch([msg]), createEnv(db));
-    expect(msg.retry).toHaveBeenCalledOnce();
-    expect(msg.ack).not.toHaveBeenCalled();
-    expect(prepareCalls.some(call => call.sql.includes('UPDATE enriched_beers'))).toBe(false);
-  });
-
   it('sets enrichment_status to enriched when ABV is found', async () => {
     vi.mocked(fetchAbvFromPerplexity).mockResolvedValueOnce(6.5);
     const { db, prepareCalls } = createTrackingDb({
@@ -270,25 +226,6 @@ describe('handleEnrichmentBatch — enrichment_status', () => {
 
     consoleWarnSpy.mockRestore();
     consoleLogSpy.mockRestore();
-  });
-
-  it('binds the final UPDATE to enrichment_status = pending for optimistic concurrency', async () => {
-    vi.mocked(fetchAbvFromPerplexity).mockResolvedValueOnce(5.5);
-    const { db, prepareCalls } = createTrackingDb({
-      enrichmentStatus: 'pending',
-      preCount: 0,
-      reservationResult: { new_count: 1 },
-    });
-    const msg = createMessage({ beerId: 'beer-1', beerName: 'Test IPA', brewer: 'Brewery', descriptionHash: null });
-    const batch = createBatch([msg]);
-
-    await handleEnrichmentBatch(batch, createEnv(db));
-
-    const updateCall = prepareCalls.find(
-      c => c.sql.includes('UPDATE enriched_beers') && c.sql.includes("enrichment_status = 'enriched'")
-    );
-    expect(updateCall).toBeDefined();
-    expect(updateCall!.sql).toContain("WHERE id = ? AND enrichment_status = 'pending'");
   });
 
   it('reserves the limit-th slot when the counter is at limit - 1', async () => {

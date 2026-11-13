@@ -94,25 +94,27 @@ DLQ consumers store messages in `dlq_messages` table for admin inspection.
 ### EnrichmentMessage
 
 ```typescript
-interface EnrichmentMessage {
-  beerId: string;
-  beerName: string;
-  brewer?: string;
-  description?: string;  // For ABV extraction
-  priority?: 'high' | 'normal';
-}
+type EnrichmentMessage = {
+  readonly beerId: string;
+  readonly beerName: string;
+  readonly brewer: string;
+  readonly descriptionHash: string | null; // null: the beer has no description
+};
 ```
 
 ### CleanupMessage
 
 ```typescript
-interface CleanupMessage {
-  beerId: string;
-  beerName: string;
-  description: string;   // Original description to clean
-  brewer?: string;
-}
+type CleanupMessage = {
+  readonly beerId: string;
+  readonly beerName: string;
+  readonly brewer: string;
+  readonly brewDescription: string;   // Original description to clean
+  readonly descriptionHash?: string;  // Missing: legacy message, acked without a write
+};
 ```
+
+The authoritative definitions, with the reasoning, are in `src/types.ts`.
 
 ## Consumer Implementation
 
@@ -123,27 +125,15 @@ export async function handleEnrichmentBatch(
   batch: MessageBatch<EnrichmentMessage>,
   env: Env
 ): Promise<void> {
-  for (const message of batch.messages) {
-    try {
-      // 1. Check quota
-      if (await isQuotaExhausted(env.DB)) {
-        message.retry({ delaySeconds: 300 });
-        continue;
-      }
-
-      // 2. Call Perplexity API
-      const result = await lookupABV(message.body, env);
-
-      // 3. Update database
-      await updateBeerABV(env.DB, message.body.beerId, result);
-
-      // 4. Acknowledge success
-      message.ack();
-    } catch (error) {
-      // Will retry or go to DLQ based on attempts
-      message.retry();
-    }
-  }
+  // 1. Kill switch and monthly limit: ack (or retry on a D1 error)
+  // 2. Per message, preflight against the live row (isStillCurrent): ack
+  //    without spending quota if the row is missing, not pending,
+  //    hand-verified, or its hash, name or brewer no longer match
+  // 3. Reserve a daily Perplexity slot atomically; ack if none is left
+  // 4. Call Perplexity; on its explicit "unknown", recheck the row and
+  //    (if enabled and within EXA_DAILY_LIMIT) try the Exa Untappd fallback
+  // 5. Write the result guarded on the same live-row conditions; a row
+  //    that changed meanwhile is left alone. Errors retry, then go to the DLQ
 }
 ```
 
@@ -189,10 +179,11 @@ Enrichment has quota limits to control Perplexity costs. Cleanup calls no model,
 - `MONTHLY_ENRICHMENT_LIMIT` (2000) - Perplexity calls/month
 - Tracked in `enrichment_limits` table
 
-When quota is exhausted:
-1. Consumer delays message retry (5+ minutes)
-2. `/health` endpoint shows quota status
-3. Admin can monitor and adjust limits
+When quota is exhausted, the consumer acks the message without a lookup (it
+is not retried); the beer stays `pending`, and the next taplist refresh, sync
+or cron sweep queues it again once quota is available. Only transient errors
+(D1 unavailable, a failed provider call) retry the message. `/health` shows
+quota status.
 
 ## Triggering Processing
 
@@ -204,7 +195,7 @@ When quota is exhausted:
 Cron fires every 20 minutes but is gated by two checks:
 1. **Operating hours** — skips outside noon–11pm Central Time (DST-aware)
 2. **Schedule jitter** — `checkAndAdvanceCronSchedule()` gates execution
-   to ~4 hours with ±20 minutes of randomization (stored in `system_state`)
+   to ~2 hours with ±20 minutes of randomization (stored in `system_state`)
 
 When due, triggers `handleScheduledEnrichment()` which:
 1. Refreshes taplist for all enabled stores
@@ -214,12 +205,16 @@ When due, triggers `handleScheduledEnrichment()` which:
 ### Manual (Admin)
 ```bash
 # Trigger enrichment
-curl -X POST -H "X-API-Key: $ADMIN_KEY" \
-  "https://api.ufobeer.app/admin/enrich/trigger?limit=50"
+curl -X POST -H "X-API-Key: $API_KEY" -H "X-Admin-Secret: $ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"limit": 50}' \
+  "https://api.ufobeer.app/admin/enrich/trigger"
 
 # Trigger cleanup
-curl -X POST -H "X-API-Key: $ADMIN_KEY" \
-  "https://api.ufobeer.app/admin/cleanup/trigger?mode=missing&limit=100"
+curl -X POST -H "X-API-Key: $API_KEY" -H "X-Admin-Secret: $ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "missing", "limit": 100}' \
+  "https://api.ufobeer.app/admin/cleanup/trigger"
 ```
 
 ## Debugging
@@ -229,7 +224,7 @@ Cloudflare Dashboard > Workers & Pages > Queues
 
 ### Check failed messages
 ```bash
-curl -H "X-API-Key: $ADMIN_KEY" \
+curl -H "X-API-Key: $API_KEY" -H "X-Admin-Secret: $ADMIN_SECRET" \
   "https://api.ufobeer.app/admin/dlq?status=pending"
 ```
 
@@ -241,8 +236,9 @@ curl -H "X-API-Key: $API_KEY" \
 
 ### Replay specific failures
 ```bash
-curl -X POST -H "X-API-Key: $ADMIN_KEY" \
+# ids are dlq_messages row ids (the "id" field of GET /admin/dlq), at most 50
+curl -X POST -H "X-API-Key: $API_KEY" -H "X-Admin-Secret: $ADMIN_SECRET" \
   -H "Content-Type: application/json" \
-  -d '{"message_ids": ["abc123"]}' \
+  -d '{"ids": [12]}' \
   "https://api.ufobeer.app/admin/dlq/replay"
 ```

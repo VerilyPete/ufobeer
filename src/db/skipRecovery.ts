@@ -12,6 +12,7 @@
 import { shouldSkipEnrichment } from '../config';
 import { ABV_LOOKUP_RECENTLY_SEEN_MS, SKIP_RECHECK_MAX_ROWS, SKIP_RECHECK_PAGE_SIZE } from '../constants';
 import { SAME_IDENTITY_SQL } from './identity';
+import { NOT_VERIFIED_SQL } from './verified';
 import { asTypedRows } from './helpers';
 
 type SkippedRow = { readonly id: string; readonly brew_name: string; readonly brewer: string | null };
@@ -29,7 +30,7 @@ async function releaseRows(db: D1Database, rows: readonly SkippedRow[], now: num
   const results = await db.batch(rows.map(row =>
     db.prepare(
       `UPDATE enriched_beers SET enrichment_status = 'pending', updated_at = ?
-       WHERE id = ? AND enrichment_status = 'skipped' AND ${SAME_IDENTITY_SQL}`
+       WHERE id = ? AND enrichment_status = 'skipped' AND ${NOT_VERIFIED_SQL} AND ${SAME_IDENTITY_SQL}`
     ).bind(now, row.id, row.brew_name, row.brewer)
   ));
   return results.reduce((count, result) => count + (result.meta?.changes ?? 0), 0);
@@ -43,7 +44,7 @@ async function scanFrom(
   const limit = Math.min(scan.pageSize, scan.maxRows - progress.scanned);
   const page = asTypedRows<SkippedRow>((await db.prepare(
     `SELECT id, brew_name, brewer FROM enriched_beers
-     WHERE enrichment_status = 'skipped' AND abv IS NULL AND last_seen_at >= ? AND id > ?
+     WHERE enrichment_status = 'skipped' AND abv IS NULL AND ${NOT_VERIFIED_SQL} AND last_seen_at >= ? AND id > ?
      ORDER BY id LIMIT ?`
   ).bind(scan.seenCutoff, scan.cursor, limit).all()).results);
 

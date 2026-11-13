@@ -13,6 +13,7 @@
  * @module queue/cleanup
  */
 
+import { unlessVerified } from '../db/verified';
 import type { Env, CleanupMessage, EnrichmentMessage } from '../types';
 import { extractABV } from '../db/helpers';
 import { shouldSkipEnrichment } from '../config';
@@ -193,10 +194,10 @@ function buildBatchOperations(
             description_cleaned_at = ?,
             cleanup_source = 'deterministic',
             cleanup_version = ${CLEANUP_VERSION},
-            abv = ?,
-            confidence = ${ABV_CONFIDENCE_FROM_DESCRIPTION},
-            enrichment_source = 'description',
-            enrichment_status = 'enriched'
+            abv = ${unlessVerified('abv', '?')},
+            confidence = ${unlessVerified('confidence', String(ABV_CONFIDENCE_FROM_DESCRIPTION))},
+            enrichment_source = ${unlessVerified('enrichment_source', "'description'")},
+            enrichment_status = ${unlessVerified('enrichment_status', "'enriched'")}
           WHERE id = ? AND description_hash = ?
         `).bind(cleaned, now, abv, beerId, descriptionHash ?? null),
       });

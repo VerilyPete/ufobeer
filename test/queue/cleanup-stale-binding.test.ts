@@ -59,7 +59,7 @@ function createFakeD1(initialRows: Record<string, FakeBeerRow>) {
       // modeled; SET clause order matches the source (cleaned, timestamp[,
       // abv]), and cleanup_source is a literal in the SQL.
       const source = /cleanup_source = '([^']+)'/.exec(sql)?.[1] ?? null;
-      if (sql.includes('abv = ?')) {
+      if (sql.includes('abv =')) {
         const [cleaned, , abv] = args as [string, number, number];
         rows.set(beerId, { ...row, brew_description_cleaned: cleaned, cleanup_source: source, abv });
       } else {

@@ -42,6 +42,15 @@ vi.mock('../../src/db/usage', async (importOriginal) => {
   };
 });
 
+vi.mock('../../src/handlers/dlq', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/handlers/dlq')>();
+  return {
+    ...real,
+    releaseStaleReplayClaims: vi.fn().mockResolvedValue(0),
+    cleanupOldDlqMessages: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 vi.mock('../../src/db/skipRecovery', () => ({
   releaseUnblockedSkips: vi.fn().mockResolvedValue({ released: 0, scanned: 0, capReached: false }),
 }));
@@ -52,6 +61,7 @@ import { getCurrentHourCT } from '../../src/utils/date';
 import { reapOldRateLimits } from '../../src/rate-limit';
 import { reapOldAuditLog } from '../../src/audit';
 import { reapExpiredUsage, runUsageHealthCheck } from '../../src/db/usage';
+import { releaseStaleReplayClaims } from '../../src/handlers/dlq';
 
 // ============================================================================
 // Factories
@@ -401,6 +411,38 @@ describe('handleScheduledEnrichment', () => {
 
   it('does not let a failing usage health check block the enrichment sweep', async () => {
     vi.mocked(runUsageHealthCheck).mockRejectedValueOnce(new Error('D1 unavailable'));
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const env = createScheduledEnv();
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(refreshTaplistForStore).toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  // ============================================================================
+  // Abandoned DLQ replay claims
+  // ============================================================================
+
+  it.each([
+    ['in operating hours', {}, null],
+    ['with the kill switch active', { ENRICHMENT_ENABLED: 'false' }, null],
+    ['outside operating hours', {}, 3],
+  ] as const)('releases stale DLQ replay claims on every tick, %s', async (_label, overrides, hourCT) => {
+    if (hourCT !== null) {
+      vi.mocked(getCurrentHourCT).mockReturnValueOnce(hourCT);
+    }
+    vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+    const env = createScheduledEnv(overrides);
+
+    await handleScheduledEnrichment(env, createMockCtx());
+
+    expect(releaseStaleReplayClaims).toHaveBeenCalledWith(env.DB, { now: 1_800_000_000_000 });
+    vi.mocked(Date.now).mockRestore();
+  });
+
+  it('does not let a failing replay-claim release block the enrichment sweep', async () => {
+    vi.mocked(releaseStaleReplayClaims).mockRejectedValueOnce(new Error('D1 unavailable'));
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const env = createScheduledEnv();
 

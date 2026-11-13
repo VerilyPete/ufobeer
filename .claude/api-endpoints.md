@@ -336,38 +336,68 @@ Get DLQ statistics.
 
 ### POST /admin/dlq/replay
 
-Replay failed messages back to the main queue.
+Replay failed messages to the queue each one failed on (enrichment or cleanup).
+An enrichment entry for a hand-verified beer (`is_verified = 1`) is not
+replayed: its DLQ id is listed in `skipped_verified` and the entry stays
+`pending`, so it can be replayed once a human clears the flag. An enrichment
+entry whose beer already has an ABV or is `skipped` is not re-sent either (that
+would pay for the lookup again): it is listed in `skipped_resolved` and stays
+`pending` for you to acknowledge.
 
-**Request Body:**
+A replay claims its entries (`replaying`) under a lease: a random token and the
+claim time. Every write it makes is guarded on that token. If a replay fails
+before releasing its claim, the cron returns the entry to `pending` once the
+claim is 10 minutes old (`DLQ_REPLAY_CLAIM_STALE_MS`), within 30 minutes; the
+entry is not re-sent until you replay it again.
+
+**Request Body:** (`ids` are DLQ row ids, at most 50; `delay_seconds` optional)
 ```json
 {
-  "message_ids": ["abc123", "def456"]
+  "ids": [12, 13, 14]
 }
 ```
 
 **Response:**
 ```json
 {
-  "replayed": 2,
-  "failed": 0
+  "success": true,
+  "requestId": "…",
+  "data": {
+    "requested_count": 3,
+    "claimed_count": 3,
+    "replayed_count": 2,
+    "failed_count": 0,
+    "skipped_verified": [14],
+    "skipped_resolved": [],
+    "queued_to": "beer-enrichment",
+    "queued_counts": { "enrichment": 2, "cleanup": 0 }
+  }
 }
 ```
 
 ### POST /admin/dlq/acknowledge
 
-Acknowledge/dismiss messages (remove from pending).
+Acknowledge (dismiss) pending messages without replaying them. Only
+`pending` entries change; `failed_count` counts the requested ids that were
+not pending.
 
-**Request Body:**
+**Request Body:** (`ids` are DLQ row ids, at most 100)
 ```json
 {
-  "message_ids": ["abc123", "def456"]
+  "ids": [12, 13]
 }
 ```
 
 **Response:**
 ```json
 {
-  "acknowledged": 2
+  "success": true,
+  "requestId": "…",
+  "data": {
+    "acknowledged_count": 2,
+    "requested_count": 2,
+    "failed_count": 0
+  }
 }
 ```
 
