@@ -503,24 +503,29 @@ describe('write measurement (slice 5, step 1)', () => {
     return events.at(-1);
   }
 
-  it('counts rows read and the unchanged sightings a one-hour last_seen_at throttle would skip', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    await seed({ id: 'recent', lastSeenAt: NOW - 10 * minute });
-    await seed({ id: 'just-under', lastSeenAt: NOW - LAST_SEEN_REFRESH_MS + 1 });
-    await seed({ id: 'hour-old', lastSeenAt: NOW - LAST_SEEN_REFRESH_MS });
-    await seed({ id: 'never-seen', lastSeenAt: null });
-    await seed({ id: 'future', lastSeenAt: NOW + minute });
-    await seed({ id: 'renamed', lastSeenAt: NOW - minute });
-    await seed({ id: 'new-brewer', lastSeenAt: NOW - minute });
-    await seed({ id: 'repairable', brewer: ' Valley Brewing ', lastSeenAt: NOW - minute });
-    await seed({ id: 'kept-brewer', lastSeenAt: NOW - minute });
-    await seed({ id: 'blocked', brewName: 'Build Your Flight', lastSeenAt: NOW - minute });
-    await seed({ id: 'redescribed', lastSeenAt: NOW - minute });
+  const PERIOD_START = Math.floor(NOW / LAST_SEEN_REFRESH_MS) * LAST_SEEN_REFRESH_MS;
+  const AT = PERIOD_START + 30 * minute;
 
-    await see([
-      beer('recent'),
-      beer('just-under'),
-      beer('hour-old'),
+  it('counts rows read and the unchanged sightings already seen this hour', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await seed({ id: 'this-hour', lastSeenAt: PERIOD_START + 10 * minute });
+    await seed({ id: 'hour-start', lastSeenAt: PERIOD_START });
+    await seed({ id: 'same-instant', lastSeenAt: AT });
+    await seed({ id: 'last-hour', lastSeenAt: PERIOD_START - 1 });
+    await seed({ id: 'never-seen', lastSeenAt: null });
+    await seed({ id: 'future', lastSeenAt: AT + minute });
+    await seed({ id: 'renamed', lastSeenAt: AT - minute });
+    await seed({ id: 'new-brewer', lastSeenAt: AT - minute });
+    await seed({ id: 'repairable', brewer: ' Valley Brewing ', lastSeenAt: AT - minute });
+    await seed({ id: 'kept-brewer', lastSeenAt: AT - minute });
+    await seed({ id: 'blocked', brewName: 'Build Your Flight', lastSeenAt: AT - minute });
+    await seed({ id: 'redescribed', lastSeenAt: AT - minute });
+
+    await recordSeenBeers(env.DB, [
+      beer('this-hour'),
+      beer('hour-start'),
+      beer('same-instant'),
+      beer('last-hour'),
       beer('never-seen'),
       beer('future'),
       beer('renamed', { brew_name: 'Valley Pils' }),
@@ -530,14 +535,29 @@ describe('write measurement (slice 5, step 1)', () => {
       beer('blocked', { brew_name: 'Build Your Flight' }),
       beer('redescribed', { brew_description: TEXT_B }),
       beer('first-sighting'),
-    ]);
+    ], { now: AT });
 
     expect(loggedEvent(log, 'seen_beers.recorded')).toMatchObject({
-      rows_read: 11,
-      throttle_eligible: 3,
-      unchanged: 10,
+      rows_read: 12,
+      throttle_eligible: 4,
+      unchanged: 11,
       written: 2,
     });
+  });
+
+  it('counts, over repeated sightings, exactly the writes an hourly throttle would skip', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const sightings = [5, 35, 65, 95, 125].map(offset => PERIOD_START + offset * minute);
+
+    for (const at of sightings) {
+      await recordSeenBeers(env.DB, [beer('regular')], { now: at });
+    }
+
+    const eligible = log.mock.calls
+      .map(([line]) => String(line))
+      .filter(line => line.includes('seen_beers.recorded'))
+      .reduce((sum, line) => sum + Number(JSON.parse(line).throttle_eligible ?? 0), 0);
+    expect(eligible).toBe(2);
   });
 
   it('counts the cleanup marks it wrote', async () => {
@@ -553,6 +573,20 @@ describe('write measurement (slice 5, step 1)', () => {
       { id: 'cleaned', descriptionHash: hash },
     ], { now: NOW });
 
-    expect(loggedEvent(log, 'seen_beers.cleanup_marked')).toMatchObject({ requested: 3, marked: 1 });
+    expect(loggedEvent(log, 'seen_beers.cleanup_marked')).toMatchObject({ requested: 3, marked: 1, complete: true });
+  });
+
+  it('still counts the marks a committed batch wrote when a later batch fails', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const hash = await hashDescription(TEXT_A);
+    const rows = Array.from({ length: 101 }, (_, i) => `m${i}`);
+    for (const id of rows) await seed({ id });
+    await env.DB.prepare(
+      "CREATE TRIGGER abort_write BEFORE UPDATE OF queued_for_cleanup_at ON enriched_beers WHEN OLD.id = 'm100' BEGIN SELECT RAISE(ABORT, 'test abort'); END"
+    ).run();
+
+    await expect(markCleanupQueued(env.DB, rows.map(id => ({ id, descriptionHash: hash })), { now: NOW })).rejects.toThrow();
+
+    expect(loggedEvent(log, 'seen_beers.cleanup_marked')).toMatchObject({ requested: 101, marked: 100, complete: false });
   });
 });

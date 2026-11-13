@@ -246,8 +246,10 @@ sighting of an uncleaned row not queued in 24 h; callers send it with
 Sync queues cleanup only; the taplist path also queues enrichment, but not while
 a description still awaits cleanup.
 Each call logs `seen_beers.recorded` (outcome counts, `rows_read`, and
-`throttle_eligible`: unchanged sightings within `LAST_SEEN_REFRESH_MS` of the
-stored `last_seen_at`), and each mark logs `seen_beers.cleanup_marked`. A week
+`throttle_eligible`: unchanged sightings whose stored `last_seen_at` is in the
+same clock hour, exactly the writes the throttle would skip), and each mark
+logs `seen_beers.cleanup_marked` (with `complete: false` if a later batch
+failed). A week
 of these decides slice 5's throttle (plan: ship only above 5,000 a day).
 
 ### Hand-Verified Rows

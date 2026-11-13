@@ -434,14 +434,24 @@ case added to the Golden Taproom harness.
 1. Measure for a week: `recordSeenBeers` logs counts of `written`,
    `unchanged`, throttle-eligible beers, cleanup marks written and rows read.
    Ship only if net avoidable writes exceed 5,000 a day.
-2. If shipped, the throttle skips only the timestamp: a beer seen within
-   `LAST_SEEN_REFRESH_MS` (1 hour) gets no write, but its queue eligibility
+2. If shipped, the throttle skips only the timestamp: a beer whose stored
+   `last_seen_at` is in the same `LAST_SEEN_REFRESH_MS` period (1 hour,
+   epoch-aligned, so clock hours) gets no write, but its queue eligibility
    (pending enrichment, cleanup retry) is computed the same as without the
    throttle; renames, brewer changes and description changes still write.
    Seven-day windows may see a beer up to an hour late; accepted. Tests: null
-   `last_seen_at`, the exact one-hour boundary, a clock that moved back,
+   `last_seen_at`, the exact hour boundary, a clock that moved back,
    out-of-order sightings never moving `last_seen_at` backwards, a pending
    row still re-queued while throttled.
+
+   Why fixed hours rather than "within an hour of the stored value" (changed
+   after Codex review of the implementation): with a sliding window, step 1
+   measures against a `last_seen_at` that every sighting still advances, while
+   the throttle stops advancing it, so the step 1 count overstates the savings
+   (about twice over for a beer seen every 30 minutes). With fixed hours a
+   sighting is skipped exactly when an earlier one landed in the same hour,
+   which step 1 can see, so `throttle_eligible` equals the writes the throttle
+   would skip.
 
 ## Rollout
 

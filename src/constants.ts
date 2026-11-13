@@ -480,9 +480,11 @@ export const CLEANUP_VERSION = 1;
 export const TAPLIST_FORMAT_VERSION = 1;
 
 /**
- * A sighting within this long of the stored last_seen_at would be skipped by
- * the proposed last_seen_at throttle (plans/enriched-beers-write-paths.md,
- * slice 5). recordSeenBeers logs how many sightings qualify as
- * `throttle_eligible`; the throttle ships only if that exceeds 5,000 a day.
+ * The last_seen_at throttle's period (plans/enriched-beers-write-paths.md,
+ * slice 5): an unchanged sighting whose stored last_seen_at falls in the same
+ * period (epoch-aligned, so clock hours) is not written. Because periods are
+ * fixed, the count recordSeenBeers logs as `throttle_eligible` while every
+ * sighting is still written equals the writes the throttle would skip: a
+ * sighting is skipped exactly when an earlier one landed in the same hour.
  */
 export const LAST_SEEN_REFRESH_MS = 60 * 60 * 1000;
