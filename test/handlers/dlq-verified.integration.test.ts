@@ -66,6 +66,7 @@ beforeEach(async () => {
   await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
   await env.DB.prepare('DELETE FROM enriched_beers').run();
   await env.DB.prepare('DELETE FROM dlq_messages').run();
+  await env.DB.prepare('DROP TRIGGER IF EXISTS abort_finalize').run();
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -106,6 +107,26 @@ describe('admin replay of a verified row', () => {
     expect(enrichment).toHaveBeenCalledOnce();
     expect(await beerStatus('beer-1')).toBe('pending');
     expect(await dlqStatus(dlqId)).toBe('replayed');
+  });
+
+  it('keeps a refused verified entry replayable when finalizing the sent entries fails', async () => {
+    await seedBeer('beer-1', 1);
+    await seedBeer('beer-2', 0, 'enriched');
+    const verifiedId = await seedDlqEntry('m-1', 'beer-enrichment', ENRICHMENT_BODY);
+    const sentId = await seedDlqEntry('m-2', 'description-cleanup', CLEANUP_BODY);
+    await env.DB.prepare(
+      "CREATE TRIGGER abort_finalize BEFORE UPDATE OF status ON dlq_messages WHEN NEW.status = 'replayed' BEGIN SELECT RAISE(ABORT, 'test abort'); END"
+    ).run();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await replay(queues().worker, [verifiedId, sentId]);
+    await env.DB.prepare('DROP TRIGGER abort_finalize').run();
+
+    expect(await dlqStatus(verifiedId)).toBe('pending');
+    await env.DB.prepare('UPDATE enriched_beers SET is_verified = 0 WHERE id = ?').bind('beer-1').run();
+    const { enrichment, worker } = queues();
+    expect(await replay(worker, [verifiedId])).toMatchObject({ replayed_count: 1 });
+    expect(enrichment).toHaveBeenCalledOnce();
   });
 
   it('replays a mixed cleanup and enrichment batch with unchanged counts', async () => {

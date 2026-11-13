@@ -459,17 +459,8 @@ export async function handleDlqReplay(
       }
     }
 
-    // STEP 4: Update successfully replayed messages
-    if (replayedIds.length > 0) {
-      const successPlaceholders = replayedIds.map(() => '?').join(',');
-      await env.DB.prepare(
-        `UPDATE dlq_messages
-         SET status = 'replayed', replayed_at = ?, replay_count = replay_count + 1
-         WHERE id IN (${successPlaceholders})`
-      ).bind(now, ...replayedIds).run();
-    }
-
-    // STEP 5: Return failed and verified-skipped messages to 'pending'
+    // STEP 4: Return failed and verified-skipped messages to 'pending' first,
+    // so a failure finalizing the sent ones cannot strand them in 'replaying'
     const unsentIds = [...failedIds, ...skippedVerifiedIds];
     if (unsentIds.length > 0) {
       const unsentPlaceholders = unsentIds.map(() => '?').join(',');
@@ -484,6 +475,16 @@ export async function handleDlqReplay(
     }
     if (skippedVerifiedIds.length > 0) {
       console.warn(`Refused replay of hand-verified beers: dlqIds=${JSON.stringify(skippedVerifiedIds)}`);
+    }
+
+    // STEP 5: Update successfully replayed messages
+    if (replayedIds.length > 0) {
+      const successPlaceholders = replayedIds.map(() => '?').join(',');
+      await env.DB.prepare(
+        `UPDATE dlq_messages
+         SET status = 'replayed', replayed_at = ?, replay_count = replay_count + 1
+         WHERE id IN (${successPlaceholders})`
+      ).bind(now, ...replayedIds).run();
     }
 
     return Response.json({
