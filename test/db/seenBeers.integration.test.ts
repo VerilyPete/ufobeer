@@ -590,3 +590,80 @@ describe('write measurement (slice 5, step 1)', () => {
     expect(loggedEvent(log, 'seen_beers.cleanup_marked')).toMatchObject({ requested: 101, marked: 100, complete: false });
   });
 });
+
+describe('last_seen_at throttle (slice 5, step 2)', () => {
+  const minute = 60_000;
+  const PERIOD_START = Math.floor(NOW / LAST_SEEN_REFRESH_MS) * LAST_SEEN_REFRESH_MS;
+  const AT = PERIOD_START + 30 * minute;
+  const seeAt = (beers: readonly SeenBeer[], now = AT) => recordSeenBeers(env.DB, beers, { now });
+  const lastSeen = async (id: string) => (await stored(id))?.['last_seen_at'];
+
+  it('skips the write for an unchanged sighting already seen this hour', async () => {
+    await seed({ id: 'this-hour', lastSeenAt: PERIOD_START });
+
+    const result = await seeAt([beer('this-hour')]);
+
+    expect(result.outcomes.get('this-hour')).toBe('unchanged');
+    expect(await lastSeen('this-hour')).toBe(PERIOD_START);
+  });
+
+  it.each([
+    ['in the previous hour', PERIOD_START - 1],
+    ['never seen', null],
+  ])('writes last_seen_at when it was %s', async (_label, lastSeenAt) => {
+    await seed({ id: 'b', lastSeenAt });
+
+    await seeAt([beer('b')]);
+
+    expect(await lastSeen('b')).toBe(AT);
+  });
+
+  it('still writes a rename seen this hour', async () => {
+    await seed({ id: 'b', lastSeenAt: AT - minute });
+
+    await seeAt([beer('b', { brew_name: 'Valley Pils' })]);
+
+    expect(await stored('b')).toMatchObject({ brew_name: 'Valley Pils', last_seen_at: AT });
+  });
+
+  it('writes once an hour over repeated sightings, and logs every skipped write as throttle_eligible', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const writes: unknown[] = [];
+
+    for (const offset of [5, 35, 65, 95, 125]) {
+      await seeAt([beer('regular')], PERIOD_START + offset * minute);
+      writes.push(await lastSeen('regular'));
+    }
+
+    expect(writes).toEqual([5, 5, 65, 65, 125].map(offset => PERIOD_START + offset * minute));
+    const eligible = log.mock.calls
+      .map(([line]) => String(line))
+      .filter(line => line.includes('seen_beers.recorded'))
+      .reduce((sum, line) => sum + Number(JSON.parse(line).throttle_eligible ?? 0), 0);
+    expect(eligible).toBe(2);
+  });
+
+  it('never moves last_seen_at backwards when the clock moved back or sightings arrive out of order', async () => {
+    await seed({ id: 'future', lastSeenAt: AT + minute });
+    await seed({ id: 'renamed', lastSeenAt: AT + minute });
+    await seed({ id: 'redescribed', lastSeenAt: AT + minute });
+
+    await seeAt([beer('future'), beer('renamed', { brew_name: 'Valley Pils' }), beer('redescribed', { brew_description: TEXT_B })]);
+
+    expect(await lastSeen('future')).toBe(AT + minute);
+    expect(await stored('renamed')).toMatchObject({ brew_name: 'Valley Pils', last_seen_at: AT + minute });
+    expect(await stored('redescribed')).toMatchObject({ brew_description_original: TEXT_B, last_seen_at: AT + minute });
+  });
+
+  it('still queues a throttled pending row for enrichment and an uncleaned one for cleanup', async () => {
+    await seed({ id: 'undescribed', original: null, lastSeenAt: AT - minute });
+    await seed({ id: 'uncleaned', lastSeenAt: AT - minute });
+
+    const result = await seeAt([beer('undescribed'), beer('uncleaned')]);
+
+    expect(await lastSeen('undescribed')).toBe(AT - minute);
+    expect(await lastSeen('uncleaned')).toBe(AT - minute);
+    expect(ids(result.enrichment)).toEqual(['undescribed']);
+    expect(ids(result.cleanup)).toEqual(['uncleaned']);
+  });
+});

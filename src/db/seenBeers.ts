@@ -3,12 +3,16 @@
  * both record what they saw here, and get back the work to queue.
  *
  * Every write is decided against the live row and guarded, and queue work is
- * derived from the row each write returned, never from the earlier read:
+ * derived from the row each write returned, not from the earlier read. The
+ * one exception is a sighting the last_seen_at throttle skips (nothing else
+ * would change): it is not written, and its queue work comes from the row
+ * just read. Otherwise:
  * - a first sighting inserts, or is `stale` if another writer got there first;
  * - a changed description (compared as text) replaces the original and its
  *   hash together, guarded on the original and hash that were read;
- * - any other sighting writes names and last_seen_at only. An omitted brewer
- *   keeps the stored one, repaired only if it is still what was read.
+ * - any other sighting writes names and last_seen_at (which never moves
+ *   backwards) only. An omitted brewer keeps the stored one, repaired only
+ *   if it is still what was read.
  *
  * See plans/enriched-beers-write-paths.md (D1–D4, D6, D7).
  */
@@ -75,6 +79,9 @@ type StoredRow = {
 const ROW_COLUMNS = `id, brew_name, brewer, brew_description_original, description_hash, description_cleaned_at,
   queued_for_cleanup_at, abv, enrichment_status, is_verified, last_seen_at`;
 
+/** last_seen_at moves forward only, whatever order sightings arrive in. */
+const NEVER_BACKWARDS = 'MAX(COALESCE(enriched_beers.last_seen_at, 0), ?)';
+
 type Planned = { readonly id: string; readonly statement: D1PreparedStatement; readonly kind: 'insert' | 'change' | 'seen' };
 
 function lastOccurrences(beers: readonly SeenBeer[]): readonly SeenBeer[] {
@@ -132,7 +139,7 @@ function planChange(db: D1Database, beer: SeenBeer, stored: StoredRow, descripti
          cleanup_version = NULL,
          queued_for_cleanup_at = NULL,
          enrichment_status = ${unlessVerified('enrichment_status', "'pending'")},
-         last_seen_at = ?,
+         last_seen_at = ${NEVER_BACKWARDS},
          updated_at = ?
        WHERE id = ? AND brew_description_original IS ? AND description_hash IS ?
        RETURNING ${ROW_COLUMNS}`
@@ -156,8 +163,8 @@ function wantsSkipMark(beer: SeenBeer, stored: StoredRow): boolean {
 /**
  * A sighting whose only effect would be moving last_seen_at forward within
  * the same LAST_SEEN_REFRESH_MS period: no new description, no rename, no
- * brewer change or repair, no skip mark. Counted for slice 5's throttle
- * decision.
+ * brewer change or repair, no skip mark. Such a sighting is not written (the
+ * throttle); its queue work is derived from the row just read.
  */
 function isThrottleEligible(beer: SeenBeer, stored: StoredRow, now: number): boolean {
   const description = beer.brew_description ? beer.brew_description : null;
@@ -192,7 +199,7 @@ function planSeen(db: D1Database, beer: SeenBeer, stored: StoredRow, now: number
          brew_name = ?,
          brewer = ${brewer.sql},
          enrichment_status = ${skip.sql},
-         last_seen_at = ?
+         last_seen_at = ${NEVER_BACKWARDS}
        WHERE id = ?
        RETURNING ${ROW_COLUMNS}`
     ).bind(beer.brew_name, ...brewer.args, ...skip.args, now, beer.id),
@@ -293,8 +300,15 @@ export async function recordSeenBeers(
   if (unique.length === 0) return { outcomes: new Map(), cleanup: [], enrichment: [] };
 
   const storedRows = await readStoredRows(db, unique.map(beer => beer.id));
-  const planned = await Promise.all(unique.map(beer => plan(db, beer, storedRows.get(beer.id), options.now)));
-  const written = await executeInBatches(db, planned);
+  const throttled = new Map(unique.flatMap(beer => {
+    const row = storedRows.get(beer.id);
+    return row !== undefined && isThrottleEligible(beer, row, options.now)
+      ? [[beer.id, { outcome: 'unchanged', row }] as const]
+      : [];
+  }));
+  const planned = await Promise.all(unique.filter(beer => !throttled.has(beer.id))
+    .map(beer => plan(db, beer, storedRows.get(beer.id), options.now)));
+  const written: ReadonlyMap<string, Written> = new Map([...throttled, ...await executeInBatches(db, planned)]);
 
   const rows = [...written.values()].flatMap(({ row }) => row === null ? [] : [row]);
   const cleanup = await prepareCleanup(db, rows.filter(row => needsCleanup(row, options.now)));
@@ -308,15 +322,11 @@ export async function recordSeenBeers(
   const outcomes = new Map([...written].map(([id, { outcome }]) => [id, outcome]));
   const counts = [...outcomes.values()].reduce<Record<string, number>>(
     (tally, outcome) => ({ ...tally, [outcome]: (tally[outcome] ?? 0) + 1 }), {});
-  const throttleEligible = unique.filter(beer => {
-    const row = storedRows.get(beer.id);
-    return row !== undefined && isThrottleEligible(beer, row, options.now);
-  }).length;
   console.log(JSON.stringify({
     event: 'seen_beers.recorded',
     ...counts,
     rows_read: storedRows.size,
-    throttle_eligible: throttleEligible,
+    throttle_eligible: throttled.size,
     cleanup: cleanup.length,
     enrichment: enrichment.length,
   }));
