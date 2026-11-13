@@ -63,27 +63,20 @@ async function consume(messages: readonly CleanupMessage[]): Promise<void> {
   await handleCleanupBatch(batch, consumerEnv);
 }
 
-/** Real D1, except that the sync's read of existing rows runs `hook` after it returns. */
+/** Real D1, except that `hook` runs once, right after the sync's read of existing rows. */
 function afterExistingRead(hook: () => Promise<void>): D1Database {
   const realDb = env.DB;
+  let fired = false;
   return {
-    prepare: (sql: string) => {
-      const statement = realDb.prepare(sql);
-      if (!/^\s*SELECT id,[\s\S]*FROM enriched_beers\s+WHERE id IN/.test(sql)) return statement;
-      return {
-        bind: (...args: unknown[]) => {
-          const bound = statement.bind(...args);
-          return {
-            all: async () => {
-              const result = await bound.all();
-              await hook();
-              return result;
-            },
-          };
-        },
-      };
+    prepare: (sql: string) => realDb.prepare(sql),
+    batch: async (statements: D1PreparedStatement[]) => {
+      const result = await realDb.batch(statements);
+      if (!fired) {
+        fired = true;
+        await hook();
+      }
+      return result;
     },
-    batch: (statements: D1PreparedStatement[]) => realDb.batch(statements),
   } as unknown as D1Database;
 }
 
@@ -101,6 +94,7 @@ async function sync(items: readonly object[], options: { readonly db?: D1Databas
 
 beforeEach(async () => {
   await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
+  await env.DB.prepare('DROP TRIGGER IF EXISTS abort_write').run();
   for (const table of ['enriched_beers', 'store_taplist_cache', 'rate_limits', 'audit_log']) {
     await env.DB.prepare(`DELETE FROM ${table}`).run();
   }
@@ -287,18 +281,51 @@ describe('cleanup retry after a description change', () => {
     expect(retry.cleanup.map(message => message.brewDescription)).toEqual([TEXT_B]);
   });
 
-  it('queues nothing when the write batch fails', async () => {
+  it('queues nothing and reports the failure when the write batch fails', async () => {
     await seedRow({ original: TEXT_A, hash: await hashDescription(TEXT_A), cleaned: null });
-    const realDb = env.DB;
-    const db = {
-      prepare: (sql: string) => realDb.prepare(sql),
-      batch: async () => { throw new Error('D1 unavailable'); },
-    } as unknown as D1Database;
+    await env.DB.prepare(
+      "CREATE TRIGGER abort_write BEFORE UPDATE ON enriched_beers BEGIN SELECT RAISE(ABORT, 'test abort'); END"
+    ).run();
 
-    const { json, cleanup } = await sync([{ ...BEER, brew_description: TEXT_A }], { db });
+    const { json, cleanup } = await sync([{ ...BEER, brew_description: TEXT_A }]);
 
+    await env.DB.prepare('DROP TRIGGER abort_write').run();
     expect(cleanup).toEqual([]);
     expect(json).toMatchObject({ synced: 0, queued_for_cleanup: 0, errors: ['Database write failed for batch'] });
+  });
+});
+
+describe('cleanup mark and repeat syncs', () => {
+  it('returns 500 when the mark fails after a send, leaving the row for the next sync', async () => {
+    await seedRow({ original: TEXT_A, hash: await hashDescription(TEXT_A), cleaned: null });
+    await env.DB.prepare(
+      "CREATE TRIGGER abort_write BEFORE UPDATE OF queued_for_cleanup_at ON enriched_beers BEGIN SELECT RAISE(ABORT, 'test abort'); END"
+    ).run();
+
+    const { cleanupQueue } = queues();
+    const request = new Request('https://api.example.com/beers/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ beers: [BEER] }),
+    });
+    const response = await handleBeerSync(request, { ...env, CLEANUP_QUEUE: cleanupQueue } as unknown as Env, {}, context);
+    await env.DB.prepare('DROP TRIGGER abort_write').run();
+
+    expect(response.status).toBe(500);
+    expect(cleanupQueue.sendBatch).toHaveBeenCalledOnce();
+    expect(await stored()).toMatchObject({ brew_description_original: TEXT_A });
+    expect((await sync([BEER])).cleanup.map(message => message.brewDescription)).toEqual([TEXT_A]);
+  });
+
+  it('answers a repeated unchanged sync with the same counts and queues cleanup only once', async () => {
+    await seedRow({ original: TEXT_A, hash: await hashDescription(TEXT_A), cleaned: null });
+
+    const first = await sync([{ ...BEER, brew_description: TEXT_A }]);
+    const second = await sync([{ ...BEER, brew_description: TEXT_A }]);
+
+    expect(first.json).toMatchObject({ synced: 1, queued_for_cleanup: 1 });
+    expect(second.json).toMatchObject({ synced: 1, queued_for_cleanup: 0 });
+    expect(second.json.errors).toBeUndefined();
   });
 });
 

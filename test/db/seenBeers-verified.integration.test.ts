@@ -5,7 +5,7 @@
  */
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { insertPlaceholders } from '../../src/db/helpers';
+import { recordSeenBeers } from '../../src/db/seenBeers';
 import { hashDescription } from '../../src/utils/hash';
 
 type Seed = {
@@ -32,7 +32,7 @@ async function stored() {
 }
 
 const see = (beer: { readonly brew_name: string; readonly brew_description: string }) =>
-  insertPlaceholders(env.DB, [{ id: 'beer-1', brewer: 'Valley Brewing', ...beer }], 'request-1');
+  recordSeenBeers(env.DB, [{ id: 'beer-1', brewer: 'Valley Brewing', ...beer }], { now: Date.now() });
 
 describe('taplist sighting of a hand-verified row (real D1)', () => {
   beforeEach(async () => {

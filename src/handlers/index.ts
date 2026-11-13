@@ -22,14 +22,10 @@ export {
   handleBeerList,
   handleBatchLookup,
   handleBeerSync,
-  syncBeersWithBatchHandling,
 } from './beers';
 
 // Usage telemetry
 export { handleUsageReport } from './usage';
-
-// Beer handler types (for testing)
-export type { SyncBatchResult } from './beers';
 
 // Health handler
 export { handleHealthCheck } from './health';

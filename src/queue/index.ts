@@ -16,4 +16,4 @@
 export { handleEnrichmentBatch } from './enrichment';
 export { handleCleanupBatch } from './cleanup';
 export { handleDlqBatch, handleCleanupDlqBatch } from './dlq';
-export { queueBeersForEnrichment, queueBeersForCleanup } from './helpers';
+export { queueBeersForEnrichment, queueBeersForCleanup, sendCleanupAndMark } from './helpers';

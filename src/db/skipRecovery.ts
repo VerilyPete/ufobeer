@@ -1,7 +1,7 @@
 /**
  * Re-checks skipped rows against the current blocklist rules.
  *
- * `skipped` is terminal for categorizeBeer and the sweep, and /beers/sync
+ * `skipped` is terminal for recordSeenBeers and the sweep, and a sighting
  * overwrites name and brewer without touching the status. So a real beer
  * first seen under a placeholder brewer, or caught by a rule later narrowed,
  * would stay skipped for good. This scan visits every recently seen skipped

@@ -1,11 +1,8 @@
 /**
  * Pipeline Integration Tests
  *
- * Tests the full enrichment pipeline from beer sync through D1 updates,
- * covering the key data flows:
- * 1. Beer sync flow: API response -> insertPlaceholders -> D1 update
- * 2. Handling beers with existing enrichment data
- * 3. Queue message processing for cleanup and enrichment
+ * Enrichment reads (getEnrichmentForBeerIds) and ABV extraction. Sighting
+ * writes run against real D1 in test/db/seenBeers.integration.test.ts.
  *
  * Uses mocked D1 for reliable, fast tests without external dependencies.
  *
@@ -14,8 +11,8 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
-import { insertPlaceholders, getEnrichmentForBeerIds, extractABV } from '../src/db';
-import type { InsertPlaceholdersResult, BeerEnrichmentData } from '../src/db';
+import { getEnrichmentForBeerIds, extractABV } from '../src/db';
+import type { BeerEnrichmentData } from '../src/db';
 
 // Mock external dependencies
 vi.mock('../src/config', () => ({
@@ -178,157 +175,6 @@ function createTestBeer(
 describe('Pipeline Integration', () => {
 
   // --------------------------------------------------------------------------
-  // insertPlaceholders Flow Tests
-  // --------------------------------------------------------------------------
-
-  describe('insertPlaceholders flow', () => {
-    it('should insert new beers and return correct counts', async () => {
-      vi.clearAllMocks();
-      vi.mocked(shouldSkipEnrichment).mockImplementation(({ brewName: name }) => {
-        return name.toLowerCase().includes('flight');
-      });
-      const mockDb = createMockD1();
-      const beers = [
-        createTestBeer('beer-1', 'Test IPA', 'Test Brewery', 'A hoppy IPA'),
-        createTestBeer('beer-2', 'Test Stout', 'Test Brewery', 'A dark stout'),
-      ];
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'test-request-1');
-
-      expect(result.totalSynced).toBe(2);
-      // Both beers are new and have descriptions, so they should need cleanup
-      expect(result.needsCleanup).toHaveLength(2);
-      expect(mockDb.batch).toHaveBeenCalled();
-    });
-
-    it('should queue new beer with description for cleanup (ABV extracted during cleanup)', async () => {
-      // Note: Even if ABV is in description, new beers go to cleanup queue first.
-      // The cleanup consumer is responsible for ABV extraction from cleaned description.
-      // This ensures consistent description cleaning before ABV extraction.
-      const mockDb = createMockD1();
-      const beers = [
-        createTestBeer('beer-abv', 'High ABV IPA', 'Brewery', 'A strong 8.5% ABV IPA with citrus notes'),
-      ];
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'test-request-2');
-
-      // New beer with description goes to cleanup, not withAbv
-      expect(result.withAbv).toBe(0);
-      expect(result.needsEnrichment).toHaveLength(0);
-      expect(result.needsCleanup).toHaveLength(1);
-      expect(result.needsCleanup[0].id).toBe('beer-abv');
-    });
-
-    it('should queue beers without ABV for cleanup when description exists', async () => {
-      const mockDb = createMockD1();
-      const beers = [
-        createTestBeer('beer-no-abv', 'Mystery Beer', 'Unknown Brewery', 'A mysterious beer with no alcohol info'),
-      ];
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'test-request-3');
-
-      // Beer should be queued for cleanup (has description but no ABV)
-      expect(result.needsCleanup).toHaveLength(1);
-      expect(result.needsCleanup[0].id).toBe('beer-no-abv');
-      expect(result.needsEnrichment).toHaveLength(0);
-    });
-
-    it('should queue beers without description for Perplexity enrichment', async () => {
-      const mockDb = createMockD1();
-      const beers = [
-        createTestBeer('beer-no-desc', 'Plain Beer', 'Basic Brewery'),
-      ];
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'test-request-4');
-
-      // Beer should be queued for Perplexity (no description)
-      expect(result.needsEnrichment).toHaveLength(1);
-      expect(result.needsEnrichment[0].id).toBe('beer-no-desc');
-      expect(result.needsCleanup).toHaveLength(0);
-    });
-
-    it('should update existing beers when description changes', async () => {
-      // Set up existing beer with a description hash
-      const existingBeers = new Map([
-        ['beer-update', {
-          description_hash: 'hash-Original-descriptio',
-          abv: null,
-        }],
-      ]);
-      const mockDb = createMockD1(existingBeers);
-
-      // Sync with new description (different hash)
-      const beers = [
-        createTestBeer('beer-update', 'Updatable Beer', 'Brewery', 'Updated description with changes'),
-      ];
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'test-request-5');
-
-      // Should queue for cleanup due to description change
-      expect(result.needsCleanup).toHaveLength(1);
-      expect(result.needsCleanup[0].id).toBe('beer-update');
-    });
-
-    it('should not queue for cleanup when description is unchanged and ABV exists', async () => {
-      const description = 'A great beer with 7% ABV';
-      const descHash = `hash-${description.slice(0, 20).replace(/\s/g, '-')}`;
-
-      const existingBeers = new Map([
-        ['beer-preserve', {
-          description_hash: descHash,
-          abv: 7.0,
-          enrichment_source: 'description',
-        }],
-      ]);
-      const mockDb = createMockD1(existingBeers);
-
-      // Sync with same description
-      const beers = [
-        createTestBeer('beer-preserve', 'Preserved Beer', 'Brewery', description),
-      ];
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'test-request-6');
-
-      // Should not need enrichment or cleanup
-      expect(result.needsEnrichment).toHaveLength(0);
-      expect(result.needsCleanup).toHaveLength(0);
-    });
-
-    it('should handle large batches correctly', async () => {
-      const mockDb = createMockD1();
-
-      // Create 150 beers to test D1's 100 parameter limit handling
-      const beers = Array.from({ length: 150 }, (_, i) =>
-        createTestBeer(`beer-batch-${i}`, `Batch Beer ${i}`, 'Batch Brewery', `Description ${i} with ${5 + i * 0.1}% ABV`)
-      );
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'test-request-8');
-
-      expect(result.totalSynced).toBe(150);
-      // Batch should be called multiple times due to chunking
-      expect(mockDb.batch).toHaveBeenCalled();
-    });
-
-    it('should skip blocklisted beers (flights) for enrichment', async () => {
-      vi.clearAllMocks();
-      vi.mocked(shouldSkipEnrichment).mockImplementation(({ brewName: name }) => {
-        return name.toLowerCase().includes('flight');
-      });
-      const mockDb = createMockD1();
-      const beers = [
-        createTestBeer('flight-1', 'Texas Flight Sampler', 'Various'),
-        createTestBeer('beer-normal', 'Normal Beer', 'Brewery'),
-      ];
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'test-request-9');
-
-      // Flight should be skipped for enrichment, normal beer should be queued
-      expect(result.needsEnrichment).toHaveLength(1);
-      expect(result.needsEnrichment[0].id).toBe('beer-normal');
-    });
-  });
-
-  // --------------------------------------------------------------------------
   // getEnrichmentForBeerIds Tests
   // --------------------------------------------------------------------------
 
@@ -442,157 +288,10 @@ describe('Pipeline Integration', () => {
   });
 
   // --------------------------------------------------------------------------
-  // Description Hash Change Detection Tests
-  // --------------------------------------------------------------------------
-
-  describe('description change detection', () => {
-    it('should detect description changes via hash mismatch', async () => {
-      const originalHash = 'hash-Original-descriptio';
-
-      const existingBeers = new Map([
-        ['hash-test', {
-          description_hash: originalHash,
-          abv: null,
-        }],
-      ]);
-      const mockDb = createMockD1(existingBeers);
-
-      // Sync with different description (different hash)
-      const beers = [createTestBeer('hash-test', 'Hash Test Beer', 'Brewery', 'Updated beer description with more info')];
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'test-request-13');
-
-      // Should detect change and queue for cleanup
-      expect(result.needsCleanup).toHaveLength(1);
-    });
-
-    it('should not queue for cleanup when description hash matches', async () => {
-      const description = 'Consistent beer description';
-      const descHash = `hash-${description.slice(0, 20).replace(/\s/g, '-')}`;
-
-      const existingBeers = new Map([
-        ['unchanged-test', {
-          description_hash: descHash,
-          abv: 5.5,
-          enrichment_source: 'description',
-        }],
-      ]);
-      const mockDb = createMockD1(existingBeers);
-
-      // Sync with same description
-      const beers = [createTestBeer('unchanged-test', 'Unchanged Beer', 'Brewery', description)];
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'test-request-14');
-
-      // Should not need cleanup (description unchanged, ABV exists)
-      expect(result.needsCleanup).toHaveLength(0);
-      expect(result.needsEnrichment).toHaveLength(0);
-    });
-  });
-
-  // --------------------------------------------------------------------------
-  // End-to-End Data Flow Tests
-  // --------------------------------------------------------------------------
-
-  describe('end-to-end data flow', () => {
-    it('should correctly categorize mixed beer batch', async () => {
-      vi.clearAllMocks();
-      vi.mocked(shouldSkipEnrichment).mockImplementation(({ brewName: name }) => {
-        return name.toLowerCase().includes('flight');
-      });
-      // Setup: one existing beer with ABV
-      const existingDesc = 'Existing description';
-      const existingHash = `hash-${existingDesc.slice(0, 20).replace(/\s/g, '-')}`;
-
-      const existingBeers = new Map([
-        ['existing-with-abv', {
-          description_hash: existingHash,
-          abv: 5.5,
-          enrichment_source: 'description',
-        }],
-      ]);
-      const mockDb = createMockD1(existingBeers);
-
-      // Sync batch with:
-      // 1. Existing beer (unchanged) - should not queue (description unchanged, ABV exists)
-      // 2. New beer with description (even with ABV) - goes to cleanup queue first
-      // 3. New beer with description (no ABV) - goes to cleanup queue
-      // 4. New beer without description - goes to Perplexity enrichment queue
-      // 5. Flight (blocklisted) - skipped for enrichment
-      const beers = [
-        createTestBeer('existing-with-abv', 'Existing Beer', 'Brewery', existingDesc),
-        createTestBeer('new-with-desc-abv', 'New ABV Beer', 'Brewery', 'A beer with 7.5% alcohol'),
-        createTestBeer('new-with-desc-no-abv', 'New Cleanup Beer', 'Brewery', 'No ABV info here'),
-        createTestBeer('new-needs-enrichment', 'New Enrichment Beer', 'Brewery'),
-        createTestBeer('texas-flight', 'Texas Flight', 'Various'),
-      ];
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'mixed-batch');
-
-      expect(result.totalSynced).toBe(5);
-      // All new beers with descriptions go to cleanup (ABV extraction happens during cleanup)
-      expect(result.withAbv).toBe(0);
-      // Both new beers with descriptions go to cleanup
-      expect(result.needsCleanup).toHaveLength(2);
-      // Only the beer without description goes to enrichment (flight is skipped)
-      expect(result.needsEnrichment).toHaveLength(1);
-
-      // Verify categorization
-      const cleanupIds = result.needsCleanup.map(b => b.id).sort();
-      expect(cleanupIds).toEqual(['new-with-desc-abv', 'new-with-desc-no-abv']);
-      expect(result.needsEnrichment[0].id).toBe('new-needs-enrichment');
-    });
-
-    it('should handle empty beer array', async () => {
-      const mockDb = createMockD1();
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, [], 'empty-test');
-
-      expect(result.totalSynced).toBe(0);
-      expect(result.withAbv).toBe(0);
-      expect(result.needsCleanup).toHaveLength(0);
-      expect(result.needsEnrichment).toHaveLength(0);
-    });
-
-    it('should queue existing beer without ABV for Perplexity when description unchanged', async () => {
-      const description = 'No ABV in this description';
-      const descHash = `hash-${description.slice(0, 20).replace(/\s/g, '-')}`;
-
-      const existingBeers = new Map([
-        ['needs-enrichment', {
-          description_hash: descHash,
-          abv: null, // No ABV yet
-          enrichment_source: null,
-        }],
-      ]);
-      const mockDb = createMockD1(existingBeers);
-
-      const beers = [createTestBeer('needs-enrichment', 'Beer Without ABV', 'Brewery', description)];
-
-      const result = await insertPlaceholders(mockDb as unknown as D1Database, beers, 'enrichment-test');
-
-      // Should queue for Perplexity since description unchanged but ABV missing
-      expect(result.needsEnrichment).toHaveLength(1);
-      expect(result.needsEnrichment[0].id).toBe('needs-enrichment');
-      expect(result.needsCleanup).toHaveLength(0);
-    });
-  });
-
-  // --------------------------------------------------------------------------
   // Error Handling Tests
   // --------------------------------------------------------------------------
 
   describe('error handling', () => {
-    it('should propagate database errors from batch operations', async () => {
-      const mockDb = createMockD1();
-      mockDb.batch.mockRejectedValueOnce(new Error('D1 batch failed'));
-
-      const beers = [createTestBeer('error-test', 'Error Beer', 'Brewery', 'Test description')];
-
-      await expect(
-        insertPlaceholders(mockDb as unknown as D1Database, beers, 'error-request')
-      ).rejects.toThrow('D1 batch failed');
-    });
-
     it('should handle getEnrichmentForBeerIds errors gracefully', async () => {
       const mockDb = createMockD1();
       mockDb.batch.mockRejectedValueOnce(new Error('D1 error'));

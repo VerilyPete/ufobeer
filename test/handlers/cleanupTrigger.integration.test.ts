@@ -2,7 +2,7 @@ import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCleanupTrigger } from '../../src/handlers/cleanupTrigger';
 import { CLEANUP_VERSION } from '../../src/constants';
-import { insertPlaceholders } from '../../src/db/helpers';
+import { recordSeenBeers } from '../../src/db/seenBeers';
 import { hashDescription } from '../../src/utils/hash';
 import type { CleanupMessage, Env, RequestContext } from '../../src/types';
 
@@ -87,9 +87,9 @@ describe("cleanup trigger mode 'all' (real D1)", () => {
       VALUES ('changed', 'Valley Lager', 'Valley Brewing', 'A crisp lager', ?, 'A crisp lager.', 'deterministic', ?, 1)
     `).bind(await hashDescription('A crisp lager'), CLEANUP_VERSION).run();
 
-    await insertPlaceholders(env.DB, [
+    await recordSeenBeers(env.DB, [
       { id: 'changed', brew_name: 'Valley Lager', brewer: 'Valley Brewing', brew_description: 'A hazy lager' },
-    ], 'request-1');
+    ], { now: Date.now() });
     const { queuedIds } = await trigger({ mode: 'all', confirm: true });
 
     expect(queuedIds).toEqual(['changed']);

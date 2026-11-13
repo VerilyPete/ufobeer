@@ -205,9 +205,9 @@ function requireArray(value: unknown, label: string): unknown[] {
   return value;
 }
 
-async function invokeGoldenRequest(request: Request): Promise<Response> {
+async function invokeGoldenRequest(request: Request, workerEnv: Env = goldenEnv): Promise<Response> {
   const ctx = createExecutionContext();
-  const response = await worker.fetch(request, goldenEnv, ctx);
+  const response = await worker.fetch(request, workerEnv, ctx);
   await waitOnExecutionContext(ctx);
   return response;
 }
@@ -417,6 +417,29 @@ describe('Golden Taproom contract fixture', () => {
     expect(parsed.data.queued_for_cleanup).toBe(0);
     expect(parsed.data.requestId).toBeTruthy();
     expect(parsed.data.errors).toBeUndefined();
+  });
+
+  it('applies a synced description change and serves the new text through the mobile schemas', async () => {
+    await seedGoldenEnrichment();
+    const syncBeers = [{ id: 'golden-complete', brew_name: 'Contract IPA', brewer: 'Schema Brewing', brew_description: 'Updated description' }];
+    expect(syncBeersRequestSchema.safeParse({ beers: syncBeers }).success).toBe(true);
+    const sendBatch = vi.fn().mockResolvedValue(undefined);
+    const syncEnv = { ...goldenEnv, CLEANUP_QUEUE: { ...goldenEnv.CLEANUP_QUEUE, sendBatch } };
+
+    const syncResponse = await invokeGoldenRequest(goldenSyncRequest(syncBeers), syncEnv);
+    const synced = syncBeersResponseSchema.safeParse(await syncResponse.json());
+    expect(synced.success).toBe(true);
+    if (!synced.success) return;
+    expect(synced.data).toMatchObject({ synced: 1, queued_for_cleanup: 1 });
+
+    const batch = batchEnrichmentResponseSchema.safeParse(await (await invokeGoldenRequest(goldenBatchRequest(['golden-complete']))).json());
+    expect(batch.success).toBe(true);
+    if (!batch.success) return;
+    expect(batch.data.enrichments['golden-complete']).toMatchObject({
+      brew_description: 'Updated description',
+      has_cleaned_description: false,
+      enriched_abv: 6.5,
+    });
   });
 
   it('returns deterministic health quota arithmetic through the mobile schema', async () => {

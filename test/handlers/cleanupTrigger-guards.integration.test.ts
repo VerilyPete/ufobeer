@@ -12,7 +12,7 @@ import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCleanupTrigger } from '../../src/handlers/cleanupTrigger';
 import { handleCleanupBatch } from '../../src/queue/cleanup';
-import { insertPlaceholders } from '../../src/db/helpers';
+import { recordSeenBeers } from '../../src/db/seenBeers';
 import { hashDescription } from '../../src/utils/hash';
 import type { CleanupMessage, Env, RequestContext } from '../../src/types';
 
@@ -266,7 +266,7 @@ describe('consumer and mark ordering', () => {
     await seed({ id: 'beer' });
 
     await trigger({ send: async (_call, messages) => { await consume(messages.map(message => message.body)); } });
-    await insertPlaceholders(env.DB, [{ id: 'beer', brew_name: 'Valley Lager', brewer: 'Valley Brewing', brew_description: TEXT_B }], 'request-2');
+    await recordSeenBeers(env.DB, [{ id: 'beer', brew_name: 'Valley Lager', brewer: 'Valley Brewing', brew_description: TEXT_B }], { now: Date.now() });
 
     expect(ids((await trigger()).sent)).toEqual(['beer']);
   });

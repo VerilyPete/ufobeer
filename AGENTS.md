@@ -232,6 +232,20 @@ the Saucer's `Brewfusion` house label, and name-plus-brewer entries. A blank bre
 signal. `skipped` is terminal, so each enrichment run first re-checks recently seen skipped rows
 (`releaseUnblockedSkips`, `src/db/skipRecovery.ts`) and returns any that no rule matches to `pending`.
 
+### Beer Sightings (`recordSeenBeers`)
+The taplist refresh and `POST /beers/sync` both write sightings through
+`recordSeenBeers` in `src/db/seenBeers.ts`, which returns per-beer outcomes
+(`written`, `unchanged`, `stale`, `failed`) and the cleanup and enrichment work
+derived from each row it wrote. Every write is guarded on the live row: first
+sightings `INSERT … ON CONFLICT DO NOTHING`; a changed description (compared as
+text) is guarded on the original and hash that were read; an omitted brewer is
+resolved in SQL. A guard that refuses is `stale`, not an error, and queues
+nothing; the first successful guarded write wins. Cleanup is retried on any
+sighting of an uncleaned row not queued in 24 h; callers send it with
+`sendCleanupAndMark`, whose mark is guarded on the hash and never moves backwards.
+Sync queues cleanup only; the taplist path also queues enrichment, but not while
+a description still awaits cleanup.
+
 ### Hand-Verified Rows
 A row with `is_verified = 1` keeps its `abv`, `confidence`, `enrichment_source`
 and `enrichment_status`: only a human changes them (NULL counts as unverified).

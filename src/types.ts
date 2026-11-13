@@ -66,9 +66,8 @@ export type EnrichmentMessage = {
    * Hash of the authoritative description this message was produced from,
    * for parity with CleanupMessage.descriptionHash below. Required but
    * nullable (not optional) -- deliberately unlike CleanupMessage: a beer
-   * with no description at all (categorizeBeer's needs_enrichment /
-   * new_needs_enrichment branches in src/db/helpers.ts) legitimately has no
-   * hash to bind, so producers always supply the field, using `null` (not
+   * with no description at all (see needsEnrichment in src/db/seenBeers.ts)
+   * legitimately has no hash to bind, so producers always supply the field, using `null` (not
    * omission) for "no hash to check." This also sidesteps
    * exactOptionalPropertyTypes friction at every producer: a required
    * nullable field takes a plain `someHash ?? null` assignment, the same

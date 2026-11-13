@@ -28,19 +28,19 @@ import {
 
 // Mock the db module
 vi.mock('../../src/db', () => ({
-  insertPlaceholders: vi.fn().mockResolvedValue({
-    totalSynced: 0,
-    withAbv: 0,
-    needsEnrichment: [],
-    needsCleanup: [],
-  }),
   getEnrichmentForBeerIds: vi.fn().mockResolvedValue(new Map()),
+}));
+
+// Mock the sighting writer
+vi.mock('../../src/db/seenBeers', () => ({
+  recordSeenBeers: vi.fn().mockResolvedValue({ outcomes: new Map(), cleanup: [], enrichment: [] }),
 }));
 
 // Mock the queue module
 vi.mock('../../src/queue', () => ({
   queueBeersForEnrichment: vi.fn().mockResolvedValue({ queued: 0, skipped: 0 }),
   queueBeersForCleanup: vi.fn().mockResolvedValue({ queued: 0, queuedIds: [] }),
+  sendCleanupAndMark: vi.fn().mockResolvedValue({ queued: 0, markError: null }),
 }));
 
 // Mock hash utility
@@ -72,8 +72,9 @@ vi.mock('../../src/utils/enrichment-hash', () => ({
   computeEnrichmentHash: vi.fn().mockResolvedValue('mock-enrichment-hash'),
 }));
 
-import { insertPlaceholders, getEnrichmentForBeerIds } from '../../src/db';
-import { queueBeersForEnrichment, queueBeersForCleanup } from '../../src/queue';
+import { getEnrichmentForBeerIds } from '../../src/db';
+import { recordSeenBeers } from '../../src/db/seenBeers';
+import { queueBeersForEnrichment, queueBeersForCleanup, sendCleanupAndMark } from '../../src/queue';
 import { getCachedTaplist, parseCachedBeers, setCachedTaplist, updateCacheTimestamp } from '../../src/db/cache';
 import { checkConditionalRequest } from '../../src/utils/conditional';
 import { shouldUpdateContent } from '../../src/utils/cache-helpers';
@@ -86,13 +87,8 @@ import { computeEnrichmentHash } from '../../src/utils/enrichment-hash';
 const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
-  vi.mocked(insertPlaceholders).mockReset().mockResolvedValue({
-    totalSynced: 0,
-    withAbv: 0,
-    needsEnrichment: [],
-    needsCleanup: [],
-    failed: [],
-  });
+  vi.mocked(recordSeenBeers).mockReset().mockResolvedValue({ outcomes: new Map(), cleanup: [], enrichment: [] });
+  vi.mocked(sendCleanupAndMark).mockReset().mockResolvedValue({ queued: 0, markError: null });
   vi.mocked(getEnrichmentForBeerIds).mockReset().mockResolvedValue(new Map());
   vi.mocked(queueBeersForEnrichment).mockReset().mockResolvedValue({ queued: 0, skipped: 0 });
   vi.mocked(queueBeersForCleanup).mockReset().mockResolvedValue({ queued: 0, queuedIds: [] });
@@ -874,15 +870,12 @@ describe('handleBeerList', () => {
         json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
       });
 
-      // Mock insertPlaceholders to return beers needing cleanup
-      vi.mocked(insertPlaceholders).mockResolvedValue({
-        totalSynced: 1,
-        withAbv: 0,
-        needsEnrichment: [],
-        needsCleanup: [
+      vi.mocked(recordSeenBeers).mockResolvedValue({
+        outcomes: new Map([['1', 'written']]),
+        cleanup: [
           { id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery', brew_description: 'New description', descriptionHash: 'mock-description-hash' },
         ],
-        failed: [],
+        enrichment: [],
       });
 
       const env = createMockEnv();
@@ -894,10 +887,11 @@ describe('handleBeerList', () => {
       // Wait for background tasks to complete
       await Promise.all(waitUntilPromises);
 
-      expect(queueBeersForCleanup).toHaveBeenCalledWith(
+      expect(sendCleanupAndMark).toHaveBeenCalledWith(
         env,
         [{ id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery', brew_description: 'New description', descriptionHash: 'mock-description-hash' }],
-        'test-request-id'
+        'test-request-id',
+        expect.any(Number)
       );
     });
 
@@ -912,15 +906,12 @@ describe('handleBeerList', () => {
         json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
       });
 
-      // Mock insertPlaceholders to return beers needing enrichment
-      vi.mocked(insertPlaceholders).mockResolvedValue({
-        totalSynced: 1,
-        withAbv: 0,
-        needsEnrichment: [
+      vi.mocked(recordSeenBeers).mockResolvedValue({
+        outcomes: new Map([['1', 'unchanged']]),
+        cleanup: [],
+        enrichment: [
           { id: '1', brew_name: 'Test IPA', brewer: 'Test Brewery', descriptionHash: null },
         ],
-        needsCleanup: [],
-        failed: [],
       });
 
       const env = createMockEnv();
@@ -971,10 +962,10 @@ describe('handleBeerList', () => {
         json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
       });
 
-      // Make insertPlaceholders take a long time
-      vi.mocked(insertPlaceholders).mockImplementation(async () => {
+      // Make the sighting write take a long time
+      vi.mocked(recordSeenBeers).mockImplementation(async () => {
         await new Promise(resolve => setTimeout(resolve, 100));
-        return { totalSynced: 1, withAbv: 0, needsEnrichment: [], needsCleanup: [], failed: [] };
+        return { outcomes: new Map(), cleanup: [], enrichment: [] };
       });
 
       const env = createMockEnv();
@@ -1002,16 +993,14 @@ describe('handleBeerList', () => {
         json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
       });
 
-      vi.mocked(insertPlaceholders).mockResolvedValue({
-        totalSynced: 2,
-        withAbv: 0,
-        needsEnrichment: [
-          { id: '2', brew_name: 'Beer needing enrichment', brewer: 'Test Brewery', descriptionHash: null },
-        ],
-        needsCleanup: [
+      vi.mocked(recordSeenBeers).mockResolvedValue({
+        outcomes: new Map([['1', 'written'], ['2', 'unchanged']]),
+        cleanup: [
           { id: '1', brew_name: 'Beer with new desc', brewer: 'Test Brewery', brew_description: 'New', descriptionHash: 'mock-description-hash' },
         ],
-        failed: [],
+        enrichment: [
+          { id: '2', brew_name: 'Beer needing enrichment', brewer: 'Test Brewery', descriptionHash: null },
+        ],
       });
 
       const env = createMockEnv();
@@ -1021,7 +1010,7 @@ describe('handleBeerList', () => {
       await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
       await Promise.all(waitUntilPromises);
 
-      expect(queueBeersForCleanup).toHaveBeenCalled();
+      expect(sendCleanupAndMark).toHaveBeenCalledWith(env, [expect.objectContaining({ id: '1' })], 'test-request-id', expect.any(Number));
       expect(queueBeersForEnrichment).toHaveBeenCalled();
     });
 
@@ -1036,13 +1025,7 @@ describe('handleBeerList', () => {
         json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
       });
 
-      vi.mocked(insertPlaceholders).mockResolvedValue({
-        totalSynced: 1,
-        withAbv: 1, // Already has ABV
-        needsEnrichment: [],
-        needsCleanup: [],
-        failed: [],
-      });
+      vi.mocked(recordSeenBeers).mockResolvedValue({ outcomes: new Map([['1', 'unchanged']]), cleanup: [], enrichment: [] });
 
       const env = createMockEnv();
       const { ctx, waitUntilPromises } = createMockExecutionContext();
@@ -1066,8 +1049,7 @@ describe('handleBeerList', () => {
         json: vi.fn().mockResolvedValue(createFlyingSaucerResponse(beers)),
       });
 
-      // Make insertPlaceholders throw an error
-      vi.mocked(insertPlaceholders).mockRejectedValue(new Error('Database error'));
+      vi.mocked(recordSeenBeers).mockRejectedValue(new Error('Database error'));
 
       const env = createMockEnv();
       const { ctx, waitUntilPromises } = createMockExecutionContext();
@@ -1082,7 +1064,7 @@ describe('handleBeerList', () => {
       await Promise.all(waitUntilPromises);
     });
 
-    it('passes correct data to insertPlaceholders', async () => {
+    it('passes correct data to recordSeenBeers', async () => {
       vi.clearAllMocks();
       const beers = [
         createBeer({ id: '1', brew_name: 'Test IPA', brewer: 'Brewery A', brew_description: 'Hoppy' }),
@@ -1101,13 +1083,13 @@ describe('handleBeerList', () => {
       await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
       await Promise.all(waitUntilPromises);
 
-      expect(insertPlaceholders).toHaveBeenCalledWith(
+      expect(recordSeenBeers).toHaveBeenCalledWith(
         env.DB,
         [
           { id: '1', brew_name: 'Test IPA', brewer: 'Brewery A', brew_description: 'Hoppy' },
           { id: '2', brew_name: 'Test Stout', brewer: 'Brewery B', brew_description: undefined },
         ],
-        'test-request-id'
+        { now: expect.any(Number) }
       );
     });
 
@@ -1127,10 +1109,10 @@ describe('handleBeerList', () => {
 
       const body = await result.response.json() as { beers: Array<{ brew_name: string; brewer: string }> };
       expect(body.beers[0]).toMatchObject({ brew_name: "Dragon's Milk Reserve", brewer: "Brasserie D'achouffe" });
-      expect(insertPlaceholders).toHaveBeenCalledWith(
+      expect(recordSeenBeers).toHaveBeenCalledWith(
         env.DB,
         [{ id: '1', brew_name: "Dragon's Milk Reserve", brewer: "Brasserie D'achouffe", brew_description: 'Rich' }],
-        'test-request-id'
+        { now: expect.any(Number) }
       );
     });
   });
@@ -1316,7 +1298,7 @@ describe('handleBeerList', () => {
       await handleBeerList(mockRequest, env, ctx, mockHeaders, reqCtx, '13885');
 
       expect(ctx.waitUntil).not.toHaveBeenCalled();
-      expect(insertPlaceholders).not.toHaveBeenCalled();
+      expect(recordSeenBeers).not.toHaveBeenCalled();
     });
 
     it('returns upstreamLatencyMs of 0 on cache hit', async () => {

@@ -10,21 +10,16 @@
  * Extracted from index.ts as part of Phase 7 refactoring.
  */
 
-import { unlessVerified } from '../db/verified';
 import type {
   Env,
   RequestContext,
   GetBeersResult,
 } from '../types';
-import { isValidBeer, hasBeerStock, SYNC_CONSTANTS } from '../types';
-import { insertPlaceholders, getEnrichmentForBeerIds } from '../db';
-// queueBeersForCleanup (src/queue/helpers.ts) attaches descriptionHash onto
-// the CleanupMessage it sends, computing one from brew_description when the
-// caller doesn't supply it -- so this file's cleanup-message producers
-// (handleBeerSync's needsCleanup, and processBackgroundEnrichment's use of
-// insertPlaceholders's needsCleanup) reach the queue correctly bound. See
-// the security review's "stale-result binding" remediation.
-import { queueBeersForEnrichment, queueBeersForCleanup } from '../queue';
+import { isValidBeer, hasBeerStock } from '../types';
+import { getEnrichmentForBeerIds } from '../db';
+import { recordSeenBeers } from '../db/seenBeers';
+import type { SeenBeer } from '../db/seenBeers';
+import { queueBeersForEnrichment, sendCleanupAndMark } from '../queue';
 import { getCachedTaplist, setCachedTaplist, updateCacheTimestamp, parseCachedBeers } from '../db/cache';
 import type { CachedTaplistRow } from '../db/cache';
 import type { CachedBeer } from '../schemas/cache';
@@ -120,24 +115,22 @@ function buildFlyingSaucerUrl(base: string, storeId: string): FlyingSaucerUrlRes
  */
 async function processBackgroundEnrichment(
   env: Env,
-  beers: ReadonlyArray<{ readonly id: string; readonly brew_name: string; readonly brewer?: string | undefined; readonly brew_description?: string | undefined }>,
+  beers: readonly SeenBeer[],
   requestId: string
 ): Promise<void> {
   try {
-    const result = await insertPlaceholders(env.DB, beers, requestId);
+    const now = Date.now();
+    const result = await recordSeenBeers(env.DB, beers, { now });
+    const { queued: cleanupQueued } = await sendCleanupAndMark(env, result.cleanup, requestId, now);
 
-    if (result.needsCleanup.length > 0) {
-      await queueBeersForCleanup(env, result.needsCleanup, requestId);
-    }
-
-    if (result.needsEnrichment.length > 0) {
-      await queueBeersForEnrichment(env, result.needsEnrichment, requestId);
+    if (result.enrichment.length > 0) {
+      await queueBeersForEnrichment(env, result.enrichment, requestId);
     }
 
     logWithContext(requestId, 'background.enrichment.complete', {
-      cleanup: result.needsCleanup.length,
-      enrichment: result.needsEnrichment.length,
-      failed: result.failed?.length ?? 0,
+      cleanup: cleanupQueued,
+      enrichment: result.enrichment.length,
+      failed: [...result.outcomes.values()].filter(outcome => outcome === 'failed').length,
     });
   } catch (error) {
     logError('background.enrichment.failed', error, { requestId });
@@ -741,60 +734,6 @@ export async function handleBatchLookup(
 // ============================================================================
 
 /**
- * Result of batch sync operation with failure handling.
- */
-export type SyncBatchResult = {
-  readonly succeeded: number;
-  readonly failed: number;
-  readonly errors: readonly string[];
-  /** Per statement: it ran without error. */
-  readonly statementSucceeded: readonly boolean[];
-  /** Per statement: it ran and its RETURNING clause produced a row. */
-  readonly statementReturnedRow: readonly boolean[];
-};
-
-/**
- * Execute batch of D1 statements with individual failure tracking.
- * Unlike simple db.batch(), this reports per-statement success/failure.
- */
-export async function syncBeersWithBatchHandling(
-  db: D1Database,
-  statements: D1PreparedStatement[]
-): Promise<SyncBatchResult> {
-  const errors: string[] = [];
-  let succeeded = 0;
-  let failed = 0;
-  const statementSucceeded = statements.map(() => false);
-  const statementReturnedRow = statements.map(() => false);
-
-  try {
-    const results = await db.batch(statements);
-
-    // Check each result for success/failure
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      if (!result) continue;
-      if (result.success) {
-        succeeded++;
-        statementSucceeded[i] = true;
-        statementReturnedRow[i] = (result.results?.length ?? 0) > 0;
-      } else {
-        failed++;
-        console.error(`Sync statement ${i} failed:`, result.error);
-        errors.push(`Statement ${i} failed`);
-      }
-    }
-  } catch (error) {
-    // Total batch failure - all statements failed
-    failed = statements.length;
-    console.error('Sync batch failed:', error);
-    errors.push('Database write failed for batch');
-  }
-
-  return { succeeded, failed, errors, statementSucceeded, statementReturnedRow };
-}
-
-/**
  * POST /beers/sync - Sync missing beers from mobile client
  *
  * Request body: { beers: Array<{ id, brew_name, brewer?, brew_description? }> }
@@ -838,12 +777,7 @@ export async function handleBeerSync(
     // 400 above, instead of silently truncating it after the fact.
     const beers = outerParse.data.beers;
     const validationErrors: string[] = [];
-    const validBeers: Array<{
-      id: string;
-      brew_name: string;
-      brewer: string | null;
-      brew_description: string | null;
-    }> = [];
+    const validBeers: SeenBeer[] = [];
 
     // Validate each beer individually (preserves per-beer partial success)
     for (let i = 0; i < beers.length; i++) {
@@ -852,12 +786,12 @@ export async function handleBeerSync(
       if (!beerParse.success) {
         validationErrors.push(`Beer ${i}: ${beerParse.error.issues[0]?.message ?? 'invalid'}`);
       } else {
-        validBeers.push(cleanBeerNames({
+        validBeers.push({
           id: beerParse.data.id,
           brew_name: beerParse.data.brew_name,
-          brewer: beerParse.data.brewer ?? null,
-          brew_description: beerParse.data.brew_description ?? null,
-        }));
+          brewer: beerParse.data.brewer,
+          brew_description: beerParse.data.brew_description,
+        });
       }
     }
 
@@ -868,154 +802,17 @@ export async function handleBeerSync(
       );
     }
 
-    // Duplicate ids collapse to the last valid occurrence; each input item
-    // still counts toward `synced` when its surviving beer is written.
-    const occurrences = new Map<string, number>();
-    const lastById = new Map<string, typeof validBeers[number]>();
-    for (const beer of validBeers) {
-      occurrences.set(beer.id, (occurrences.get(beer.id) ?? 0) + 1);
-      lastById.set(beer.id, beer);
-    }
-    const uniqueBeers = [...lastById.values()];
-
+    // Sync queues cleanup only; undescribed pending rows are left to the cron.
     const now = Date.now();
-    const statements: D1PreparedStatement[] = [];
-    type CleanupCandidate = {
-      readonly id: string;
-      readonly brew_name: string;
-      readonly brewer: string;
-      readonly brew_description: string;
-      readonly descriptionHash: string;
-    };
-    // Per statement: the beer to queue for cleanup, and whether the queueing
-    // depends on the statement having changed a row (a description change).
-    const cleanupByStatement: Array<{ readonly candidate: CleanupCandidate; readonly requiresWrite: boolean } | null> = [];
+    const result = await recordSeenBeers(env.DB, validBeers, { now });
+    const { queued: queuedForCleanup, markError } = await sendCleanupAndMark(env, result.cleanup, reqCtx.requestId, now);
+    if (markError !== null) throw markError;
 
-    // Check existing records to determine the conflict arm and queueing
-    const existingIds = uniqueBeers.map(b => b.id);
-    const placeholders = existingIds.map(() => '?').join(',');
-    const { results: existingRecords } = await env.DB.prepare(
-      `SELECT id, brew_description_original, description_hash, description_cleaned_at, queued_for_cleanup_at, brewer
-       FROM enriched_beers
-       WHERE id IN (${placeholders})`
-    ).bind(...existingIds).all<{
-      id: string;
-      brew_description_original: string | null;
-      description_hash: string | null;
-      description_cleaned_at: number | null;
-      queued_for_cleanup_at: number | null;
-      brewer: string | null;
-    }>();
-
-    const existingMap = new Map(existingRecords.map(r => [r.id, r]));
-
-    // A sync item may omit brewer. Fall back to the stored brewer, repaired,
-    // so the row and any queued cleanup work agree.
-    const beersWithBrewer = uniqueBeers.map(beer => beer.brewer !== null
-      ? beer
-      : cleanBeerNames({ ...beer, brewer: existingMap.get(beer.id)?.brewer ?? null }));
-
-    for (const beer of beersWithBrewer) {
-      const existing = existingMap.get(beer.id);
-      const description = beer.brew_description || null;
-
-      // Compared as text, not by hash, so a row whose hash already matches
-      // but whose stored text is stale is repaired too.
-      if (description !== null && description !== (existing?.brew_description_original ?? null)) {
-        const descriptionHash = await hashDescription(description);
-        // The new text and its hash land together, guarded on the original
-        // and hash this request read: a request that lost a race to another
-        // writer changes nothing and queues nothing. is_verified defaults to
-        // 0 on INSERT and is never updated here.
-        statements.push(
-          env.DB.prepare(`
-            INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at, is_verified)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-            ON CONFLICT(id) DO UPDATE SET
-              last_seen_at = excluded.last_seen_at,
-              brew_name = excluded.brew_name,
-              brewer = COALESCE(excluded.brewer, enriched_beers.brewer),
-              brew_description_original = excluded.brew_description_original,
-              description_hash = excluded.description_hash,
-              brew_description_cleaned = NULL,
-              description_cleaned_at = NULL,
-              cleanup_source = NULL,
-              cleanup_version = NULL,
-              queued_for_cleanup_at = NULL,
-              enrichment_status = ${unlessVerified('enrichment_status', "'pending'")},
-              updated_at = excluded.updated_at
-            WHERE enriched_beers.brew_description_original IS ? AND enriched_beers.description_hash IS ?
-            RETURNING id
-          `).bind(beer.id, beer.brew_name, beer.brewer, description, descriptionHash, now, now,
-            existing?.brew_description_original ?? null, existing?.description_hash ?? null)
-        );
-        cleanupByStatement.push({
-          candidate: { id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer || '', brew_description: description, descriptionHash },
-          requiresWrite: true,
-        });
-        continue;
-      }
-
-      // Unchanged or omitted description: names and last_seen_at only, so the
-      // stored text and its hash are never split.
-      statements.push(
-        env.DB.prepare(`
-          INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at, is_verified)
-          VALUES (?, ?, ?, NULL, NULL, ?, ?, 0)
-          ON CONFLICT(id) DO UPDATE SET
-            last_seen_at = excluded.last_seen_at,
-            brew_name = excluded.brew_name,
-            brewer = COALESCE(excluded.brewer, enriched_beers.brewer)
-        `).bind(beer.id, beer.brew_name, beer.brewer, now, now)
-      );
-
-      // Retry: an uncleaned description not queued within the cooldown.
-      const retry = description !== null &&
-        !existing?.description_cleaned_at &&
-        (!existing?.queued_for_cleanup_at ||
-         now - existing.queued_for_cleanup_at > SYNC_CONSTANTS.REQUEUE_COOLDOWN_MS);
-      cleanupByStatement.push(retry
-        ? {
-            candidate: { id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer || '', brew_description: description, descriptionHash: await hashDescription(description) },
-            requiresWrite: false,
-          }
-        : null);
-    }
-
-    // Execute batch insert/update
-    const syncResult = await syncBeersWithBatchHandling(env.DB, statements);
-    const needsCleanup = cleanupByStatement.flatMap((entry, index) => {
-      if (entry === null || !syncResult.statementSucceeded[index]) return [];
-      if (entry.requiresWrite && !syncResult.statementReturnedRow[index]) return [];
-      return [entry.candidate];
-    });
-    const synced = beersWithBrewer.reduce(
-      (count, beer, index) => count + (syncResult.statementSucceeded[index] ? occurrences.get(beer.id) ?? 0 : 0),
-      0
-    );
-
-    // Send to the cleanup queue FIRST, then mark only what was actually sent.
-    // The old mark-then-send order stranded beers for REQUEUE_COOLDOWN_MS
-    // (24h) whenever the queue send failed after the timestamps landed.
-    let queuedForCleanup = 0;
-    if (needsCleanup.length > 0) {
-      const { queued, queuedIds } = await queueBeersForCleanup(env, needsCleanup, reqCtx.requestId);
-      queuedForCleanup = queued;
-      const sentSet = new Set(queuedIds ?? []);
-      const toMark = needsCleanup.filter(beer => sentSet.has(beer.id));
-
-      if (toMark.length > 0) {
-        const updateStatements = toMark.map(beer =>
-          env.DB.prepare(
-            `UPDATE enriched_beers SET queued_for_cleanup_at = ? WHERE id = ?`
-          ).bind(now, beer.id)
-        );
-        await env.DB.batch(updateStatements);
-      }
-    }
-
-    // Combine errors
-    const allErrors = [...validationErrors, ...syncResult.errors];
+    // Duplicate ids collapse to their last valid item, but every valid item
+    // counts toward `synced` unless its beer's write failed.
+    const synced = validBeers.filter(beer => result.outcomes.get(beer.id) !== 'failed').length;
+    const writeFailed = [...result.outcomes.values()].includes('failed');
+    const allErrors = [...validationErrors, ...(writeFailed ? ['Database write failed for batch'] : [])];
 
     logWithContext(reqCtx.requestId, 'beers.sync.complete', {
       synced,
