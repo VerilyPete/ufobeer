@@ -7,6 +7,7 @@ import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleDlqReplay } from '../../src/handlers/dlq';
 import { storeDlqMessage } from '../../src/queue/dlq';
+import { handleEnrichmentBatch } from '../../src/queue/enrichment';
 import type { EnrichmentMessage, Env, RequestContext } from '../../src/types';
 import { hookedDb } from './dlq-replay-harness';
 
@@ -68,7 +69,9 @@ async function replay(worker: Env, ids: readonly number[]) {
 }
 
 beforeEach(async () => {
+  vi.restoreAllMocks();
   await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
+  await env.DB.prepare('DELETE FROM enrichment_limits').run();
   await env.DB.prepare('DELETE FROM enriched_beers').run();
   await env.DB.prepare('DELETE FROM dlq_messages').run();
   await env.DB.prepare('DROP TRIGGER IF EXISTS abort_finalize').run();
@@ -88,6 +91,37 @@ describe('dead-letter storage of a verified row', () => {
 
   it.each([[0], [null]])('still marks a NULL-ABV row with is_verified %s failed', async (isVerified) => {
     await seedBeer('beer-1', isVerified, 'pending');
+
+    await storeDlqMessage(env.DB, { id: 'm-1', attempts: 3, body: ENRICHMENT_BODY } as unknown as Message<EnrichmentMessage>, 'beer-enrichment');
+
+    expect(await beerStatus('beer-1')).toBe('failed');
+  });
+});
+
+describe('dead-letter storage of a message that no longer describes its row', () => {
+  it.each([
+    ['a newer description', { descriptionHash: 'hash-old' }],
+    ['a rename', { beerName: 'Old Lager' }],
+    ['a brewer change', { brewer: 'Old Brewing' }],
+  ])('stores the entry but leaves the row pending after %s, so the newer version still enriches', async (_label, stale) => {
+    await seedBeer('beer-1', 0, 'pending');
+
+    await storeDlqMessage(env.DB, { id: 'm-1', attempts: 3, body: { ...ENRICHMENT_BODY, ...stale } } as unknown as Message<EnrichmentMessage>, 'beer-enrichment');
+
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM dlq_messages').first('n')).toBe(1);
+    expect(await beerStatus('beer-1')).toBe('pending');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({ choices: [{ finish_reason: 'stop', message: { content: '5.2' } }] }));
+    const current = { body: ENRICHMENT_BODY, ack: vi.fn(), retry: vi.fn() };
+    await handleEnrichmentBatch({ messages: [current] } as unknown as MessageBatch<EnrichmentMessage>, {
+      ...env, PERPLEXITY_API_KEY: 'test', ENRICHMENT_ENABLED: 'true', ABV_FALLBACK_ENABLED: 'false',
+      DAILY_ENRICHMENT_LIMIT: '500', MONTHLY_ENRICHMENT_LIMIT: '2000', ANALYTICS: { writeDataPoint: vi.fn() },
+    } as Env);
+    expect(await env.DB.prepare('SELECT abv FROM enriched_beers WHERE id = ?').bind('beer-1').first('abv')).toBe(5.2);
+  });
+
+  it('still parks the row when the message matches it', async () => {
+    await seedBeer('beer-1', 0, 'pending');
 
     await storeDlqMessage(env.DB, { id: 'm-1', attempts: 3, body: ENRICHMENT_BODY } as unknown as Message<EnrichmentMessage>, 'beer-enrichment');
 

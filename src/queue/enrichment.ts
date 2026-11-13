@@ -19,7 +19,7 @@ import { fetchAbvFromPerplexity } from '../services/perplexity';
 import { ExaError, fetchAbvFromUntappd } from '../services/exa';
 import { trackEnrichment } from '../analytics';
 import { reserveAbvFallbackSlot, reserveEnrichmentSlot } from '../db/quota';
-import { SAME_IDENTITY_SQL } from '../db/identity';
+import { STILL_CURRENT_SQL, stillCurrentArgs } from '../db/identity';
 import { ABV_CONFIDENCE_FROM_EXA, ABV_CONFIDENCE_FROM_PERPLEXITY, DEFAULT_EXA_DAILY_LIMIT } from '../constants';
 import { getToday, getMonthStart, getMonthEnd } from '../utils/date';
 
@@ -194,13 +194,6 @@ function exaDailyLimit(env: Env): number {
  * write: cleanup, a sync, a description change or a human can change the
  * row while a provider runs.
  */
-const STILL_CURRENT_SQL =
-  `id = ? AND enrichment_status = 'pending' AND is_verified IS NOT 1 AND description_hash IS ? AND ${SAME_IDENTITY_SQL}`;
-
-function stillCurrentArgs(body: EnrichmentMessage): readonly (string | null)[] {
-  return [body.beerId, body.descriptionHash ?? null, body.beerName, body.brewer];
-}
-
 async function isStillCurrent(db: D1Database, body: EnrichmentMessage): Promise<boolean> {
   const current = await db.prepare(`SELECT 1 AS current FROM enriched_beers WHERE ${STILL_CURRENT_SQL}`)
     .bind(...stillCurrentArgs(body)).first<number>('current');

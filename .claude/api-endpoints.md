@@ -377,19 +377,27 @@ entry is not re-sent until you replay it again.
 
 ### POST /admin/dlq/acknowledge
 
-Acknowledge/dismiss messages (remove from pending).
+Acknowledge (dismiss) pending messages without replaying them. Only
+`pending` entries change; `failed_count` counts the requested ids that were
+not pending.
 
-**Request Body:**
+**Request Body:** (`ids` are DLQ row ids, at most 100)
 ```json
 {
-  "message_ids": ["abc123", "def456"]
+  "ids": [12, 13]
 }
 ```
 
 **Response:**
 ```json
 {
-  "acknowledged": 2
+  "success": true,
+  "requestId": "…",
+  "data": {
+    "acknowledged_count": 2,
+    "requested_count": 2,
+    "failed_count": 0
+  }
 }
 ```
 

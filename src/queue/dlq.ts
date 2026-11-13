@@ -7,7 +7,7 @@
  * @module queue/dlq
  */
 
-import { NOT_VERIFIED_SQL } from '../db/verified';
+import { STILL_CURRENT_SQL, stillCurrentArgs } from '../db/identity';
 import type { Env, EnrichmentMessage, CleanupMessage } from '../types';
 import { trackDlqConsumer } from '../analytics';
 import { MAX_DLQ_CONSUMER_ATTEMPTS } from '../constants';
@@ -193,15 +193,17 @@ export async function storeDlqMessage(
   // Park the beer as 'failed' so taplist syncs and the cron sweep stop
   // re-queueing it — every requeue of a deterministically-failing beer
   // re-reserves quota and re-calls Perplexity before failing again. Admin
-  // replay (handlers/dlq.ts) or a description change (insertPlaceholders)
-  // resets it to 'pending'. The abv guard means a redelivered DLQ message can
-  // never clobber a beer that was replayed and successfully enriched, and a
-  // hand-verified row keeps its status. Missing beer rows are a harmless no-op.
+  // replay (handlers/dlq.ts) or a description change resets it to 'pending'.
+  // Parked only while the message still describes the row (pending, not
+  // verified, same hash, name and brewer): a late DLQ delivery for an old
+  // description must not fail the newer one. The abv guard means a
+  // redelivered DLQ message can never clobber a beer that was replayed and
+  // successfully enriched. Missing beer rows are a harmless no-op.
   await db.prepare(`
     UPDATE enriched_beers
     SET enrichment_status = 'failed', updated_at = ?
-    WHERE id = ? AND abv IS NULL AND ${NOT_VERIFIED_SQL}
-  `).bind(now, body.beerId).run();
+    WHERE ${STILL_CURRENT_SQL} AND abv IS NULL
+  `).bind(now, ...stillCurrentArgs(body)).run();
 }
 
 /**

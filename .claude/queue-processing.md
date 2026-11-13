@@ -204,12 +204,16 @@ When due, triggers `handleScheduledEnrichment()` which:
 ### Manual (Admin)
 ```bash
 # Trigger enrichment
-curl -X POST -H "X-API-Key: $ADMIN_KEY" \
-  "https://api.ufobeer.app/admin/enrich/trigger?limit=50"
+curl -X POST -H "X-API-Key: $API_KEY" -H "X-Admin-Secret: $ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"limit": 50}' \
+  "https://api.ufobeer.app/admin/enrich/trigger"
 
 # Trigger cleanup
-curl -X POST -H "X-API-Key: $ADMIN_KEY" \
-  "https://api.ufobeer.app/admin/cleanup/trigger?mode=missing&limit=100"
+curl -X POST -H "X-API-Key: $API_KEY" -H "X-Admin-Secret: $ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "missing", "limit": 100}' \
+  "https://api.ufobeer.app/admin/cleanup/trigger"
 ```
 
 ## Debugging
@@ -219,7 +223,7 @@ Cloudflare Dashboard > Workers & Pages > Queues
 
 ### Check failed messages
 ```bash
-curl -H "X-API-Key: $ADMIN_KEY" \
+curl -H "X-API-Key: $API_KEY" -H "X-Admin-Secret: $ADMIN_SECRET" \
   "https://api.ufobeer.app/admin/dlq?status=pending"
 ```
 
@@ -231,8 +235,9 @@ curl -H "X-API-Key: $API_KEY" \
 
 ### Replay specific failures
 ```bash
-curl -X POST -H "X-API-Key: $ADMIN_KEY" \
+# ids are dlq_messages row ids (the "id" field of GET /admin/dlq), at most 50
+curl -X POST -H "X-API-Key: $API_KEY" -H "X-Admin-Secret: $ADMIN_SECRET" \
   -H "Content-Type: application/json" \
-  -d '{"message_ids": ["abc123"]}' \
+  -d '{"ids": [12]}' \
   "https://api.ufobeer.app/admin/dlq/replay"
 ```
