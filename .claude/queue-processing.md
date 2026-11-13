@@ -179,10 +179,11 @@ Enrichment has quota limits to control Perplexity costs. Cleanup calls no model,
 - `MONTHLY_ENRICHMENT_LIMIT` (2000) - Perplexity calls/month
 - Tracked in `enrichment_limits` table
 
-When quota is exhausted:
-1. Consumer delays message retry (5+ minutes)
-2. `/health` endpoint shows quota status
-3. Admin can monitor and adjust limits
+When quota is exhausted, the consumer acks the message without a lookup (it
+is not retried); the beer stays `pending`, and the next taplist refresh, sync
+or cron sweep queues it again once quota is available. Only transient errors
+(D1 unavailable, a failed provider call) retry the message. `/health` shows
+quota status.
 
 ## Triggering Processing
 
@@ -194,7 +195,7 @@ When quota is exhausted:
 Cron fires every 20 minutes but is gated by two checks:
 1. **Operating hours** — skips outside noon–11pm Central Time (DST-aware)
 2. **Schedule jitter** — `checkAndAdvanceCronSchedule()` gates execution
-   to ~4 hours with ±20 minutes of randomization (stored in `system_state`)
+   to ~2 hours with ±20 minutes of randomization (stored in `system_state`)
 
 When due, triggers `handleScheduledEnrichment()` which:
 1. Refreshes taplist for all enabled stores
