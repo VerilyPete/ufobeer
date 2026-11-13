@@ -82,17 +82,36 @@ Batch lookup enrichment data for multiple beers.
 
 ### POST /beers/sync
 
-Full sync from Flying Saucer API. Imports all beers and queues for enrichment.
+Records beers the mobile client saw that the API may not know yet (found via
+`POST /beers/batch`). Each item is validated on its own; invalid items are
+reported in `errors` and the rest are still written. Repeated ids collapse to
+the last valid item, but every valid item counts toward `synced`.
 
-**Query Parameters:**
-- `store_id` (required) - Flying Saucer location ID
+- A **changed description** (text differs from the stored original) replaces
+  the original and its hash together, clears the cleaned text, resets an
+  unverified row to `pending`, and queues cleanup. It is written only if the
+  row still holds the description this request read; otherwise it changes
+  nothing and queues nothing.
+- An **unchanged, empty or omitted description** updates only the name,
+  brewer and `last_seen_at`. An uncleaned description is re-queued for
+  cleanup at most once per 24 hours.
+- An omitted brewer keeps the stored one.
+
+**Request Body:** (at most 50 beers, `SYNC_CONSTANTS.MAX_BATCH_SIZE`)
+```json
+{
+  "beers": [
+    { "id": "21720679", "brew_name": "Leo Carillo", "brewer": "Great Heights", "brew_description": "A crisp lager" }
+  ]
+}
+```
 
 **Response:**
 ```json
 {
-  "imported": 150,
-  "queued_for_enrichment": 25,
-  "queued_for_cleanup": 30
+  "synced": 1,
+  "queued_for_cleanup": 1,
+  "requestId": "…"
 }
 ```
 

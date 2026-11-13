@@ -293,7 +293,7 @@ describe('handleBeerSync ordering', () => {
         };
       }),
       batch: vi.fn().mockImplementation(async (statements: unknown[]) =>
-        statements.map(() => ({ success: true, results: [], meta: {} }))
+        statements.map(() => ({ success: true, results: [{ id: 'written' }], meta: {} }))
       ),
     } as unknown as D1Database;
     return {
@@ -346,101 +346,6 @@ describe('handleBeerSync ordering', () => {
 });
 
 // ============================================================================
-// handleBeerSync — description_hash refresh (stale-result binding prerequisite)
-// ============================================================================
-
-describe('handleBeerSync description_hash refresh', () => {
-  const reqCtx: RequestContext = {
-    requestId: 'sync-hash-test',
-    startTime: Date.now(),
-    clientIdentifier: 'test-client',
-    apiKeyHash: null,
-    clientIp: null,
-    userAgent: null,
-  };
-
-  function createTrackingEnv(): { env: Env; upsertSql: () => string | undefined; upsertBindings: () => unknown[] } {
-    let upsertSql: string | undefined;
-    let upsertBindings: unknown[] = [];
-    const db = {
-      prepare: vi.fn().mockImplementation((sql: string) => ({
-        bind: vi.fn().mockImplementation((...args: unknown[]) => {
-          if (sql.includes('INSERT INTO enriched_beers') && sql.includes('ON CONFLICT')) {
-            upsertSql = sql;
-            upsertBindings = args;
-          }
-          return {
-            all: vi.fn().mockResolvedValue({ results: [] }),
-            first: vi.fn().mockResolvedValue(null),
-            run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
-          };
-        }),
-      })),
-      batch: vi.fn().mockImplementation(async (statements: unknown[]) =>
-        statements.map(() => ({ success: true, results: [], meta: {} }))
-      ),
-    } as unknown as D1Database;
-    return {
-      env: { DB: db } as unknown as Env,
-      upsertSql: () => upsertSql,
-      upsertBindings: () => upsertBindings,
-    };
-  }
-
-  function syncRequest(description: string): Request {
-    return new Request('https://api.example.com/beers/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        beers: [
-          { id: 'existing-beer', brew_name: 'Test IPA', brewer: 'Brewer', brew_description: description },
-        ],
-      }),
-    });
-  }
-
-  it('refreshes description_hash on conflict, computed the same way as elsewhere', async () => {
-    vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 0, queuedIds: [] });
-    const { env, upsertSql, upsertBindings } = createTrackingEnv();
-    const description = 'A newly reported description, 6.0% ABV';
-
-    const response = await handleBeerSync(syncRequest(description), env, {}, reqCtx);
-    expect(response.status).toBe(200);
-
-    const sql = upsertSql();
-    expect(sql).toBeDefined();
-    expect(sql).toContain('description_hash = COALESCE(excluded.description_hash, enriched_beers.description_hash)');
-
-    // The bound description_hash value matches hashDescription() of the
-    // description on this sync request -- the same computation used
-    // elsewhere (db/helpers.ts's categorizeBeer, beers.ts's live-fetch path).
-    const expectedHash = await hashDescription(description);
-    // bind order: id, brew_name, brewer, brew_description, description_hash, last_seen_at, updated_at
-    expect(upsertBindings()[4]).toBe(expectedHash);
-  });
-
-  it('does not null out description_hash when a sync call omits brew_description for an existing ID', async () => {
-    vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 0, queuedIds: [] });
-    const { env, upsertBindings } = createTrackingEnv();
-    const request = new Request('https://api.example.com/beers/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        beers: [{ id: 'existing-beer', brew_name: 'Test IPA' }],
-      }),
-    });
-
-    const response = await handleBeerSync(request, env, {}, reqCtx);
-    expect(response.status).toBe(200);
-
-    // No description supplied -> bound description_hash is null, and the
-    // COALESCE in the SQL (not this test) is what preserves the existing
-    // stored hash instead of overwriting it with NULL.
-    expect(upsertBindings()[4]).toBeNull();
-  });
-});
-
-// ============================================================================
 // handleBeerSync — producer-side stale-result binding (descriptionHash on
 // the objects handed to queueBeersForCleanup)
 // ============================================================================
@@ -465,7 +370,7 @@ describe('handleBeerSync cleanup-queue descriptionHash', () => {
         }),
       })),
       batch: vi.fn().mockImplementation(async (statements: unknown[]) =>
-        statements.map(() => ({ success: true, results: [], meta: {} }))
+        statements.map(() => ({ success: true, results: [{ id: 'written' }], meta: {} }))
       ),
     } as unknown as D1Database;
     return { DB: db } as unknown as Env;
