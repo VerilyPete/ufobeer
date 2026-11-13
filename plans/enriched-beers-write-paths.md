@@ -179,7 +179,10 @@ then-current name.
   A failed send leaves `queued_for_cleanup_at` untouched, so mode `missing`
   still finds the row. A consumer that runs before step 3 is accepted
   because step 1 already set the hash.
-- **D9. No schema migration.** Rollback is constrained; see Rollout.
+- **D9. One schema migration, `0015`,** adds two nullable DLQ claim columns
+  (`replay_claim`, `replay_claimed_at`; slice 1 addendum). The deploy workflow
+  applies it before the worker deploys. Nothing else changes the schema.
+  Rollback is constrained; see Rollout.
 
 ## Slices
 
@@ -220,6 +223,117 @@ RED, real consumers, provider stubs counting calls and reservations:
 GREEN: one shared preflight (missing, non-pending, verified, hash, identity)
 used before Perplexity and, as `isStillCurrent`, before Exa; the guards and
 CASE columns of D5.
+
+### Slice 1, addendum: recover abandoned DLQ replay claims
+
+Added after Codex round 4 on slice 1. A replay claims an entry by moving it
+from `pending` to `replaying`; nothing ever moves it back if the request fails
+between the claim and its release or finalize write (a failed D1 write, an
+isolate killed mid-request). Claims require `pending`, so the entry can never be
+replayed again. The gap predates this plan (any failed send plus a failed
+rollback hits it); slice 1 adds one more way in (verification lands after the
+claim, then the release write fails). Separately, `skipped_verified` is read in
+a different statement from the claim, so verification changing between them
+makes the response disagree with what was claimed.
+
+Design:
+- Migration `0015` adds two columns to `dlq_messages` (each `ALTER TABLE ADD
+  COLUMN` commented NOT IDEMPOTENT, as AGENTS.md requires; `schema.sql`
+  updated): `replay_claim TEXT`, a fresh `crypto.randomUUID()` per replay
+  request that owns the claim, and `replay_claimed_at INTEGER`, used only for
+  the lease's age. Ownership is never inferred from the timestamp.
+- The claim is one `db.batch`: the verified-entry `SELECT`, then `UPDATE … SET
+  status = 'replaying', replay_claim = ?, replay_claimed_at = ? … RETURNING id,
+  raw_message, replay_count, source_queue`. A batch is one transaction, so
+  `skipped_verified` and the claimed set come from one snapshot; the
+  `RETURNING` rows replace the separate fetch of claimed entries.
+- Ownership governs the paid side effect, not only the bookkeeping. The
+  enrichment entry's beer reset is one statement guarded on the lease:
+  `UPDATE enriched_beers SET enrichment_status = 'pending' … WHERE id = ? AND
+  NOT_VERIFIED AND abv IS NULL AND enrichment_status IN ('pending', 'failed',
+  'not_found') AND EXISTS (SELECT 1 FROM dlq_messages WHERE id = ? AND status =
+  'replaying' AND replay_claim = ?)`. The send follows only if the reset
+  applied, or the classification below says to. A request whose lease was
+  reaped or taken over before its reset commits therefore resets nothing and
+  sends nothing for that entry. Ownership fences D1 writes, not queue sends:
+  if the lease is lost after the request's last successful lease check (the
+  guarded reset, or the cleanup check below) but before its send, that send
+  still goes out. That window is accepted; closing it would need deduplication
+  in the consumers, which delivery already lacks (queues are at-least-once).
+- The reset no longer re-opens a beer that already has an ABV or is
+  `skipped`. Today a replay of an entry whose beer has since been enriched
+  resets it to `pending` and pays for the lookup again; this is the
+  ambiguous-recovery case (a send went out, its finalize failed, the consumer
+  enriched the beer, the reaper released the entry, an admin replays it). Such
+  an entry is returned to `pending` unsent and reported in a new response
+  field, `skipped_resolved`, for the admin to acknowledge. When the guarded
+  reset changes nothing, one read classifies the entry, lease first: lease
+  lost → left alone, nothing sent (it belongs to whoever holds it now); beer
+  missing → send (the consumer's preflight acks a missing row before any
+  quota); verified → `skipped_verified`; ABV set or `skipped` →
+  `skipped_resolved`; otherwise (a race) → `failed`.
+- Cleanup entries have no reset: before sending one, the request checks it
+  still holds the lease and stops otherwise. A duplicate cleanup message is
+  safe for the description (deterministic, the write is guarded on the hash),
+  but each copy can queue an enrichment message when the description has no
+  ABV, so a duplicate can cost a repeated lookup if the first lookup's write
+  fails. That is the same at-least-once cost as any queue redelivery, and is
+  accepted here.
+- The release (back to `pending`) and the finalize (to `replayed`) are guarded
+  on `status = 'replaying' AND replay_claim = ?` and clear both columns.
+- DLQ storage redelivery (`ON CONFLICT … SET status = 'pending'` in
+  `src/queue/dlq.ts`) is unchanged: it ends the claim by status, and the old
+  owner's guarded writes then match nothing. Stale claim columns on a
+  `pending` row are inert; the next claim overwrites them.
+- `releaseStaleReplayClaims(db, { now })` in `src/handlers/dlq.ts`:
+  `UPDATE dlq_messages SET status = 'pending', replay_claim = NULL,
+  replay_claimed_at = NULL WHERE status = 'replaying' AND (replay_claimed_at IS
+  NULL OR replay_claimed_at <= ?)` with `now - DLQ_REPLAY_CLAIM_STALE_MS`
+  (10 minutes, `src/constants.ts`). `NULL` covers entries stranded before the
+  migration. A live request that outlives the lease loses it safely (above).
+- It runs on every cron tick beside the other reapers, before the kill switch
+  and operating-hours gates, in its own `try`/`catch`. A stranded entry is
+  replayable again within 30 minutes (10-minute age plus a 20-minute tick).
+  It only returns entries to `pending`; nothing is re-sent automatically.
+
+RED, real D1, provider stubs counting calls and reservations where a consumer
+runs:
+- verification lands after the claim and the release write fails: 500, the
+  entry stays `replaying`; after the flag is cleared and the reaper runs past
+  the stale age, the same entry replays;
+- the ambiguous recovery: send succeeds, finalize fails, the consumer enriches
+  the beer, the reaper releases the entry, a second replay sends nothing,
+  reserves no quota, reports the entry in `skipped_resolved` and leaves it
+  `pending`; an entry whose beer is `skipped` likewise; `failed`, `pending`
+  and `not_found` beers with a NULL ABV still replay;
+- a lease lost mid-request, with several claimed entries: after the first
+  send the lease is reaped and re-claimed by another request (different
+  token); the first request resets no further beer, sends no further message
+  (enrichment or cleanup), and its release and finalize change nothing;
+- the lease lost after the guarded reset commits but before the send (the
+  test holds the reset's response, re-claims the entry, then releases it): the
+  send goes out once (the accepted window), and the first request's finalize
+  and release don't touch the new claim;
+- the lease lost, then a reset that changes nothing because the beer row is
+  missing: nothing is sent;
+- two requests with the same `Date.now()`: A claims, a DLQ redelivery returns
+  the entry to `pending`, B claims it; A's finalize and release don't touch
+  B's claim;
+- reaper: a claim exactly `DLQ_REPLAY_CLAIM_STALE_MS` old is released, one a
+  millisecond younger isn't; a `NULL` claim time is released; `pending`,
+  `replayed` and `acknowledged` entries are untouched;
+- verification changing in either direction just before and just after the
+  claim (the hooked database flips it before and after the first database call
+  of the request): an entry is never both reported skipped and replayed, and
+  every claimed-or-skipped entry is either replayed or `pending` at the end.
+  Against today's separate `SELECT` and `UPDATE`, the "after the first call"
+  hook lands between them and fails; against the batch it lands after the
+  claim and passes;
+- the cron releases a stale claim with `ENRICHMENT_ENABLED=false` and outside
+  operating hours.
+
+Rollout: before deploying, count `SELECT COUNT(*) FROM dlq_messages WHERE
+status = 'replaying'`; those entries return to `pending` on the first tick.
 
 ### Slice 2: admin cleanup trigger (D8)
 

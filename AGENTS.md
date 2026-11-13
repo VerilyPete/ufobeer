@@ -206,6 +206,11 @@ wrangler secret put USAGE_REPORT_TOKEN  # Bearer token for GET /reports/usage (G
 ### Dead Letter Queue
 - Failed messages stored in D1 for inspection
 - Admin can replay or acknowledge via API
+- Replay claims entries under a lease (`replay_claim` token, `replay_claimed_at`,
+  migration 0015); every replay write is guarded on the token, and the cron
+  returns claims older than `DLQ_REPLAY_CLAIM_STALE_MS` to `pending`
+  (`releaseStaleReplayClaims`). Replay never re-opens a beer that already has
+  an ABV or is skipped; those entries are reported in `skipped_resolved`
 - Prevents message loss while enabling debugging
 
 ### ABV Enrichment Pipeline

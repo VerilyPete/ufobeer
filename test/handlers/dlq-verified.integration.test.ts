@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleDlqReplay } from '../../src/handlers/dlq';
 import { storeDlqMessage } from '../../src/queue/dlq';
 import type { EnrichmentMessage, Env, RequestContext } from '../../src/types';
+import { hookedDb } from './dlq-replay-harness';
 
 const context: RequestContext = {
   requestId: 'dlq-verified',
@@ -39,6 +40,10 @@ async function seedDlqEntry(messageId: string, sourceQueue: string, body: object
 
 async function beerStatus(id: string): Promise<unknown> {
   return env.DB.prepare('SELECT enrichment_status FROM enriched_beers WHERE id = ?').bind(id).first('enrichment_status');
+}
+
+async function setVerified(value: number): Promise<void> {
+  await env.DB.prepare('UPDATE enriched_beers SET is_verified = ? WHERE id = ?').bind(value, 'beer-1').run();
 }
 
 async function dlqStatus(id: number): Promise<unknown> {
@@ -132,26 +137,14 @@ describe('admin replay of a verified row', () => {
   it('refuses, reports and releases an entry whose beer is verified after the claim', async () => {
     await seedBeer('beer-1', 0);
     const dlqId = await seedDlqEntry('m-1', 'beer-enrichment', ENRICHMENT_BODY);
-    const realDb = env.DB;
-    const racingDb = {
-      prepare: (sql: string) => {
-        const statement = realDb.prepare(sql);
-        if (!sql.includes("SET status = 'replaying'")) return statement;
-        return {
-          bind: (...args: unknown[]) => ({
-            run: async () => {
-              const result = await statement.bind(...args).run();
-              await realDb.prepare('UPDATE enriched_beers SET is_verified = 1 WHERE id = ?').bind('beer-1').run();
-              return result;
-            },
-          }),
-        };
+    const racingDb = hookedDb(env.DB, {
+      after: async (call) => {
+        if (call.index === 0) await setVerified(1);
       },
-      batch: (statements: D1PreparedStatement[]) => realDb.batch(statements),
-    } as unknown as D1Database;
+    });
     const { enrichment, worker } = queues();
 
-    expect(await replay({ ...worker, DB: racingDb } as Env, [dlqId])).toMatchObject({ replayed_count: 0, skipped_verified: [dlqId] });
+    expect(await replay({ ...worker, DB: racingDb }, [dlqId])).toMatchObject({ replayed_count: 0, skipped_verified: [dlqId] });
     expect(enrichment).not.toHaveBeenCalled();
     expect(await dlqStatus(dlqId)).toBe('pending');
     expect(await beerStatus('beer-1')).toBe('failed');
@@ -160,31 +153,15 @@ describe('admin replay of a verified row', () => {
   it('refuses a beer verified after the claim, and does not send if the flag is cleared before the follow-up read', async () => {
     await seedBeer('beer-1', 0);
     const dlqId = await seedDlqEntry('m-1', 'beer-enrichment', ENRICHMENT_BODY);
-    const setVerified = (value: number) =>
-      realDb.prepare('UPDATE enriched_beers SET is_verified = ? WHERE id = ?').bind(value, 'beer-1').run();
-    const realDb = env.DB;
-    const racingDb = {
-      prepare: (sql: string) => {
-        const statement = realDb.prepare(sql);
-        const after = sql.includes("SET status = 'replaying'") ? () => setVerified(1)
-          : sql.includes("UPDATE enriched_beers SET enrichment_status = 'pending'") ? () => setVerified(0)
-          : null;
-        if (after === null) return statement;
-        return {
-          bind: (...args: unknown[]) => ({
-            run: async () => {
-              const result = await statement.bind(...args).run();
-              await after();
-              return result;
-            },
-          }),
-        };
+    const racingDb = hookedDb(env.DB, {
+      after: async (call) => {
+        if (call.index === 0) await setVerified(1);
+        if (call.sql.startsWith('UPDATE enriched_beers')) await setVerified(0);
       },
-      batch: (statements: D1PreparedStatement[]) => realDb.batch(statements),
-    } as unknown as D1Database;
+    });
     const { enrichment, worker } = queues();
 
-    const data = await replay({ ...worker, DB: racingDb } as Env, [dlqId]);
+    const data = await replay({ ...worker, DB: racingDb }, [dlqId]);
 
     expect(enrichment).not.toHaveBeenCalled();
     expect(data).toMatchObject({ replayed_count: 0, failed_count: 1 });

@@ -24,7 +24,7 @@ import type {
 } from '../types';
 import { errorResponse } from '../context';
 import { readBoundedJson, boundedJsonErrorResponse } from '../utils/body';
-import { SMALL_JSON_BODY_MAX_BYTES } from '../constants';
+import { DLQ_REPLAY_CLAIM_STALE_MS, SMALL_JSON_BODY_MAX_BYTES } from '../constants';
 import {
   DlqReplayRequestSchema,
   DlqAcknowledgeRequestSchema,
@@ -291,20 +291,86 @@ export async function handleDlqStats(
 // DLQ Replay Handler
 // ============================================================================
 
-async function beerVerification(db: D1Database, beerId: string): Promise<'missing' | 'verified' | 'unverified'> {
-  const row = await db.prepare('SELECT is_verified FROM enriched_beers WHERE id = ?')
-    .bind(beerId).first<{ is_verified: number | null }>();
-  if (row === null) return 'missing';
-  return row.is_verified === 1 ? 'verified' : 'unverified';
+type ClaimedEntry = {
+  readonly id: number;
+  readonly raw_message: string;
+  readonly replay_count: number;
+  readonly source_queue: string;
+};
+
+type Lease = { readonly token: string };
+
+/** The guard that this request still holds an entry's claim. */
+const HOLDS_CLAIM_SQL = `EXISTS (SELECT 1 FROM dlq_messages
+  WHERE dlq_messages.id = ? AND dlq_messages.status = 'replaying' AND dlq_messages.replay_claim = ?)`;
+
+/** Beer states a replay may return to 'pending': no ABV yet, not skipped. */
+const REPLAYABLE_BEER_SQL = `enriched_beers.abv IS NULL
+  AND enriched_beers.enrichment_status IN ('pending', 'failed', 'not_found')`;
+
+type RefusedReset = 'lost' | 'missing' | 'verified' | 'resolved' | 'race';
+
+type ResetState = {
+  readonly owned: number;
+  readonly present: number;
+  readonly is_verified: number | null;
+  readonly replayable: number | null;
+};
+
+function classifyRefusedReset(state: ResetState): RefusedReset {
+  if (state.owned !== 1) return 'lost';
+  if (state.present !== 1) return 'missing';
+  if (state.is_verified === 1) return 'verified';
+  if (state.replayable !== 1) return 'resolved';
+  return 'race';
+}
+
+/** Why a guarded reset changed nothing, read in one statement, lease first. */
+async function refusedReset(db: D1Database, dlqId: number, beerId: string, lease: Lease): Promise<RefusedReset> {
+  const state = await db.prepare(
+    `SELECT ${HOLDS_CLAIM_SQL} AS owned,
+            enriched_beers.id IS NOT NULL AS present,
+            enriched_beers.is_verified AS is_verified,
+            (${REPLAYABLE_BEER_SQL}) AS replayable
+     FROM (SELECT 1) LEFT JOIN enriched_beers ON enriched_beers.id = ?`
+  ).bind(dlqId, lease.token, beerId).first<ResetState>();
+  return state === null ? 'lost' : classifyRefusedReset(state);
+}
+
+async function holdsClaim(db: D1Database, dlqId: number, lease: Lease): Promise<boolean> {
+  const row = await db.prepare(`SELECT ${HOLDS_CLAIM_SQL} AS owned`)
+    .bind(dlqId, lease.token).first<{ owned: number }>();
+  return row?.owned === 1;
 }
 
 /**
- * POST /admin/dlq/replay - Replay messages back to the main enrichment queue
+ * Return DLQ entries whose replay claim is older than DLQ_REPLAY_CLAIM_STALE_MS
+ * (or has no claim time: stranded before claims were timed) to 'pending'. A
+ * claim that old belongs to a replay request that failed or died before
+ * releasing it. Nothing is re-sent; the entry can simply be replayed again.
+ * Runs on every cron tick.
+ */
+export async function releaseStaleReplayClaims(
+  db: D1Database,
+  { now }: { readonly now: number }
+): Promise<number> {
+  const result = await db.prepare(
+    `UPDATE dlq_messages SET status = 'pending', replay_claim = NULL, replay_claimed_at = NULL
+     WHERE status = 'replaying' AND (replay_claimed_at IS NULL OR replay_claimed_at <= ?)`
+  ).bind(now - DLQ_REPLAY_CLAIM_STALE_MS).run();
+  return result.meta.changes;
+}
+
+/**
+ * POST /admin/dlq/replay - Replay messages back to the queue they failed on
  *
- * Uses optimistic status update to prevent race conditions:
- * 1. Set status to 'replaying' before queue send
- * 2. Rollback to 'pending' on failure
- * 3. Set to 'replayed' and increment replay_count on success
+ * 1. Claim pending entries with a lease (a random token and the claim time),
+ *    in the same transaction that lists entries refused for a verified beer.
+ * 2. For each claimed entry, every write is guarded on the lease; an
+ *    enrichment entry is sent only if its beer's guarded reset applied.
+ * 3. Release unsent entries to 'pending', then mark sent ones 'replayed',
+ *    both guarded on the lease. A claim never released is returned to
+ *    'pending' by the cron (releaseStaleReplayClaims).
  */
 export async function handleDlqReplay(
   request: Request,
@@ -333,26 +399,33 @@ export async function handleDlqReplay(
     // truncating it after the fact.
     const limitedIds = ids;
     const now = Date.now();
+    const lease: Lease = { token: crypto.randomUUID() };
 
-    // STEP 1: Optimistically update status to 'replaying' to prevent race
-    // conditions. An enrichment entry whose beer is hand-verified is never
-    // claimed: it stays 'pending', is reported in skipped_verified, and can
-    // be replayed once a human clears the flag.
+    // STEP 1: Claim, in one transaction with the list of entries refused for
+    // a hand-verified beer, so the two agree. Such an entry is never claimed:
+    // it stays 'pending', is reported in skipped_verified, and can be replayed
+    // once a human clears the flag.
     const placeholders = limitedIds.map(() => '?').join(',');
     const VERIFIED_ENRICHMENT_ENTRY = `source_queue != 'description-cleanup' AND EXISTS (
          SELECT 1 FROM enriched_beers WHERE enriched_beers.id = dlq_messages.beer_id AND enriched_beers.is_verified IS 1)`;
-    const verifiedAtClaim = await env.DB.prepare(
-      `SELECT id FROM dlq_messages
-       WHERE id IN (${placeholders}) AND status = 'pending' AND ${VERIFIED_ENRICHMENT_ENTRY}`
-    ).bind(...limitedIds).all<{ id: number }>();
-    const updateResult = await env.DB.prepare(
-      `UPDATE dlq_messages
-       SET status = 'replaying'
-       WHERE id IN (${placeholders}) AND status = 'pending' AND NOT (${VERIFIED_ENRICHMENT_ENTRY})`
-    ).bind(...limitedIds).run();
+    const [verifiedAtClaim, claimed] = await env.DB.batch<ClaimedEntry>([
+      env.DB.prepare(
+        `SELECT id, raw_message, replay_count, source_queue FROM dlq_messages
+         WHERE id IN (${placeholders}) AND status = 'pending' AND ${VERIFIED_ENRICHMENT_ENTRY}`
+      ).bind(...limitedIds),
+      env.DB.prepare(
+        `UPDATE dlq_messages
+         SET status = 'replaying', replay_claim = ?, replay_claimed_at = ?
+         WHERE id IN (${placeholders}) AND status = 'pending' AND NOT (${VERIFIED_ENRICHMENT_ENTRY})
+         RETURNING id, raw_message, replay_count, source_queue`
+      ).bind(lease.token, now, ...limitedIds),
+    ]);
 
-    const claimedCount = updateResult.meta.changes;
-    const skippedVerifiedIds: number[] = verifiedAtClaim.results.map(row => row.id);
+    const results = claimed?.results ?? [];
+    const claimedCount = results.length;
+    const skippedVerifiedIds: number[] = (verifiedAtClaim?.results ?? []).map(row => row.id);
+    const verifiedAfterClaimIds: number[] = [];
+    const resolvedIds: number[] = [];
 
     if (claimedCount === 0) {
       return Response.json({
@@ -362,16 +435,11 @@ export async function handleDlqReplay(
           requested_count: limitedIds.length,
           replayed_count: 0,
           skipped_verified: skippedVerifiedIds,
+          skipped_resolved: resolvedIds,
           message: 'No pending messages found to replay',
         },
       }, { headers });
     }
-
-    // STEP 2: Fetch the messages we just claimed (source_queue routes the replay)
-    const { results } = await env.DB.prepare(
-      `SELECT id, raw_message, replay_count, source_queue FROM dlq_messages
-       WHERE id IN (${placeholders}) AND status = 'replaying'`
-    ).bind(...limitedIds).all<{ id: number; raw_message: string; replay_count: number; source_queue: string }>();
 
     let replayedCount = 0;
     let enrichmentSent = 0;
@@ -379,10 +447,13 @@ export async function handleDlqReplay(
     const replayedIds: number[] = [];
     const failedIds: number[] = [];
 
-    // STEP 3: Send messages to the queue they originally failed on.
+    // STEP 2: Send messages to the queue they originally failed on.
     // Rows arrive from BOTH DLQs (enrichment and cleanup share this table);
     // parsing everything with EnrichmentMessageSchema would silently strip
     // brewDescription from cleanup rows and misroute them to Perplexity.
+    // Ownership fences the database writes, not the sends: if the lease is
+    // lost after an entry's last check but before its send, the send still
+    // goes out (queues are at-least-once; the consumers' guards apply).
     for (const row of results) {
       try {
         const raw: unknown = JSON.parse(row.raw_message);
@@ -393,6 +464,10 @@ export async function handleDlqReplay(
           if (!parsed.success) {
             console.warn(`Skipping corrupt cleanup DLQ row: dlqId=${row.id}`);
             failedIds.push(row.id);
+            continue;
+          }
+          if (!(await holdsClaim(env.DB, row.id, lease))) {
+            console.warn(`DLQ replay lost its claim, not sending: dlqId=${row.id}`);
             continue;
           }
           // Built explicitly (rather than spreading parsed.data) so an
@@ -429,25 +504,39 @@ export async function handleDlqReplay(
           // gate skips anything not 'pending', so a reset-after-send failure
           // would ack-and-drop the replayed message. If this reset succeeds
           // but the send below fails, the beer is left 'pending' and the
-          // cron sweep requeues it — self-healing. A hand-verified row is
-          // never reset or re-enriched: the entry goes back to pending and is
-          // reported, so it can be replayed once a human clears the flag.
+          // cron sweep requeues it — self-healing. The reset applies only
+          // while this request holds the claim, and never re-opens a
+          // hand-verified beer, one that already has an ABV, or a skipped one.
           const reset = await env.DB.prepare(
-            `UPDATE enriched_beers SET enrichment_status = 'pending', updated_at = ? WHERE id = ? AND ${NOT_VERIFIED_SQL}`
-          ).bind(Date.now(), parsed.data.beerId).run();
+            `UPDATE enriched_beers SET enrichment_status = 'pending', updated_at = ?
+             WHERE id = ? AND ${NOT_VERIFIED_SQL} AND ${REPLAYABLE_BEER_SQL} AND ${HOLDS_CLAIM_SQL}`
+          ).bind(Date.now(), parsed.data.beerId, row.id, lease.token).run();
           if (reset.meta.changes === 0) {
-            const verification = await beerVerification(env.DB, parsed.data.beerId);
-            if (verification === 'verified') {
-              skippedVerifiedIds.push(row.id);
+            const refusal = await refusedReset(env.DB, row.id, parsed.data.beerId, lease);
+            if (refusal === 'lost') {
+              console.warn(`DLQ replay lost its claim, not sending: dlqId=${row.id}`);
               continue;
             }
-            if (verification === 'unverified') {
-              // The row exists but the guarded reset did not apply (its flag
-              // changed mid-replay): sending now would reach a non-pending
-              // row and be dropped, so leave the entry for another replay.
+            if (refusal === 'verified') {
+              verifiedAfterClaimIds.push(row.id);
+              continue;
+            }
+            if (refusal === 'resolved') {
+              // The beer has an ABV or was skipped since this entry failed
+              // (e.g. an earlier replay's send went out but its finalize
+              // failed): re-sending would pay for the lookup again.
+              resolvedIds.push(row.id);
+              continue;
+            }
+            if (refusal === 'race') {
+              // The row is replayable but the guarded reset did not apply
+              // (it changed mid-replay): sending now could reach a
+              // non-pending row and be dropped, so leave it for another replay.
               failedIds.push(row.id);
               continue;
             }
+            // 'missing': the consumer's preflight acks a missing row before
+            // reserving any quota.
           }
 
           // EnrichmentMessage.descriptionHash is required-but-nullable, so
@@ -480,33 +569,38 @@ export async function handleDlqReplay(
       }
     }
 
-    // STEP 4: Return failed messages, and any refused because their beer was
-    // verified after the claim, to 'pending' first, so a failure finalizing
-    // the sent ones cannot strand them in 'replaying'
-    const unsentIds = [...failedIds, ...skippedVerifiedIds.filter(id => !verifiedAtClaim.results.some(row => row.id === id))];
+    // STEP 3: Release unsent entries to 'pending' first, so a failure
+    // finalizing the sent ones cannot strand them in 'replaying'. Both writes
+    // touch only entries this request still holds.
+    const unsentIds = [...failedIds, ...verifiedAfterClaimIds, ...resolvedIds];
     if (unsentIds.length > 0) {
       const unsentPlaceholders = unsentIds.map(() => '?').join(',');
       await env.DB.prepare(
         `UPDATE dlq_messages
-         SET status = 'pending'
-         WHERE id IN (${unsentPlaceholders})`
-      ).bind(...unsentIds).run();
+         SET status = 'pending', replay_claim = NULL, replay_claimed_at = NULL
+         WHERE id IN (${unsentPlaceholders}) AND status = 'replaying' AND replay_claim = ?`
+      ).bind(...unsentIds, lease.token).run();
     }
     if (failedIds.length > 0) {
       console.warn(`Rolled back failed replay attempts: failedIds=${JSON.stringify(failedIds)}`);
     }
-    if (skippedVerifiedIds.length > 0) {
-      console.warn(`Refused replay of hand-verified beers: dlqIds=${JSON.stringify(skippedVerifiedIds)}`);
+    const allSkippedVerifiedIds = [...skippedVerifiedIds, ...verifiedAfterClaimIds];
+    if (allSkippedVerifiedIds.length > 0) {
+      console.warn(`Refused replay of hand-verified beers: dlqIds=${JSON.stringify(allSkippedVerifiedIds)}`);
+    }
+    if (resolvedIds.length > 0) {
+      console.warn(`Refused replay of beers already resolved: dlqIds=${JSON.stringify(resolvedIds)}`);
     }
 
-    // STEP 5: Update successfully replayed messages
+    // STEP 4: Mark successfully replayed messages
     if (replayedIds.length > 0) {
       const successPlaceholders = replayedIds.map(() => '?').join(',');
       await env.DB.prepare(
         `UPDATE dlq_messages
-         SET status = 'replayed', replayed_at = ?, replay_count = replay_count + 1
-         WHERE id IN (${successPlaceholders})`
-      ).bind(now, ...replayedIds).run();
+         SET status = 'replayed', replayed_at = ?, replay_count = replay_count + 1,
+             replay_claim = NULL, replay_claimed_at = NULL
+         WHERE id IN (${successPlaceholders}) AND status = 'replaying' AND replay_claim = ?`
+      ).bind(now, ...replayedIds, lease.token).run();
     }
 
     return Response.json({
@@ -517,7 +611,8 @@ export async function handleDlqReplay(
         claimed_count: claimedCount,
         replayed_count: replayedCount,
         failed_count: failedIds.length,
-        skipped_verified: skippedVerifiedIds,
+        skipped_verified: allSkippedVerifiedIds,
+        skipped_resolved: resolvedIds,
         // queued_to is only meaningful when exactly one queue was targeted;
         // omitted for mixed batches and for zero-sent batches (see queued_counts)
         ...(enrichmentSent > 0 && cleanupSent === 0 && { queued_to: 'beer-enrichment' }),

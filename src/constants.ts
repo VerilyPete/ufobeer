@@ -372,6 +372,15 @@ export const MAX_LOGGED_ERROR_BODY_LENGTH = 500;
  */
 export const MAX_DLQ_CONSUMER_ATTEMPTS = 3;
 
+/**
+ * Age at which the cron returns a DLQ replay claim ('replaying') to pending.
+ * A replay handles at most 50 entries and finishes in seconds, so a claim this
+ * old belongs to a request that failed or died between claiming and
+ * releasing. A request that outlives it loses the claim safely: every write it
+ * makes is guarded on its claim token (src/handlers/dlq.ts).
+ */
+export const DLQ_REPLAY_CLAIM_STALE_MS = 10 * 60 * 1000;
+
 // =============================================================================
 // Flying Saucer Upstream Bounds (src/schemas/external.ts, src/handlers/beers.ts)
 // =============================================================================

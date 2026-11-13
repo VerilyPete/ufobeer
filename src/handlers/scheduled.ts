@@ -23,7 +23,7 @@ import {
   CRON_JITTER_MS,
   CRON_SCHEDULE_KEY,
 } from '../constants';
-import { cleanupOldDlqMessages } from './dlq';
+import { cleanupOldDlqMessages, releaseStaleReplayClaims } from './dlq';
 import { getToday, getCurrentHourCT, isWithinOperatingHours } from '../utils/date';
 import { refreshTaplistForStore } from './beers';
 import { selectAndQueuePendingEnrichment } from './enrichment';
@@ -129,6 +129,17 @@ export async function handleScheduledEnrichment(
     }
   } catch (error) {
     console.error('[cron] usage reap failed:', error);
+  }
+  // DLQ entries stranded in 'replaying' by a replay request that failed or
+  // died before releasing its claim go back to 'pending', so they can be
+  // replayed again. Nothing is re-sent here.
+  try {
+    const released = await releaseStaleReplayClaims(env.DB, { now: Date.now() });
+    if (released > 0) {
+      console.log(`[cron] Released ${released} stale DLQ replay claims`);
+    }
+  } catch (error) {
+    console.error('[cron] DLQ replay-claim release failed:', error);
   }
   // Once a day (it returns early on every other tick): usage_daily size and
   // cleanup backlog, alerting through console.error.
