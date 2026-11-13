@@ -4,8 +4,9 @@
  * Prepare writes the hash only while the description is still the one the
  * trigger read; only prepared rows are sent; the mark is guarded on the hash
  * and on the row still being uncleaned, and is written only for sent rows.
- * Whatever fails, a row that still needs cleaning stays findable by the next
- * mode 'missing' run.
+ * Whatever fails, a row that still needs cleaning stays findable by the same
+ * mode: a never-cleaned row by the next 'missing' run, an outdated cleaned row
+ * by the next 'all' run.
  */
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
