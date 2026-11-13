@@ -1,6 +1,6 @@
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { insertPlaceholders } from '../../src/db/helpers';
+import { recordSeenBeers } from '../../src/db/seenBeers';
 import { handleBeerSync } from '../../src/handlers/beers';
 import { hashDescription } from '../../src/utils/hash';
 import type { Env, RequestContext } from '../../src/types';
@@ -60,7 +60,7 @@ describe('stored beer names (real D1)', () => {
   ])('repairs the stored names of a beer seen again with an unchanged description, %s', async (_case, existing) => {
     await seedEscaped(existing);
 
-    await insertPlaceholders(env.DB, [{ id: 'beer-1', ...ESCAPED, brew_description: DESCRIPTION }], 'request-1');
+    await recordSeenBeers(env.DB, [{ id: 'beer-1', ...ESCAPED, brew_description: DESCRIPTION }], { now: Date.now() });
 
     expect(await storedNames()).toEqual(REPAIRED);
   });
@@ -68,62 +68,63 @@ describe('stored beer names (real D1)', () => {
   it('repairs the stored names of a blocklisted beer seen again', async () => {
     await seedEscaped({ abv: null, enrichmentStatus: 'pending', brewName: "Dealer\\'s Choice Flight" });
 
-    await insertPlaceholders(env.DB, [{ id: 'beer-1', brew_name: "Dealer\\'s Choice Flight", brewer: ESCAPED.brewer, brew_description: DESCRIPTION }], 'request-1');
+    await recordSeenBeers(env.DB, [{ id: 'beer-1', brew_name: "Dealer\\'s Choice Flight", brewer: ESCAPED.brewer, brew_description: DESCRIPTION }], { now: Date.now() });
 
     expect(await storedNames()).toEqual({ brew_name: "Dealer's Choice Flight", brewer: REPAIRED.brewer });
   });
 
   it('keeps the stored brewer, repaired, of a beer seen again without one, without failing the rest of the batch', async () => {
     await seedEscaped({ abv: 8.5, enrichmentStatus: 'enriched' });
-    const withoutBrewer = { id: 'beer-1', brew_name: ESCAPED.brew_name, brew_description: DESCRIPTION } as unknown as { id: string; brew_name: string; brewer: string };
+    const withoutBrewer = { id: 'beer-1', brew_name: ESCAPED.brew_name, brew_description: DESCRIPTION };
 
-    await insertPlaceholders(env.DB, [withoutBrewer, { id: 'beer-2', ...ESCAPED }], 'request-1');
+    await recordSeenBeers(env.DB, [withoutBrewer, { id: 'beer-2', ...ESCAPED }], { now: Date.now() });
 
     expect(await storedNames()).toEqual(REPAIRED);
     expect(await env.DB.prepare('SELECT brew_name FROM enriched_beers WHERE id = ?').bind('beer-2').first()).toEqual({ brew_name: REPAIRED.brew_name });
   });
 
-  it('queues the stored brewer, repaired, for enrichment when a pending beer arrives without one', async () => {
+  it('queues the stored brewer, repaired, for cleanup (not a paid lookup) when a pending uncleaned beer arrives without one', async () => {
     await seedEscaped({ abv: null, enrichmentStatus: 'pending' });
-    const withoutBrewer = { id: 'beer-1', brew_name: ESCAPED.brew_name, brew_description: DESCRIPTION } as unknown as { id: string; brew_name: string; brewer: string };
+    const withoutBrewer = { id: 'beer-1', brew_name: ESCAPED.brew_name, brew_description: DESCRIPTION };
 
-    const result = await insertPlaceholders(env.DB, [withoutBrewer], 'request-1');
+    const result = await recordSeenBeers(env.DB, [withoutBrewer], { now: Date.now() });
 
-    expect(result.needsEnrichment).toEqual([expect.objectContaining({ brewer: REPAIRED.brewer })]);
+    expect(result.cleanup).toEqual([expect.objectContaining({ brewer: REPAIRED.brewer })]);
+    expect(result.enrichment).toEqual([]);
     expect(await storedNames()).toEqual(REPAIRED);
   });
 
   it('queues the stored brewer, repaired, for cleanup when a changed description arrives without one', async () => {
     await seedEscaped({ abv: null, enrichmentStatus: 'pending' });
-    const withoutBrewer = { id: 'beer-1', brew_name: ESCAPED.brew_name, brew_description: 'A richer stout' } as unknown as { id: string; brew_name: string; brewer: string };
+    const withoutBrewer = { id: 'beer-1', brew_name: ESCAPED.brew_name, brew_description: 'A richer stout' };
 
-    const result = await insertPlaceholders(env.DB, [withoutBrewer], 'request-1');
+    const result = await recordSeenBeers(env.DB, [withoutBrewer], { now: Date.now() });
 
-    expect(result.needsCleanup).toEqual([expect.objectContaining({ brewer: REPAIRED.brewer })]);
+    expect(result.cleanup).toEqual([expect.objectContaining({ brewer: REPAIRED.brewer })]);
   });
 
   it('stores a new beer that has no brewer', async () => {
-    const withoutBrewer = { id: 'beer-1', brew_name: ESCAPED.brew_name } as unknown as { id: string; brew_name: string; brewer: string };
+    const withoutBrewer = { id: 'beer-1', brew_name: ESCAPED.brew_name };
 
-    await insertPlaceholders(env.DB, [withoutBrewer], 'request-1');
+    await recordSeenBeers(env.DB, [withoutBrewer], { now: Date.now() });
 
     expect(await storedNames()).toEqual({ brew_name: REPAIRED.brew_name, brewer: null });
   });
 
   it('stores repaired names for a new beer and queues them for enrichment', async () => {
-    const result = await insertPlaceholders(env.DB, [{ id: 'beer-1', ...ESCAPED }], 'request-1');
+    const result = await recordSeenBeers(env.DB, [{ id: 'beer-1', ...ESCAPED }], { now: Date.now() });
 
     expect(await storedNames()).toEqual(REPAIRED);
-    expect(result.needsEnrichment).toEqual([expect.objectContaining(REPAIRED)]);
+    expect(result.enrichment).toEqual([expect.objectContaining(REPAIRED)]);
   });
 
   it('queues repaired names for cleanup when the description changes', async () => {
     await seedEscaped({ abv: null, enrichmentStatus: 'pending' });
 
-    const result = await insertPlaceholders(env.DB, [{ id: 'beer-1', ...ESCAPED, brew_description: 'A richer stout' }], 'request-1');
+    const result = await recordSeenBeers(env.DB, [{ id: 'beer-1', ...ESCAPED, brew_description: 'A richer stout' }], { now: Date.now() });
 
     expect(await storedNames()).toEqual(REPAIRED);
-    expect(result.needsCleanup).toEqual([expect.objectContaining(REPAIRED)]);
+    expect(result.cleanup).toEqual([expect.objectContaining(REPAIRED)]);
   });
 
   it('repairs names written by /beers/sync and the cleanup messages it sends', async () => {

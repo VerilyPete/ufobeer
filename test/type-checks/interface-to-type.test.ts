@@ -27,8 +27,7 @@ import type {
 } from '../../src/types';
 import type { RequestMetrics, EnrichmentMetrics, CronMetrics, AdminDlqMetrics, DlqConsumerMetrics, AdminTriggerMetrics, CleanupTriggerMetrics, AnalyticsEngineDataset } from '../../src/analytics';
 import type { RateLimitResult } from '../../src/rate-limit';
-import type { BeerEnrichmentData, InsertPlaceholdersResult } from '../../src/db/helpers';
-import type { SyncBatchResult } from '../../src/handlers/beers';
+import type { BeerEnrichmentData } from '../../src/db/helpers';
 import type { LogData } from '../../src/utils/log';
 
 describe('interface-to-type conversion compile checks', () => {

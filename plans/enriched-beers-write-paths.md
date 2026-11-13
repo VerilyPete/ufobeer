@@ -464,13 +464,21 @@ Deploy in order; each slice deploys alone.
   - slice 4 and slice 5 can be reverted to slice 3;
   - the Exa source-negotiation floor in `plans/abv-untappd-fallback.md`
     still applies.
-- If the audit ever finds a mismatch: at the slice-3 floor a sync repairs it
-  only when its description differs from the stored original text; a row
-  whose stored text is already current but whose hash is wrong or NULL needs
-  the admin cleanup trigger (mode `all`), which prepares the hash from the
-  stored text (slice 2). From slice 4, D7's preparation also repairs it on any
-  sighting. A row
-  never resynced or seen again keeps its old text, and the audit keeps
-  listing it until repaired.
+- If the audit ever finds a mismatch, what repairs it depends on the row
+  (the admin trigger prepares the hash from the stored text before sending,
+  slice 2):
+  - a sync whose description differs from the stored original text repairs
+    any row (slice 3);
+  - never cleaned: the admin cleanup trigger, mode `missing`; from slice 4
+    also any sighting of the row while it is uncleaned and not queued in 24
+    hours (D7);
+  - cleaned at an older `CLEANUP_VERSION`: mode `all`;
+  - cleaned at the current version: no automatic path selects it. Mark it
+    outdated, guarded on the hash the audit printed as `stored`, then run
+    mode `all`, which re-cleans it without blanking the served text:
+    `UPDATE enriched_beers SET cleanup_version = NULL WHERE id = '<id>' AND
+    description_hash IS '<stored>'` (use `IS NULL` for a NULL hash).
+
+  The audit keeps listing a row until it is repaired.
 - `ENRICHMENT_ENABLED` does not stop cleanup's ABV writes; pausing the
   cleanup queue consumer does.

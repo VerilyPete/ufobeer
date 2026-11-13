@@ -3,7 +3,7 @@
  *
  * This module provides utilities for queueing beers for:
  * - Perplexity enrichment (ABV lookup)
- * - Description cleanup (LLM-based text cleanup)
+ * - Description cleanup (deterministic, no model call)
  *
  * Includes blocklist filtering and batch handling.
  *
@@ -13,6 +13,8 @@
 import type { Env, EnrichmentMessage, CleanupMessage } from '../types';
 import { shouldSkipEnrichment } from '../config';
 import { hashDescription } from '../utils/hash';
+import { markCleanupQueued } from '../db/seenBeers';
+import type { CleanupWork } from '../db/seenBeers';
 
 const BATCH_SIZE = 100; // Cloudflare Queues sendBatch limit
 
@@ -185,4 +187,33 @@ export async function queueBeersForCleanup(
   }));
 
   return { queued, queuedIds };
+}
+
+/**
+ * Send cleanup work, then mark what was actually sent (D7's guarded,
+ * monotonic mark). A failed send leaves the row unmarked so the next
+ * sighting retries it. A failed mark does the same (the hash-guarded
+ * consumer makes the duplicate harmless); it is logged and returned so the
+ * caller can keep its own error response.
+ */
+export async function sendCleanupAndMark(
+  env: Env,
+  work: readonly CleanupWork[],
+  requestId: string,
+  now: number
+): Promise<{ readonly queued: number; readonly markError: unknown }> {
+  if (work.length === 0) return { queued: 0, markError: null };
+  const { queued, queuedIds } = await queueBeersForCleanup(env, work, requestId);
+  const sent = new Set(queuedIds);
+  try {
+    await markCleanupQueued(env.DB, work.filter(item => sent.has(item.id)), { now });
+    return { queued, markError: null };
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: 'queue_cleanup_mark_failed',
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return { queued, markError: error };
+  }
 }

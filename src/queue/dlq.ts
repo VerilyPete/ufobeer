@@ -193,12 +193,12 @@ export async function storeDlqMessage(
   // Park the beer as 'failed' so taplist syncs and the cron sweep stop
   // re-queueing it — every requeue of a deterministically-failing beer
   // re-reserves quota and re-calls Perplexity before failing again. Admin
-  // replay (handlers/dlq.ts) or a description change resets it to 'pending'.
-  // Parked only while the message still describes the row (pending, not
-  // verified, same hash, name and brewer): a late DLQ delivery for an old
-  // description must not fail the newer one. The abv guard means a
-  // redelivered DLQ message can never clobber a beer that was replayed and
-  // successfully enriched. Missing beer rows are a harmless no-op.
+  // replay (handlers/dlq.ts) or a description change (recordSeenBeers)
+  // resets it to 'pending'. Parked only while the message still describes
+  // the row (pending, not verified, same hash, name and brewer): a late DLQ
+  // delivery for an old description must not fail the newer one. The abv
+  // guard means a redelivered DLQ message can never clobber a beer that was
+  // replayed and successfully enriched. Missing beer rows are a harmless no-op.
   await db.prepare(`
     UPDATE enriched_beers
     SET enrichment_status = 'failed', updated_at = ?
