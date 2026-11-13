@@ -3,7 +3,7 @@
  *
  * This module provides utilities for queueing beers for:
  * - Perplexity enrichment (ABV lookup)
- * - Description cleanup (LLM-based text cleanup)
+ * - Description cleanup (deterministic, no model call)
  *
  * Includes blocklist filtering and batch handling.
  *
