@@ -71,11 +71,11 @@ function beersRequest(headers: Record<string, string> = {}): Request {
   });
 }
 
-function batchRequest(headers: Record<string, string> = {}): Request {
+function batchRequest(headers: Record<string, string> = {}, ids: readonly string[] = ['beer-exa', 'beer-pplx']): Request {
   return new IncomingRequest('https://api.ufobeer.test/beers/batch', {
     method: 'POST',
     headers: { 'X-API-Key': API_KEY, 'Content-Type': 'application/json', ...headers },
-    body: JSON.stringify({ ids: ['beer-exa', 'beer-pplx'] }),
+    body: JSON.stringify({ ids }),
   });
 }
 
@@ -200,5 +200,13 @@ describe('POST /beers/batch', () => {
 
     const shown = await (await invoke(batchRequest(ASK_FOR_EXA))).json<BatchBody>();
     expect(shown.enrichments['beer-exa']).toMatchObject({ enrichment_source: 'exa', enriched_abv: 8, enrichment_confidence: 0.8 });
+  });
+
+  it('returns only the requested beers when other beers are stored', async () => {
+    await seedEnrichment();
+
+    const body = await (await invoke(batchRequest({}, ['beer-pplx', 'beer-unknown']))).json<BatchBody>();
+
+    expect(Object.keys(body.enrichments)).toEqual(['beer-pplx']);
   });
 });

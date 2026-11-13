@@ -114,6 +114,30 @@ describe('description cleanup consumer (real D1)', () => {
     expect(row).toEqual({ cleanup_version: CLEANUP_VERSION });
   });
 
+  it.each([
+    ['with an ABV', 'An old lager. 4.9% ABV'],
+    ['without an ABV', 'An old pleasent lager'],
+  ])('leaves a row alone when its description changed after the message was sent, %s', async (_case, staleDescription) => {
+    await seedBeer('beer-1', 'A newer description');
+    await env.DB.prepare('UPDATE enriched_beers SET description_hash = ? WHERE id = ?').bind('hash-newer', 'beer-1').run();
+    const { message, batch } = createBatch('beer-1', staleDescription);
+    const { worker, sendBatch } = createWorker();
+
+    await handleCleanupBatch(batch, worker);
+
+    expect(await env.DB.prepare(
+      'SELECT brew_description_cleaned, cleanup_source, abv, enrichment_status, description_hash FROM enriched_beers WHERE id = ?'
+    ).bind('beer-1').first()).toEqual({
+      brew_description_cleaned: null,
+      cleanup_source: null,
+      abv: null,
+      enrichment_status: 'pending',
+      description_hash: 'hash-newer',
+    });
+    expect(message.ack).toHaveBeenCalled();
+    expect(sendBatch).not.toHaveBeenCalled();
+  });
+
   it('stores the sanitized source unchanged when nothing needs fixing', async () => {
     const { row } = await clean('A crisp &amp; dry finish!');
     expect(row).toMatchObject({ brew_description_cleaned: 'A crisp & dry finish!' });
