@@ -291,10 +291,11 @@ export async function handleDlqStats(
 // DLQ Replay Handler
 // ============================================================================
 
-async function isVerifiedBeer(db: D1Database, beerId: string): Promise<boolean> {
-  const verified = await db.prepare('SELECT 1 AS verified FROM enriched_beers WHERE id = ? AND is_verified IS 1')
-    .bind(beerId).first<number>('verified');
-  return verified !== null;
+async function beerVerification(db: D1Database, beerId: string): Promise<'missing' | 'verified' | 'unverified'> {
+  const row = await db.prepare('SELECT is_verified FROM enriched_beers WHERE id = ?')
+    .bind(beerId).first<{ is_verified: number | null }>();
+  if (row === null) return 'missing';
+  return row.is_verified === 1 ? 'verified' : 'unverified';
 }
 
 /**
@@ -424,9 +425,19 @@ export async function handleDlqReplay(
           const reset = await env.DB.prepare(
             `UPDATE enriched_beers SET enrichment_status = 'pending', updated_at = ? WHERE id = ? AND ${NOT_VERIFIED_SQL}`
           ).bind(Date.now(), parsed.data.beerId).run();
-          if (reset.meta.changes === 0 && await isVerifiedBeer(env.DB, parsed.data.beerId)) {
-            skippedVerifiedIds.push(row.id);
-            continue;
+          if (reset.meta.changes === 0) {
+            const verification = await beerVerification(env.DB, parsed.data.beerId);
+            if (verification === 'verified') {
+              skippedVerifiedIds.push(row.id);
+              continue;
+            }
+            if (verification === 'unverified') {
+              // The row exists but the guarded reset did not apply (its flag
+              // changed mid-replay): sending now would reach a non-pending
+              // row and be dropped, so leave the entry for another replay.
+              failedIds.push(row.id);
+              continue;
+            }
           }
 
           // EnrichmentMessage.descriptionHash is required-but-nullable, so

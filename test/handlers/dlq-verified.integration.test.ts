@@ -129,6 +129,38 @@ describe('admin replay of a verified row', () => {
     expect(enrichment).toHaveBeenCalledOnce();
   });
 
+  it('does not send when verification is cleared between the refused reset and the follow-up read', async () => {
+    await seedBeer('beer-1', 1);
+    const dlqId = await seedDlqEntry('m-1', 'beer-enrichment', ENRICHMENT_BODY);
+    const realDb = env.DB;
+    const racingDb = {
+      prepare: (sql: string) => {
+        const statement = realDb.prepare(sql);
+        if (!sql.includes("UPDATE enriched_beers SET enrichment_status = 'pending'")) return statement;
+        return {
+          bind: (...args: unknown[]) => ({
+            run: async () => {
+              const result = await statement.bind(...args).run();
+              await realDb.prepare('UPDATE enriched_beers SET is_verified = 0 WHERE id = ?').bind('beer-1').run();
+              return result;
+            },
+          }),
+        };
+      },
+      batch: (statements: D1PreparedStatement[]) => realDb.batch(statements),
+    } as unknown as D1Database;
+    const { enrichment, worker } = queues();
+
+    const data = await replay({ ...worker, DB: racingDb } as Env, [dlqId]);
+
+    expect(enrichment).not.toHaveBeenCalled();
+    expect(data).toMatchObject({ replayed_count: 0, failed_count: 1 });
+    expect(await dlqStatus(dlqId)).toBe('pending');
+    const retry = queues();
+    expect(await replay(retry.worker, [dlqId])).toMatchObject({ replayed_count: 1 });
+    expect(await beerStatus('beer-1')).toBe('pending');
+  });
+
   it('replays a mixed cleanup and enrichment batch with unchanged counts', async () => {
     await seedBeer('beer-1', 0);
     await seedBeer('beer-2', null, 'enriched');
