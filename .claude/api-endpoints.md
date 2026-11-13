@@ -336,20 +336,32 @@ Get DLQ statistics.
 
 ### POST /admin/dlq/replay
 
-Replay failed messages back to the main queue.
+Replay failed messages to the queue each one failed on (enrichment or cleanup).
+An enrichment entry for a hand-verified beer (`is_verified = 1`) is not
+replayed: its DLQ id is listed in `skipped_verified` and the entry stays
+`pending`, so it can be replayed once a human clears the flag.
 
-**Request Body:**
+**Request Body:** (`ids` are DLQ row ids, at most 50; `delay_seconds` optional)
 ```json
 {
-  "message_ids": ["abc123", "def456"]
+  "ids": [12, 13, 14]
 }
 ```
 
 **Response:**
 ```json
 {
-  "replayed": 2,
-  "failed": 0
+  "success": true,
+  "requestId": "…",
+  "data": {
+    "requested_count": 3,
+    "claimed_count": 3,
+    "replayed_count": 2,
+    "failed_count": 0,
+    "skipped_verified": [14],
+    "queued_to": "beer-enrichment",
+    "queued_counts": { "enrichment": 2, "cleanup": 0 }
+  }
 }
 ```
 

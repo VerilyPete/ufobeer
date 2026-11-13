@@ -12,6 +12,7 @@
  * Extracted from index.ts as part of Phase 7 refactoring.
  */
 
+import { NOT_VERIFIED_SQL } from '../db/verified';
 import { z } from 'zod';
 import type {
   Env,
@@ -290,6 +291,12 @@ export async function handleDlqStats(
 // DLQ Replay Handler
 // ============================================================================
 
+async function isVerifiedBeer(db: D1Database, beerId: string): Promise<boolean> {
+  const verified = await db.prepare('SELECT 1 AS verified FROM enriched_beers WHERE id = ? AND is_verified IS 1')
+    .bind(beerId).first<number>('verified');
+  return verified !== null;
+}
+
 /**
  * POST /admin/dlq/replay - Replay messages back to the main enrichment queue
  *
@@ -359,6 +366,7 @@ export async function handleDlqReplay(
     let cleanupSent = 0;
     const replayedIds: number[] = [];
     const failedIds: number[] = [];
+    const skippedVerifiedIds: number[] = [];
 
     // STEP 3: Send messages to the queue they originally failed on.
     // Rows arrive from BOTH DLQs (enrichment and cleanup share this table);
@@ -410,10 +418,16 @@ export async function handleDlqReplay(
           // gate skips anything not 'pending', so a reset-after-send failure
           // would ack-and-drop the replayed message. If this reset succeeds
           // but the send below fails, the beer is left 'pending' and the
-          // cron sweep requeues it — self-healing.
-          await env.DB.prepare(
-            `UPDATE enriched_beers SET enrichment_status = 'pending', updated_at = ? WHERE id = ?`
+          // cron sweep requeues it — self-healing. A hand-verified row is
+          // never reset or re-enriched: the entry goes back to pending and is
+          // reported, so it can be replayed once a human clears the flag.
+          const reset = await env.DB.prepare(
+            `UPDATE enriched_beers SET enrichment_status = 'pending', updated_at = ? WHERE id = ? AND ${NOT_VERIFIED_SQL}`
           ).bind(Date.now(), parsed.data.beerId).run();
+          if (reset.meta.changes === 0 && await isVerifiedBeer(env.DB, parsed.data.beerId)) {
+            skippedVerifiedIds.push(row.id);
+            continue;
+          }
 
           // EnrichmentMessage.descriptionHash is required-but-nullable, so
           // a `?? null` fallback (not a conditional key-spread) normalizes
@@ -455,16 +469,21 @@ export async function handleDlqReplay(
       ).bind(now, ...replayedIds).run();
     }
 
-    // STEP 5: Rollback failed messages back to 'pending'
-    if (failedIds.length > 0) {
-      const failPlaceholders = failedIds.map(() => '?').join(',');
+    // STEP 5: Return failed and verified-skipped messages to 'pending'
+    const unsentIds = [...failedIds, ...skippedVerifiedIds];
+    if (unsentIds.length > 0) {
+      const unsentPlaceholders = unsentIds.map(() => '?').join(',');
       await env.DB.prepare(
         `UPDATE dlq_messages
          SET status = 'pending'
-         WHERE id IN (${failPlaceholders})`
-      ).bind(...failedIds).run();
-
+         WHERE id IN (${unsentPlaceholders})`
+      ).bind(...unsentIds).run();
+    }
+    if (failedIds.length > 0) {
       console.warn(`Rolled back failed replay attempts: failedIds=${JSON.stringify(failedIds)}`);
+    }
+    if (skippedVerifiedIds.length > 0) {
+      console.warn(`Refused replay of hand-verified beers: dlqIds=${JSON.stringify(skippedVerifiedIds)}`);
     }
 
     return Response.json({
@@ -475,6 +494,7 @@ export async function handleDlqReplay(
         claimed_count: claimedCount,
         replayed_count: replayedCount,
         failed_count: failedIds.length,
+        skipped_verified: skippedVerifiedIds,
         // queued_to is only meaningful when exactly one queue was targeted;
         // omitted for mixed batches and for zero-sent batches (see queued_counts)
         ...(enrichmentSent > 0 && cleanupSent === 0 && { queued_to: 'beer-enrichment' }),

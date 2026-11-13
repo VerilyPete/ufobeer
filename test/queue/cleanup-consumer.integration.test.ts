@@ -119,3 +119,48 @@ describe('description cleanup consumer (real D1)', () => {
     expect(row).toMatchObject({ brew_description_cleaned: 'A crisp & dry finish!' });
   });
 });
+
+describe('cleanup of a hand-verified row (real D1)', () => {
+  beforeEach(async () => {
+    await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
+    await env.DB.prepare('DELETE FROM enriched_beers').run();
+  });
+
+  const VERIFIED = { abv: 5.1, confidence: 1, enrichment_source: 'manual', enrichment_status: 'skipped' };
+
+  async function seedVerified(id: string, description: string): Promise<void> {
+    await seedBeer(id, description);
+    await env.DB.prepare(
+      'UPDATE enriched_beers SET is_verified = 1, abv = ?, confidence = ?, enrichment_source = ?, enrichment_status = ? WHERE id = ?'
+    ).bind(VERIFIED.abv, VERIFIED.confidence, VERIFIED.enrichment_source, VERIFIED.enrichment_status, id).run();
+  }
+
+  it.each([
+    ['with an ABV', 'A pleasent lager. 4.9% ABV', 'A pleasant lager. 4.9% ABV.'],
+    ['without an ABV', 'A pleasent lager', 'A pleasant lager'],
+  ])('re-cleans the description %s and keeps the protected fields', async (_case, description, cleaned) => {
+    await seedVerified('beer-1', description);
+    const { message, batch } = createBatch('beer-1', description);
+    const { worker } = createWorker();
+
+    await handleCleanupBatch(batch, worker);
+
+    const row = await env.DB.prepare(
+      'SELECT brew_description_cleaned, abv, confidence, enrichment_source, enrichment_status FROM enriched_beers WHERE id = ?'
+    ).bind('beer-1').first();
+    expect(row).toEqual({ brew_description_cleaned: cleaned, ...VERIFIED });
+    expect(message.ack).toHaveBeenCalled();
+  });
+
+  it('still records a description ABV on an unverified row with is_verified NULL', async () => {
+    await seedBeer('beer-1', 'A lager. 4.9% ABV');
+    await env.DB.prepare('UPDATE enriched_beers SET is_verified = NULL WHERE id = ?').bind('beer-1').run();
+    const { batch } = createBatch('beer-1', 'A lager. 4.9% ABV');
+    const { worker } = createWorker();
+
+    await handleCleanupBatch(batch, worker);
+
+    expect(await env.DB.prepare('SELECT abv, enrichment_source, enrichment_status FROM enriched_beers WHERE id = ?').bind('beer-1').first())
+      .toEqual({ abv: 4.9, enrichment_source: 'description', enrichment_status: 'enriched' });
+  });
+});

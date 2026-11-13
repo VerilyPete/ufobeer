@@ -7,6 +7,7 @@
  * @module queue/dlq
  */
 
+import { NOT_VERIFIED_SQL } from '../db/verified';
 import type { Env, EnrichmentMessage, CleanupMessage } from '../types';
 import { trackDlqConsumer } from '../analytics';
 import { MAX_DLQ_CONSUMER_ATTEMPTS } from '../constants';
@@ -194,12 +195,12 @@ export async function storeDlqMessage(
   // re-reserves quota and re-calls Perplexity before failing again. Admin
   // replay (handlers/dlq.ts) or a description change (insertPlaceholders)
   // resets it to 'pending'. The abv guard means a redelivered DLQ message can
-  // never clobber a beer that was replayed and successfully enriched.
-  // Missing beer rows are a harmless no-op.
+  // never clobber a beer that was replayed and successfully enriched, and a
+  // hand-verified row keeps its status. Missing beer rows are a harmless no-op.
   await db.prepare(`
     UPDATE enriched_beers
     SET enrichment_status = 'failed', updated_at = ?
-    WHERE id = ? AND abv IS NULL
+    WHERE id = ? AND abv IS NULL AND ${NOT_VERIFIED_SQL}
   `).bind(now, body.beerId).run();
 }
 

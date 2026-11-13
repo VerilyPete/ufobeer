@@ -1,14 +1,14 @@
-import { env } from 'cloudflare:test';
+import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { selectAndQueuePendingEnrichment } from '../src/handlers/enrichment';
 import type { Env } from '../src/types';
 const day = 86400000;
 beforeAll(async () => {
-  await env.DB.exec('CREATE TABLE IF NOT EXISTS enriched_beers (id TEXT PRIMARY KEY,brew_name TEXT,brewer TEXT,description_hash TEXT,enrichment_status TEXT,abv REAL,updated_at INTEGER,last_seen_at INTEGER)');
+  await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
 });
 async function seed(id:string,status:string,age:number,seenAge=0,abv:number|null=null,name='Great Heights Leo Carillo',brewer:string|null='Great Heights') {
   const now=Date.now();
-  await env.DB.prepare('INSERT INTO enriched_beers VALUES (?,?,?,?,?,?,?,?)').bind(id,name,brewer,'source-hash',status,abv,now-age,now-seenAge).run();
+  await env.DB.prepare('INSERT INTO enriched_beers (id,brew_name,brewer,description_hash,enrichment_status,abv,updated_at,last_seen_at) VALUES (?,?,?,?,?,?,?,?)').bind(id,name,brewer,'source-hash',status,abv,now-age,now-seenAge).run();
 }
 function context() {
   const sendBatch=vi.fn().mockResolvedValue(undefined);

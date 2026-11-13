@@ -15,6 +15,7 @@ import type {
 } from '../types';
 import { shouldSkipEnrichment } from '../config';
 import { SAME_IDENTITY_SQL } from '../db/identity';
+import { NOT_VERIFIED_SQL } from '../db/verified';
 import { errorResponse } from '../context';
 import { getToday, getMonthEnd } from '../utils/date';
 import { readBoundedJson, boundedJsonErrorResponse } from '../utils/body';
@@ -38,7 +39,7 @@ export type QueuePendingResult = {
 
 /**
  * Marks blocklisted rows skipped, guarded on the status, name and brewer that
- * were selected: a row corrected since the select must not be overwritten
+ * were selected and on the row not being hand-verified: a row corrected since the select must not be overwritten
  * with a terminal skip. Returns the number of rows actually marked.
  */
 async function markBlocklistedSkipped(
@@ -49,7 +50,7 @@ async function markBlocklistedSkipped(
   const results = await env.DB.batch(beers.map(beer =>
     env.DB.prepare(
       `UPDATE enriched_beers SET enrichment_status = 'skipped'
-       WHERE id = ? AND enrichment_status IS ? AND ${SAME_IDENTITY_SQL}`
+       WHERE id = ? AND enrichment_status IS ? AND ${NOT_VERIFIED_SQL} AND ${SAME_IDENTITY_SQL}`
     ).bind(beer.id, beer.enrichment_status ?? null, beer.brew_name, beer.brewer)
   ));
   return results.reduce((count, result) => count + (result.meta?.changes ?? 0), 0);
@@ -78,6 +79,7 @@ export async function selectAndQueuePendingEnrichment(
     SELECT id, brew_name, brewer, description_hash, enrichment_status
     FROM enriched_beers
     WHERE (enrichment_status = 'pending' OR (enrichment_status = 'not_found' AND abv IS NULL AND updated_at <= ${missCutoff} AND last_seen_at >= ${seenCutoff}))
+      AND ${NOT_VERIFIED_SQL}
   `;
   if (options.excludeFailures) {
     query += `
@@ -109,7 +111,7 @@ export async function selectAndQueuePendingEnrichment(
       const claim = await env.DB.prepare(`UPDATE enriched_beers
         SET enrichment_status = 'pending', updated_at = ?
         WHERE id = ? AND enrichment_status = 'not_found' AND abv IS NULL
-          AND updated_at <= ? AND last_seen_at >= ? AND description_hash IS ?`)
+          AND updated_at <= ? AND last_seen_at >= ? AND description_hash IS ? AND ${NOT_VERIFIED_SQL}`)
         .bind(now, beer.id, missCutoff, seenCutoff, beer.description_hash).run();
       if (claim.meta?.changes !== 1) continue;
     }

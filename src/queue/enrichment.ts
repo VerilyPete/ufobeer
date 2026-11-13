@@ -88,15 +88,10 @@ export async function handleEnrichmentBatch(
   for (let i = 0; i < batch.messages.length; i++) {
     const message = batch.messages[i];
     if (!message) continue;
-    const { beerId, beerName, brewer, descriptionHash } = message.body;
+    const { beerId, beerName, brewer } = message.body;
 
-    // Check if beer still needs enrichment (pending status)
-    const existing = await env.DB.prepare(
-      'SELECT enrichment_status FROM enriched_beers WHERE id = ?'
-    ).bind(beerId).first<{ enrichment_status: string | null }>();
-
-    if (existing !== null && existing.enrichment_status !== 'pending') {
-      console.log(`[enrichment] Skipping ${beerId}: status=${existing.enrichment_status}`);
+    if (!(await isStillCurrent(env.DB, message.body))) {
+      console.log(`[enrichment] Skipping ${beerId}: row missing, not pending, verified, or changed since queueing`);
       message.ack();
       continue;
     }
@@ -131,30 +126,17 @@ export async function handleEnrichmentBatch(
       });
 
       if (abv !== null) {
-        // Optimistic concurrency: bind the write to the same 'pending'
-        // status this iteration already observed above, so a row that
-        // changed status between that check and this write (e.g. another
-        // consumer enriched it, or a redelivered message raced this one)
-        // is not silently overwritten. AND'd with a descriptionHash check
-        // for parity with cleanup.ts's stale-result binding -- the status
-        // guard stays (belt and braces): a description-hash mismatch alone
-        // would not catch a race where the row's description never
-        // changed but its status did between the check above and this
-        // write. `IS` (not `=`) so a null message hash -- a beer with no
-        // description at all -- correctly matches a null stored column
-        // instead of a SQL `NULL = NULL` non-match silently discarding
-        // every such write as "stale."
         const updateResult = await env.DB.prepare(`
           UPDATE enriched_beers
           SET abv = ?, confidence = ${ABV_CONFIDENCE_FROM_PERPLEXITY}, enrichment_source = 'perplexity', enrichment_status = 'enriched', updated_at = ?
-          WHERE id = ? AND enrichment_status = 'pending' AND description_hash IS ?
-        `).bind(abv, Date.now(), beerId, descriptionHash ?? null).run();
+          WHERE ${STILL_CURRENT_SQL}
+        `).bind(abv, Date.now(), ...stillCurrentArgs(message.body)).run();
 
         if (updateResult.meta?.changes === 0) {
           console.warn(JSON.stringify({
             event: 'enrichment.stale_result',
             beerId,
-            reason: 'enrichment_status or description_hash changed between pending-check and write; result discarded',
+            reason: 'status, verification, description_hash, name or brewer changed since the preflight; result discarded',
           }));
         } else {
           console.log(`Enriched ${beerId}: ${beerName} -> ABV ${abv}%`);
@@ -207,15 +189,21 @@ function exaDailyLimit(env: Env): number {
 
 /**
  * The row the message was built from is still the one to enrich: pending,
- * same description hash, same name and brewer. Cleanup can enrich a row,
- * and a description or /beers/sync change can replace it, while Perplexity
- * runs; a stale message must not spend a paid Exa call.
+ * not hand-verified, same description hash, same name and brewer. Checked
+ * before any quota is reserved, again before Exa, and as the guard of every
+ * write: cleanup, a sync, a description change or a human can change the
+ * row while a provider runs.
  */
+const STILL_CURRENT_SQL =
+  `id = ? AND enrichment_status = 'pending' AND is_verified IS NOT 1 AND description_hash IS ? AND ${SAME_IDENTITY_SQL}`;
+
+function stillCurrentArgs(body: EnrichmentMessage): readonly (string | null)[] {
+  return [body.beerId, body.descriptionHash ?? null, body.beerName, body.brewer];
+}
+
 async function isStillCurrent(db: D1Database, body: EnrichmentMessage): Promise<boolean> {
-  const current = await db.prepare(
-    `SELECT 1 AS current FROM enriched_beers
-     WHERE id = ? AND enrichment_status = 'pending' AND description_hash IS ? AND ${SAME_IDENTITY_SQL}`
-  ).bind(body.beerId, body.descriptionHash ?? null, body.beerName, body.brewer).first<number>('current');
+  const current = await db.prepare(`SELECT 1 AS current FROM enriched_beers WHERE ${STILL_CURRENT_SQL}`)
+    .bind(...stillCurrentArgs(body)).first<number>('current');
   return current !== null;
 }
 
@@ -261,16 +249,16 @@ async function runExaFallback(env: Env, body: EnrichmentMessage): Promise<Fallba
 }
 
 /**
- * Every terminal write here is guarded on the message's status, description
- * hash, name and brewer: Exa's strict match was made against that identity,
+ * Every terminal write here is guarded on the message's status, verification,
+ * description hash, name and brewer: Exa's strict match was made against that identity,
  * and /beers/sync can change it without touching status or hash. A D1 error
  * propagates so the caller retries the message.
  */
 async function recordPerplexityUnknown(env: Env, body: EnrichmentMessage): Promise<void> {
   const outcome = await runExaFallback(env, body);
 
-  const guard = `WHERE id = ? AND enrichment_status = 'pending' AND description_hash IS ? AND ${SAME_IDENTITY_SQL}`;
-  const guardArgs = [body.beerId, body.descriptionHash ?? null, body.beerName, body.brewer];
+  const guard = `WHERE ${STILL_CURRENT_SQL}`;
+  const guardArgs = stillCurrentArgs(body);
   const result = outcome.kind === 'abv'
     ? await env.DB.prepare(
         `UPDATE enriched_beers
@@ -285,7 +273,7 @@ async function recordPerplexityUnknown(env: Env, body: EnrichmentMessage): Promi
     console.warn(JSON.stringify({
       event: 'enrichment.stale_result',
       beerId: body.beerId,
-      reason: 'status, description_hash, name or brewer changed since the message; result discarded',
+      reason: 'status, verification, description_hash, name or brewer changed since the message; result discarded',
     }));
     return;
   }

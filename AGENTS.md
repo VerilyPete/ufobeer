@@ -227,6 +227,16 @@ the Saucer's `Brewfusion` house label, and name-plus-brewer entries. A blank bre
 signal. `skipped` is terminal, so each enrichment run first re-checks recently seen skipped rows
 (`releaseUnblockedSkips`, `src/db/skipRecovery.ts`) and returns any that no rule matches to `pending`.
 
+### Hand-Verified Rows
+A row with `is_verified = 1` keeps its `abv`, `confidence`, `enrichment_source`
+and `enrichment_status`: only a human changes them (NULL counts as unverified).
+Every automatic writer enforces this against the live row (`src/db/verified.ts`):
+row-level writes add `NOT_VERIFIED_SQL`; writes that also carry a description or
+names (taplist upserts, the cleanup consumer) use `unlessVerified()` per protected
+column, so the description is still updated and re-cleaned. Selectors skip
+verified rows, the enrichment consumer's preflight acks them before reserving
+quota, and admin DLQ replay reports them in `skipped_verified`.
+
 ### Description Cleanup Pipeline
 1. Beer with raw description queued to `description-cleanup`
 2. Deterministic fixes applied (`applyCleanupFixes` in `src/queue/cleanupGuard.ts`): reviewed spelling pairs, a missing space after a comma or between a percentage and ABV, a final full stop. No model is called.
