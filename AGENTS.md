@@ -245,6 +245,10 @@ sighting of an uncleaned row not queued in 24 h; callers send it with
 `sendCleanupAndMark`, whose mark is guarded on the hash and never moves backwards.
 Sync queues cleanup only; the taplist path also queues enrichment, but not while
 a description still awaits cleanup.
+Each call logs `seen_beers.recorded` (outcome counts, `rows_read`, and
+`throttle_eligible`: unchanged sightings within `LAST_SEEN_REFRESH_MS` of the
+stored `last_seen_at`), and each mark logs `seen_beers.cleanup_marked`. A week
+of these decides slice 5's throttle (plan: ship only above 5,000 a day).
 
 ### Hand-Verified Rows
 A row with `is_verified = 1` keeps its `abv`, `confidence`, `enrichment_source`

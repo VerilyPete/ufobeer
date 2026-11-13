@@ -478,3 +478,11 @@ export const CLEANUP_VERSION = 1;
  * 1: beer names and brewers repaired with cleanBeerName
  */
 export const TAPLIST_FORMAT_VERSION = 1;
+
+/**
+ * A sighting within this long of the stored last_seen_at would be skipped by
+ * the proposed last_seen_at throttle (plans/enriched-beers-write-paths.md,
+ * slice 5). recordSeenBeers logs how many sightings qualify as
+ * `throttle_eligible`; the throttle ships only if that exceeds 5,000 a day.
+ */
+export const LAST_SEEN_REFRESH_MS = 60 * 60 * 1000;
