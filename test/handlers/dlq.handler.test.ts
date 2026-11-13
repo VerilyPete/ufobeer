@@ -274,6 +274,7 @@ describe('handleDlqReplay', () => {
   it('returns 200 with replayed_count > 0 when messages are found and queued successfully', async () => {
     const rawMessage = JSON.stringify({ beerId: 'beer-001', beerName: 'Test IPA', brewer: 'Test Brewery' });
     const db = buildSequencedDb([
+      { allResults: [] }, // verified-entry lookup before the claim
       { runResult: { meta: { changes: 1 } } },
       { allResults: [{ id: 1, raw_message: rawMessage, replay_count: 0 }] },
       { runResult: { meta: { changes: 1 } } },
@@ -295,6 +296,7 @@ describe('handleDlqReplay', () => {
   it('the optimistic status update sets status to replaying before queue send', async () => {
     const rawMessage = JSON.stringify({ beerId: 'beer-001', beerName: 'Test IPA', brewer: 'Test Brewery' });
     const db = buildSequencedDb([
+      { allResults: [] }, // verified-entry lookup before the claim
       { runResult: { meta: { changes: 1 } } },
       { allResults: [{ id: 1, raw_message: rawMessage, replay_count: 0 }] },
       { runResult: { meta: { changes: 1 } } },
@@ -308,13 +310,14 @@ describe('handleDlqReplay', () => {
 
     await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
 
-    const firstSql = db.prepare.mock.calls[0]?.[0] as string;
+    const firstSql = db.prepare.mock.calls[1]?.[0] as string;
     expect(firstSql).toContain("status = 'replaying'");
   });
 
   it('on successful queue send sets status to replayed and increments replay_count', async () => {
     const rawMessage = JSON.stringify({ beerId: 'beer-001', beerName: 'Test IPA', brewer: 'Test Brewery' });
     const db = buildSequencedDb([
+      { allResults: [] }, // verified-entry lookup before the claim
       { runResult: { meta: { changes: 1 } } },
       { allResults: [{ id: 1, raw_message: rawMessage, replay_count: 0, source_queue: 'beer-enrichment' }] },
       { runResult: { meta: { changes: 1 } } },
@@ -328,7 +331,7 @@ describe('handleDlqReplay', () => {
 
     await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
 
-    const successUpdateSql = db.prepare.mock.calls[3]?.[0] as string;
+    const successUpdateSql = db.prepare.mock.calls[4]?.[0] as string;
     expect(successUpdateSql).toContain("status = 'replayed'");
     expect(successUpdateSql).toContain('replay_count = replay_count + 1');
   });
@@ -336,6 +339,7 @@ describe('handleDlqReplay', () => {
   it('resets enrichment_status to pending BEFORE sending to the enrichment queue', async () => {
     const rawMessage = JSON.stringify({ beerId: 'beer-001', beerName: 'Test IPA', brewer: 'Test Brewery' });
     const db = buildSequencedDb([
+      { allResults: [] }, // verified-entry lookup before the claim
       { runResult: { meta: { changes: 1 } } },
       { allResults: [{ id: 1, raw_message: rawMessage, replay_count: 0, source_queue: 'beer-enrichment' }] },
       { runResult: { meta: { changes: 1 } } },
@@ -349,7 +353,7 @@ describe('handleDlqReplay', () => {
 
     await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
 
-    const resetSql = db.prepare.mock.calls[2]?.[0] as string;
+    const resetSql = db.prepare.mock.calls[3]?.[0] as string;
     expect(resetSql).toContain('UPDATE enriched_beers');
     expect(resetSql).toContain("enrichment_status = 'pending'");
     // The reset must execute before the queue send
@@ -368,6 +372,7 @@ describe('handleDlqReplay', () => {
       brewDescription: '<p>Funky and dry.</p>',
     });
     const db = buildSequencedDb([
+      { allResults: [] }, // verified-entry lookup before the claim
       { runResult: { meta: { changes: 1 } } },
       { allResults: [{ id: 2, raw_message: rawMessage, replay_count: 0, source_queue: 'description-cleanup' }] },
       { runResult: { meta: { changes: 1 } } },
@@ -400,6 +405,7 @@ describe('handleDlqReplay', () => {
     const enrichmentRaw = JSON.stringify({ beerId: 'beer-001', beerName: 'Test IPA', brewer: 'Test Brewery' });
     const cleanupRaw = JSON.stringify({ beerId: 'beer-002', beerName: 'Saison', brewer: 'Farmhouse', brewDescription: 'desc' });
     const db = buildSequencedDb([
+      { allResults: [] }, // verified-entry lookup before the claim
       { runResult: { meta: { changes: 2 } } },
       { allResults: [
         { id: 1, raw_message: enrichmentRaw, replay_count: 0, source_queue: 'beer-enrichment' },
@@ -424,6 +430,7 @@ describe('handleDlqReplay', () => {
   it('counts corrupt cleanup rows as failed without touching either queue', async () => {
     const corruptRaw = JSON.stringify({ beerId: 'beer-002' }); // missing required fields
     const db = buildSequencedDb([
+      { allResults: [] }, // verified-entry lookup before the claim
       { runResult: { meta: { changes: 1 } } },
       { allResults: [{ id: 2, raw_message: corruptRaw, replay_count: 0, source_queue: 'description-cleanup' }] },
       { runResult: { meta: { changes: 1 } } },
@@ -451,6 +458,7 @@ describe('handleDlqReplay', () => {
   it('on queue send failure rolls back status to pending', async () => {
     const rawMessage = JSON.stringify({ beerId: 'beer-001', beerName: 'Test IPA', brewer: 'Test Brewery' });
     const db = buildSequencedDb([
+      { allResults: [] }, // verified-entry lookup before the claim
       { runResult: { meta: { changes: 1 } } },
       { allResults: [{ id: 1, raw_message: rawMessage, replay_count: 0, source_queue: 'beer-enrichment' }] },
       { runResult: { meta: { changes: 1 } } },
@@ -468,7 +476,7 @@ describe('handleDlqReplay', () => {
 
     await handleDlqReplay(request, env, getDefaultHeaders(), getMockReqCtx());
 
-    const rollbackSql = db.prepare.mock.calls[3]?.[0] as string;
+    const rollbackSql = db.prepare.mock.calls[4]?.[0] as string;
     expect(rollbackSql).toContain('UPDATE dlq_messages');
     expect(rollbackSql).toContain("status = 'pending'");
 
@@ -477,6 +485,7 @@ describe('handleDlqReplay', () => {
 
   it('returns 200 with replayed_count 0 and message when no pending messages found', async () => {
     const db = buildSequencedDb([
+      { allResults: [] }, // verified-entry lookup before the claim
       { runResult: { meta: { changes: 0 } } },
     ]);
     const env = getMockEnv(db);
@@ -515,6 +524,7 @@ describe('handleDlqReplay', () => {
   it('accepts a request with exactly 50 IDs (the DLQ_REPLAY_MAX_IDS boundary)', async () => {
     const fiftyIds = Array.from({ length: 50 }, (_, i) => i + 1);
     const db = buildSequencedDb([
+      { allResults: [] }, // verified-entry lookup before the claim
       { runResult: { meta: { changes: 0 } } },
     ]);
     const env = getMockEnv(db);
@@ -566,6 +576,7 @@ describe('handleDlqReplay', () => {
   it('skips corrupt DLQ rows where raw_message fails schema validation and includes those IDs in failed_count', async () => {
     const corruptRawMessage = JSON.stringify({ invalid: 'data' });
     const db = buildSequencedDb([
+      { allResults: [] }, // verified-entry lookup before the claim
       { runResult: { meta: { changes: 1 } } },
       { allResults: [{ id: 1, raw_message: corruptRawMessage, replay_count: 0 }] },
       { runResult: { meta: { changes: 1 } } },

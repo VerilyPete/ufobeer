@@ -334,15 +334,25 @@ export async function handleDlqReplay(
     const limitedIds = ids;
     const now = Date.now();
 
-    // STEP 1: Optimistically update status to 'replaying' to prevent race conditions
+    // STEP 1: Optimistically update status to 'replaying' to prevent race
+    // conditions. An enrichment entry whose beer is hand-verified is never
+    // claimed: it stays 'pending', is reported in skipped_verified, and can
+    // be replayed once a human clears the flag.
     const placeholders = limitedIds.map(() => '?').join(',');
+    const VERIFIED_ENRICHMENT_ENTRY = `source_queue != 'description-cleanup' AND EXISTS (
+         SELECT 1 FROM enriched_beers WHERE enriched_beers.id = dlq_messages.beer_id AND enriched_beers.is_verified IS 1)`;
+    const verifiedAtClaim = await env.DB.prepare(
+      `SELECT id FROM dlq_messages
+       WHERE id IN (${placeholders}) AND status = 'pending' AND ${VERIFIED_ENRICHMENT_ENTRY}`
+    ).bind(...limitedIds).all<{ id: number }>();
     const updateResult = await env.DB.prepare(
       `UPDATE dlq_messages
        SET status = 'replaying'
-       WHERE id IN (${placeholders}) AND status = 'pending'`
+       WHERE id IN (${placeholders}) AND status = 'pending' AND NOT (${VERIFIED_ENRICHMENT_ENTRY})`
     ).bind(...limitedIds).run();
 
     const claimedCount = updateResult.meta.changes;
+    const skippedVerifiedIds: number[] = verifiedAtClaim.results.map(row => row.id);
 
     if (claimedCount === 0) {
       return Response.json({
@@ -351,6 +361,7 @@ export async function handleDlqReplay(
         data: {
           requested_count: limitedIds.length,
           replayed_count: 0,
+          skipped_verified: skippedVerifiedIds,
           message: 'No pending messages found to replay',
         },
       }, { headers });
@@ -367,7 +378,6 @@ export async function handleDlqReplay(
     let cleanupSent = 0;
     const replayedIds: number[] = [];
     const failedIds: number[] = [];
-    const skippedVerifiedIds: number[] = [];
 
     // STEP 3: Send messages to the queue they originally failed on.
     // Rows arrive from BOTH DLQs (enrichment and cleanup share this table);
@@ -470,9 +480,10 @@ export async function handleDlqReplay(
       }
     }
 
-    // STEP 4: Return failed and verified-skipped messages to 'pending' first,
-    // so a failure finalizing the sent ones cannot strand them in 'replaying'
-    const unsentIds = [...failedIds, ...skippedVerifiedIds];
+    // STEP 4: Return failed messages, and any refused because their beer was
+    // verified after the claim, to 'pending' first, so a failure finalizing
+    // the sent ones cannot strand them in 'replaying'
+    const unsentIds = [...failedIds, ...skippedVerifiedIds.filter(id => !verifiedAtClaim.results.some(row => row.id === id))];
     if (unsentIds.length > 0) {
       const unsentPlaceholders = unsentIds.map(() => '?').join(',');
       await env.DB.prepare(

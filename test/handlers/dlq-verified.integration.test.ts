@@ -96,7 +96,7 @@ describe('admin replay of a verified row', () => {
     const dlqId = await seedDlqEntry('m-1', 'beer-enrichment', ENRICHMENT_BODY);
     const { enrichment, worker } = queues();
 
-    expect(await replay(worker, [dlqId])).toMatchObject({ replayed_count: 0, skipped_verified: [dlqId], queued_counts: { enrichment: 0, cleanup: 0 } });
+    expect(await replay(worker, [dlqId])).toMatchObject({ replayed_count: 0, skipped_verified: [dlqId] });
     expect(enrichment).not.toHaveBeenCalled();
     expect(await beerStatus('beer-1')).toBe('failed');
     expect(await dlqStatus(dlqId)).toBe('pending');
@@ -129,19 +129,52 @@ describe('admin replay of a verified row', () => {
     expect(enrichment).toHaveBeenCalledOnce();
   });
 
-  it('does not send when verification is cleared between the refused reset and the follow-up read', async () => {
-    await seedBeer('beer-1', 1);
+  it('refuses, reports and releases an entry whose beer is verified after the claim', async () => {
+    await seedBeer('beer-1', 0);
     const dlqId = await seedDlqEntry('m-1', 'beer-enrichment', ENRICHMENT_BODY);
     const realDb = env.DB;
     const racingDb = {
       prepare: (sql: string) => {
         const statement = realDb.prepare(sql);
-        if (!sql.includes("UPDATE enriched_beers SET enrichment_status = 'pending'")) return statement;
+        if (!sql.includes("SET status = 'replaying'")) return statement;
         return {
           bind: (...args: unknown[]) => ({
             run: async () => {
               const result = await statement.bind(...args).run();
-              await realDb.prepare('UPDATE enriched_beers SET is_verified = 0 WHERE id = ?').bind('beer-1').run();
+              await realDb.prepare('UPDATE enriched_beers SET is_verified = 1 WHERE id = ?').bind('beer-1').run();
+              return result;
+            },
+          }),
+        };
+      },
+      batch: (statements: D1PreparedStatement[]) => realDb.batch(statements),
+    } as unknown as D1Database;
+    const { enrichment, worker } = queues();
+
+    expect(await replay({ ...worker, DB: racingDb } as Env, [dlqId])).toMatchObject({ replayed_count: 0, skipped_verified: [dlqId] });
+    expect(enrichment).not.toHaveBeenCalled();
+    expect(await dlqStatus(dlqId)).toBe('pending');
+    expect(await beerStatus('beer-1')).toBe('failed');
+  });
+
+  it('refuses a beer verified after the claim, and does not send if the flag is cleared before the follow-up read', async () => {
+    await seedBeer('beer-1', 0);
+    const dlqId = await seedDlqEntry('m-1', 'beer-enrichment', ENRICHMENT_BODY);
+    const setVerified = (value: number) =>
+      realDb.prepare('UPDATE enriched_beers SET is_verified = ? WHERE id = ?').bind(value, 'beer-1').run();
+    const realDb = env.DB;
+    const racingDb = {
+      prepare: (sql: string) => {
+        const statement = realDb.prepare(sql);
+        const after = sql.includes("SET status = 'replaying'") ? () => setVerified(1)
+          : sql.includes("UPDATE enriched_beers SET enrichment_status = 'pending'") ? () => setVerified(0)
+          : null;
+        if (after === null) return statement;
+        return {
+          bind: (...args: unknown[]) => ({
+            run: async () => {
+              const result = await statement.bind(...args).run();
+              await after();
               return result;
             },
           }),
@@ -159,6 +192,31 @@ describe('admin replay of a verified row', () => {
     const retry = queues();
     expect(await replay(retry.worker, [dlqId])).toMatchObject({ replayed_count: 1 });
     expect(await beerStatus('beer-1')).toBe('pending');
+  });
+
+  it('never claims an entry for a verified beer, so a failed release cannot strand it', async () => {
+    await seedBeer('beer-1', 1);
+    const dlqId = await seedDlqEntry('m-1', 'beer-enrichment', ENRICHMENT_BODY);
+    await env.DB.prepare(
+      "CREATE TRIGGER abort_finalize BEFORE UPDATE OF status ON dlq_messages WHEN NEW.status = 'pending' BEGIN SELECT RAISE(ABORT, 'test abort'); END"
+    ).run();
+    const { enrichment, worker } = queues();
+
+    const data = await replay(worker, [dlqId]);
+    await env.DB.prepare('DROP TRIGGER abort_finalize').run();
+
+    expect(data).toMatchObject({ replayed_count: 0, skipped_verified: [dlqId] });
+    expect(enrichment).not.toHaveBeenCalled();
+    expect(await dlqStatus(dlqId)).toBe('pending');
+  });
+
+  it('still replays a cleanup entry for a verified beer', async () => {
+    await seedBeer('beer-2', 1, 'enriched');
+    const dlqId = await seedDlqEntry('m-2', 'description-cleanup', CLEANUP_BODY);
+    const { cleanup, worker } = queues();
+
+    expect(await replay(worker, [dlqId])).toMatchObject({ replayed_count: 1, skipped_verified: [] });
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 
   it('replays a mixed cleanup and enrichment batch with unchanged counts', async () => {
