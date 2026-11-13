@@ -199,40 +199,44 @@ type BeerWithHash = {
 };
 
 /**
- * Build batch statements for re-cleaning outdated beers (mode: 'all'). The
- * cleaned description is left in place so clients keep seeing it until the
- * consumer overwrites it; the hash is refreshed so that write is accepted.
+ * Prepare: store each beer's hash only while its description is still the
+ * text this run read, so an obsolete hash never lands over a newer
+ * description. Returns the beers whose row matched; only they are sent.
  */
-function buildResetStatements(
+async function prepareHashes(
   db: D1Database,
-  beers: BeerWithHash[],
-  now: number
-): D1PreparedStatement[] {
-  return beers.map(beer =>
-    db.prepare(`
-      UPDATE enriched_beers SET
-        description_hash = ?,
-        queued_for_cleanup_at = ?
-      WHERE id = ?
-    `).bind(beer.descriptionHash, now, beer.id)
-  );
+  beers: readonly BeerWithHash[],
+  batchSize: number
+): Promise<readonly BeerWithHash[]> {
+  const prepared: BeerWithHash[] = [];
+  for (let i = 0; i < beers.length; i += batchSize) {
+    const chunk = beers.slice(i, i + batchSize);
+    const results = await db.batch(chunk.map(beer =>
+      db.prepare(
+        'UPDATE enriched_beers SET description_hash = ? WHERE id = ? AND brew_description_original IS ?'
+      ).bind(beer.descriptionHash, beer.id, beer.brew_description_original)
+    ));
+    prepared.push(...chunk.filter((_, index) => results[index]?.meta?.changes === 1));
+  }
+  return prepared;
 }
 
 /**
- * Build batch statements for setting queued timestamp (mode: 'missing').
+ * Mark sent beers as queued. Guarded on the hash that was sent and on the
+ * row still being uncleaned, and never moves the marker backwards: a
+ * consumer that already cleaned the row, or a newer description, wins.
  */
-function buildQueuedTimestampStatements(
+function buildMarkStatements(
   db: D1Database,
-  beers: BeerWithHash[],
+  beers: readonly BeerWithHash[],
   now: number
 ): D1PreparedStatement[] {
   return beers.map(beer =>
     db.prepare(`
       UPDATE enriched_beers SET
-        description_hash = ?,
-        queued_for_cleanup_at = ?
-      WHERE id = ?
-    `).bind(beer.descriptionHash, now, beer.id)
+        queued_for_cleanup_at = MAX(COALESCE(queued_for_cleanup_at, 0), ?)
+      WHERE id = ? AND description_hash IS ? AND description_cleaned_at IS NULL
+    `).bind(now, beer.id, beer.descriptionHash)
   );
 }
 
@@ -349,7 +353,7 @@ export async function handleCleanupTrigger(
     }
 
     // 9. Compute hashes for all beers
-    const beersWithHashes: BeerWithHash[] = await Promise.all(
+    const beersWithHashes: readonly BeerWithHash[] = await Promise.all(
       beers.map(async (beer) => ({
         id: beer.id,
         brew_description_original: beer.brew_description_original,
@@ -357,40 +361,40 @@ export async function handleCleanupTrigger(
       }))
     );
 
-    // 10. Queue beers for cleanup FIRST, then write the marking/reset
-    // statements for what was actually sent.
-    //
-    // The old write-then-send order was a stranding bug here too — worse than
-    // the sync path: mode=missing eligibility rides
-    // `queued_for_cleanup_at IS NULL`, so beers marked but never sent are
-    // excluded from every future run indefinitely (no cooldown-based
-    // recovery). Send-then-mark's failure mode (marked-but-duplicated
-    // cleanup) is benign because cleanup writes are idempotent.
+    // 10. Prepare, send, mark. A row is sent only if its hash was prepared
+    // against the description read above, and marked only after its send.
+    // A failed send or mark leaves the row eligible for the same mode: a
+    // never-cleaned row keeps queued_for_cleanup_at NULL for 'missing', and an
+    // outdated row keeps its cleanup_version for 'all'. A duplicate message is
+    // harmless because the consumer's write is guarded on the hash.
     const now = Date.now();
-    const hashById = new Map(beersWithHashes.map(beer => [beer.id, beer.descriptionHash]));
-    const beersToQueue = beers.map(beer => ({
-      id: beer.id,
-      brew_name: beer.brew_name,
-      brewer: beer.brewer || '',
-      brew_description: beer.brew_description_original,
-      // Same hash already computed above for the D1 write (step 9) --
-      // binds the outgoing cleanup message to the exact description version
-      // it was built from. NOTE: queueBeersForCleanup (src/queue/helpers.ts)
-      // does not yet read or forward this field onto the CleanupMessage it
-      // sends -- see the security review's "stale-result binding" item.
-      descriptionHash: hashById.get(beer.id) as string,
-    }));
+    let prepared: readonly BeerWithHash[];
+    try {
+      prepared = await prepareHashes(env.DB, beersWithHashes, D1_BATCH_SIZE);
+    } catch (dbError) {
+      console.error(`[cleanup-trigger] D1 unavailable for hash preparation:`, dbError);
+      return errorResponse(
+        'Database temporarily unavailable',
+        'DB_UNAVAILABLE',
+        { requestId: reqCtx.requestId, headers, status: 503 }
+      );
+    }
+
+    const beerById = new Map(beers.map(beer => [beer.id, beer]));
+    const beersToQueue = prepared.flatMap(({ id, descriptionHash }) => {
+      const beer = beerById.get(id);
+      return beer === undefined ? [] : [{
+        id,
+        brew_name: beer.brew_name,
+        brewer: beer.brewer || '',
+        brew_description: beer.brew_description_original,
+        descriptionHash,
+      }];
+    });
 
     const queueResult = await queueBeersForCleanup(env, beersToQueue, reqCtx.requestId);
-    const sentSet = new Set(queueResult.queuedIds ?? []);
-    const sentHashes = beersWithHashes.filter(beer => sentSet.has(beer.id));
-
-    let statements: D1PreparedStatement[];
-    if (mode === 'all') {
-      statements = buildResetStatements(env.DB, sentHashes, now);
-    } else {
-      statements = buildQueuedTimestampStatements(env.DB, sentHashes, now);
-    }
+    const sentSet = new Set(queueResult.queuedIds);
+    const statements = buildMarkStatements(env.DB, prepared.filter(beer => sentSet.has(beer.id)), now);
 
     // Execute in batches (D1 limit)
     try {

@@ -249,7 +249,12 @@ quota, and admin DLQ replay reports them in `skipped_verified`.
    and `cleanup_version = CLEANUP_VERSION` (`src/constants.ts`)
 4. Hash tracked for change detection
 5. After changing cleanup output, bump `CLEANUP_VERSION`; `POST /admin/cleanup/trigger`
-   with `mode: 'all'` then re-cleans older rows, 500 per run, without blanking served text
+   with `mode: 'all'` then re-cleans older rows, 500 per run, without blanking served text.
+   The trigger stores each hash only while the description is still the text it read,
+   sends only those rows, then marks the sent ones (guarded on hash and on the row still
+   being uncleaned). A never-cleaned row whose send or mark fails is found by the next
+   `mode: 'missing'` run; an outdated row whose re-clean send fails keeps its version and is
+   found by the next `mode: 'all'` run.
 
 ### Usage Telemetry (`POST /usage`)
 - BeerSelector posts daily per-install feature counts keyed by a random
