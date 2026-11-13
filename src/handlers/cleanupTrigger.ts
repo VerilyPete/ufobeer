@@ -363,9 +363,10 @@ export async function handleCleanupTrigger(
 
     // 10. Prepare, send, mark. A row is sent only if its hash was prepared
     // against the description read above, and marked only after its send.
-    // A failed send or mark leaves queued_for_cleanup_at untouched, so mode
-    // 'missing' finds the row again; a duplicate message is harmless because
-    // the consumer's write is guarded on the hash.
+    // A failed send or mark leaves the row eligible for the same mode: a
+    // never-cleaned row keeps queued_for_cleanup_at NULL for 'missing', and an
+    // outdated row keeps its cleanup_version for 'all'. A duplicate message is
+    // harmless because the consumer's write is guarded on the hash.
     const now = Date.now();
     let prepared: readonly BeerWithHash[];
     try {

@@ -123,6 +123,7 @@ const sendFails: SendBehaviour = async () => { throw new Error('queue unavailabl
 beforeEach(async () => {
   await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
   await env.DB.prepare('DELETE FROM enriched_beers').run();
+  await env.DB.prepare('DROP TRIGGER IF EXISTS abort_mark').run();
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -197,13 +198,30 @@ describe('mark failures', () => {
     expect((await trigger()).sent).toEqual([]);
   });
 
-  it('leaves only the rows of a failed later mark batch findable', async () => {
+  it('rolls back a whole mark batch that fails part-way, keeping earlier batches marked', async () => {
     await seed(...manyIds(150).map(id => ({ id })));
-    const db = hookedDb({ onMarkBatch: (index) => { if (index === 1) throw new Error('D1 unavailable'); } });
+    await env.DB.prepare(
+      "CREATE TRIGGER abort_mark BEFORE UPDATE OF queued_for_cleanup_at ON enriched_beers WHEN NEW.id = 'b120' BEGIN SELECT RAISE(ABORT, 'test abort'); END"
+    ).run();
 
-    await trigger({ db });
+    const first = await trigger();
+    await env.DB.prepare('DROP TRIGGER abort_mark').run();
 
-    expect((await trigger()).sent).toHaveLength(50);
+    expect(first.status).toBe(503);
+    expect(first.sent).toHaveLength(150);
+    const marked = await env.DB.prepare('SELECT id FROM enriched_beers WHERE queued_for_cleanup_at IS NOT NULL ORDER BY id').all<{ id: string }>();
+    expect(marked.results.map(row => row.id)).toEqual(manyIds(100));
+    expect(ids((await trigger()).sent)).toEqual(manyIds(150).slice(100));
+  });
+
+  it("leaves an outdated cleaned row for the next mode 'all' run when its send fails", async () => {
+    await seed({ id: 'old', cleanupVersion: null });
+    const body = { mode: 'all', confirm: true };
+
+    await trigger({ body, send: sendFails });
+
+    expect(await row('old')).toMatchObject({ brew_description_cleaned: 'Old served text' });
+    expect(ids((await trigger({ body })).sent)).toEqual(['old']);
   });
 });
 
