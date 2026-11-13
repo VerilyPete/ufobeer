@@ -5,6 +5,7 @@
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { markCleanupQueued, recordSeenBeers } from '../../src/db/seenBeers';
+import { LAST_SEEN_REFRESH_MS } from '../../src/constants';
 import type { SeenBeer } from '../../src/db/seenBeers';
 import { handleCleanupBatch } from '../../src/queue/cleanup';
 import { sendCleanupAndMark } from '../../src/queue/helpers';
@@ -27,6 +28,7 @@ type Row = {
   readonly abv?: number | null;
   readonly status?: string;
   readonly isVerified?: number;
+  readonly lastSeenAt?: number | null;
 };
 
 async function seed(row: Row): Promise<void> {
@@ -36,10 +38,10 @@ async function seed(row: Row): Promise<void> {
   await env.DB.prepare(
     `INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, brew_description_cleaned,
        description_cleaned_at, cleanup_source, queued_for_cleanup_at, abv, enrichment_status, is_verified, updated_at, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
   ).bind(row.id, row.brewName ?? 'Valley Lager', row.brewer === undefined ? 'Valley Brewing' : row.brewer, original, hash,
     cleaned, cleaned === null ? null : 1, cleaned === null ? null : 'deterministic', row.queuedAt ?? null,
-    row.abv ?? null, row.status ?? 'pending', row.isVerified ?? 0).run();
+    row.abv ?? null, row.status ?? 'pending', row.isVerified ?? 0, row.lastSeenAt === undefined ? 0 : row.lastSeenAt).run();
 }
 
 async function stored(id: string) {
@@ -487,5 +489,104 @@ describe('write failures', () => {
     expect(result.enrichment).toHaveLength(100);
     expect(result.enrichment.map(item => item.id)).not.toContain('b120');
     expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM enriched_beers').first('n')).toBe(100);
+  });
+});
+
+describe('write measurement (slice 5, step 1)', () => {
+  const minute = 60_000;
+
+  function loggedEvent(log: { readonly mock: { readonly calls: readonly (readonly unknown[])[] } }, name: string): Record<string, unknown> | undefined {
+    const lines = log.mock.calls.map(([line]) => String(line));
+    const parsed: unknown[] = lines.flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+    const events = parsed.filter((entry): entry is Record<string, unknown> =>
+      typeof entry === 'object' && entry !== null && 'event' in entry && entry.event === name);
+    return events.at(-1);
+  }
+
+  const PERIOD_START = Math.floor(NOW / LAST_SEEN_REFRESH_MS) * LAST_SEEN_REFRESH_MS;
+  const AT = PERIOD_START + 30 * minute;
+
+  it('counts rows read and the unchanged sightings already seen this hour', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await seed({ id: 'this-hour', lastSeenAt: PERIOD_START + 10 * minute });
+    await seed({ id: 'hour-start', lastSeenAt: PERIOD_START });
+    await seed({ id: 'same-instant', lastSeenAt: AT });
+    await seed({ id: 'last-hour', lastSeenAt: PERIOD_START - 1 });
+    await seed({ id: 'never-seen', lastSeenAt: null });
+    await seed({ id: 'future', lastSeenAt: AT + minute });
+    await seed({ id: 'renamed', lastSeenAt: AT - minute });
+    await seed({ id: 'new-brewer', lastSeenAt: AT - minute });
+    await seed({ id: 'repairable', brewer: ' Valley Brewing ', lastSeenAt: AT - minute });
+    await seed({ id: 'kept-brewer', lastSeenAt: AT - minute });
+    await seed({ id: 'blocked', brewName: 'Build Your Flight', lastSeenAt: AT - minute });
+    await seed({ id: 'redescribed', lastSeenAt: AT - minute });
+
+    await recordSeenBeers(env.DB, [
+      beer('this-hour'),
+      beer('hour-start'),
+      beer('same-instant'),
+      beer('last-hour'),
+      beer('never-seen'),
+      beer('future'),
+      beer('renamed', { brew_name: 'Valley Pils' }),
+      beer('new-brewer', { brewer: 'Hill Brewing' }),
+      beer('repairable', { brewer: undefined }),
+      beer('kept-brewer', { brewer: undefined }),
+      beer('blocked', { brew_name: 'Build Your Flight' }),
+      beer('redescribed', { brew_description: TEXT_B }),
+      beer('first-sighting'),
+    ], { now: AT });
+
+    expect(loggedEvent(log, 'seen_beers.recorded')).toMatchObject({
+      rows_read: 12,
+      throttle_eligible: 4,
+      unchanged: 11,
+      written: 2,
+    });
+  });
+
+  it('counts, over repeated sightings, exactly the writes an hourly throttle would skip', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const sightings = [5, 35, 65, 95, 125].map(offset => PERIOD_START + offset * minute);
+
+    for (const at of sightings) {
+      await recordSeenBeers(env.DB, [beer('regular')], { now: at });
+    }
+
+    const eligible = log.mock.calls
+      .map(([line]) => String(line))
+      .filter(line => line.includes('seen_beers.recorded'))
+      .reduce((sum, line) => sum + Number(JSON.parse(line).throttle_eligible ?? 0), 0);
+    expect(eligible).toBe(2);
+  });
+
+  it('counts the cleanup marks it wrote', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const hash = await hashDescription(TEXT_A);
+    await seed({ id: 'a' });
+    await seed({ id: 'b' });
+    await seed({ id: 'cleaned', cleaned: 'A crisp lager.' });
+
+    await markCleanupQueued(env.DB, [
+      { id: 'a', descriptionHash: hash },
+      { id: 'b', descriptionHash: 'stale-hash' },
+      { id: 'cleaned', descriptionHash: hash },
+    ], { now: NOW });
+
+    expect(loggedEvent(log, 'seen_beers.cleanup_marked')).toMatchObject({ requested: 3, marked: 1, complete: true });
+  });
+
+  it('still counts the marks a committed batch wrote when a later batch fails', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const hash = await hashDescription(TEXT_A);
+    const rows = Array.from({ length: 101 }, (_, i) => `m${i}`);
+    for (const id of rows) await seed({ id });
+    await env.DB.prepare(
+      "CREATE TRIGGER abort_write BEFORE UPDATE OF queued_for_cleanup_at ON enriched_beers WHEN OLD.id = 'm100' BEGIN SELECT RAISE(ABORT, 'test abort'); END"
+    ).run();
+
+    await expect(markCleanupQueued(env.DB, rows.map(id => ({ id, descriptionHash: hash })), { now: NOW })).rejects.toThrow();
+
+    expect(loggedEvent(log, 'seen_beers.cleanup_marked')).toMatchObject({ requested: 101, marked: 100, complete: false });
   });
 });

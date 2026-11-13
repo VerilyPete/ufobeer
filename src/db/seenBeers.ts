@@ -14,7 +14,7 @@
  */
 
 import { shouldSkipEnrichment } from '../config';
-import { D1_MAX_PARAMS_PER_STATEMENT, D1_MAX_STATEMENTS_PER_BATCH } from '../constants';
+import { D1_MAX_PARAMS_PER_STATEMENT, D1_MAX_STATEMENTS_PER_BATCH, LAST_SEEN_REFRESH_MS } from '../constants';
 import { SYNC_CONSTANTS } from '../types';
 import { cleanBeerName, cleanBeerNames } from '../utils/beer-name';
 import { hashDescription } from '../utils/hash';
@@ -69,10 +69,11 @@ type StoredRow = {
   readonly abv: number | null;
   readonly enrichment_status: string | null;
   readonly is_verified: number | null;
+  readonly last_seen_at: number | null;
 };
 
 const ROW_COLUMNS = `id, brew_name, brewer, brew_description_original, description_hash, description_cleaned_at,
-  queued_for_cleanup_at, abv, enrichment_status, is_verified`;
+  queued_for_cleanup_at, abv, enrichment_status, is_verified, last_seen_at`;
 
 type Planned = { readonly id: string; readonly statement: D1PreparedStatement; readonly kind: 'insert' | 'change' | 'seen' };
 
@@ -146,11 +147,34 @@ function planChange(db: D1Database, beer: SeenBeer, stored: StoredRow, descripti
  * it is not verified, and (when the sighting omitted the brewer, so the
  * decision used the stored one) its brewer has not changed since.
  */
+function wantsSkipMark(beer: SeenBeer, stored: StoredRow): boolean {
+  const decidingBrewer = beer.brewer !== undefined ? beer.brewer : stored.brewer;
+  return isBlocked(beer.brew_name, decidingBrewer) &&
+    (stored.enrichment_status === 'pending' || stored.enrichment_status === null);
+}
+
+/**
+ * A sighting whose only effect would be moving last_seen_at forward within
+ * the same LAST_SEEN_REFRESH_MS period: no new description, no rename, no
+ * brewer change or repair, no skip mark. Counted for slice 5's throttle
+ * decision.
+ */
+function isThrottleEligible(beer: SeenBeer, stored: StoredRow, now: number): boolean {
+  const description = beer.brew_description ? beer.brew_description : null;
+  const brewer = beer.brewer !== undefined
+    ? beer.brewer
+    : stored.brewer === null ? null : cleanBeerName(stored.brewer);
+  const period = (at: number) => Math.floor(at / LAST_SEEN_REFRESH_MS);
+  return stored.last_seen_at !== null && stored.last_seen_at <= now &&
+    period(stored.last_seen_at) === period(now) &&
+    (description === null || description === stored.brew_description_original) &&
+    beer.brew_name === stored.brew_name && brewer === stored.brewer &&
+    !wantsSkipMark(beer, stored);
+}
+
 function planSeen(db: D1Database, beer: SeenBeer, stored: StoredRow, now: number): Planned {
   const brewer = brewerAssignment(beer, stored);
-  const decidingBrewer = beer.brewer !== undefined ? beer.brewer : stored.brewer;
-  const markSkipped = isBlocked(beer.brew_name, decidingBrewer) &&
-    (stored.enrichment_status === 'pending' || stored.enrichment_status === null);
+  const markSkipped = wantsSkipMark(beer, stored);
   const brewerUnchanged = beer.brewer === undefined ? ' AND enriched_beers.brewer IS ?' : '';
   const skip = markSkipped
     ? {
@@ -284,7 +308,18 @@ export async function recordSeenBeers(
   const outcomes = new Map([...written].map(([id, { outcome }]) => [id, outcome]));
   const counts = [...outcomes.values()].reduce<Record<string, number>>(
     (tally, outcome) => ({ ...tally, [outcome]: (tally[outcome] ?? 0) + 1 }), {});
-  console.log(JSON.stringify({ event: 'seen_beers.recorded', ...counts, cleanup: cleanup.length, enrichment: enrichment.length }));
+  const throttleEligible = unique.filter(beer => {
+    const row = storedRows.get(beer.id);
+    return row !== undefined && isThrottleEligible(beer, row, options.now);
+  }).length;
+  console.log(JSON.stringify({
+    event: 'seen_beers.recorded',
+    ...counts,
+    rows_read: storedRows.size,
+    throttle_eligible: throttleEligible,
+    cleanup: cleanup.length,
+    enrichment: enrichment.length,
+  }));
 
   return { outcomes, cleanup, enrichment };
 }
@@ -300,12 +335,23 @@ export async function markCleanupQueued(
   sent: readonly { readonly id: string; readonly descriptionHash: string }[],
   options: { readonly now: number }
 ): Promise<void> {
-  for (let i = 0; i < sent.length; i += D1_MAX_STATEMENTS_PER_BATCH) {
-    await db.batch(sent.slice(i, i + D1_MAX_STATEMENTS_PER_BATCH).map(item =>
-      db.prepare(
-        `UPDATE enriched_beers SET queued_for_cleanup_at = MAX(COALESCE(queued_for_cleanup_at, 0), ?)
-         WHERE id = ? AND description_hash IS ? AND description_cleaned_at IS NULL`
-      ).bind(options.now, item.id, item.descriptionHash)
-    ));
+  const chunks = Array.from({ length: Math.ceil(sent.length / D1_MAX_STATEMENTS_PER_BATCH) },
+    (_, i) => sent.slice(i * D1_MAX_STATEMENTS_PER_BATCH, (i + 1) * D1_MAX_STATEMENTS_PER_BATCH));
+  const marked = { count: 0, complete: false };
+  try {
+    for (const chunk of chunks) {
+      const results = await db.batch(chunk.map(item =>
+        db.prepare(
+          `UPDATE enriched_beers SET queued_for_cleanup_at = MAX(COALESCE(queued_for_cleanup_at, 0), ?)
+           WHERE id = ? AND description_hash IS ? AND description_cleaned_at IS NULL`
+        ).bind(options.now, item.id, item.descriptionHash)
+      ));
+      marked.count += results.reduce((sum, result) => sum + (result.meta?.changes ?? 0), 0);
+    }
+    marked.complete = true;
+  } finally {
+    console.log(JSON.stringify({
+      event: 'seen_beers.cleanup_marked', requested: sent.length, marked: marked.count, complete: marked.complete,
+    }));
   }
 }
