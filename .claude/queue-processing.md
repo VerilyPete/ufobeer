@@ -94,25 +94,27 @@ DLQ consumers store messages in `dlq_messages` table for admin inspection.
 ### EnrichmentMessage
 
 ```typescript
-interface EnrichmentMessage {
-  beerId: string;
-  beerName: string;
-  brewer?: string;
-  description?: string;  // For ABV extraction
-  priority?: 'high' | 'normal';
-}
+type EnrichmentMessage = {
+  readonly beerId: string;
+  readonly beerName: string;
+  readonly brewer: string;
+  readonly descriptionHash: string | null; // null: the beer has no description
+};
 ```
 
 ### CleanupMessage
 
 ```typescript
-interface CleanupMessage {
-  beerId: string;
-  beerName: string;
-  description: string;   // Original description to clean
-  brewer?: string;
-}
+type CleanupMessage = {
+  readonly beerId: string;
+  readonly beerName: string;
+  readonly brewer: string;
+  readonly brewDescription: string;   // Original description to clean
+  readonly descriptionHash?: string;  // Missing: legacy message, acked without a write
+};
 ```
+
+The authoritative definitions, with the reasoning, are in `src/types.ts`.
 
 ## Consumer Implementation
 
@@ -123,27 +125,15 @@ export async function handleEnrichmentBatch(
   batch: MessageBatch<EnrichmentMessage>,
   env: Env
 ): Promise<void> {
-  for (const message of batch.messages) {
-    try {
-      // 1. Check quota
-      if (await isQuotaExhausted(env.DB)) {
-        message.retry({ delaySeconds: 300 });
-        continue;
-      }
-
-      // 2. Call Perplexity API
-      const result = await lookupABV(message.body, env);
-
-      // 3. Update database
-      await updateBeerABV(env.DB, message.body.beerId, result);
-
-      // 4. Acknowledge success
-      message.ack();
-    } catch (error) {
-      // Will retry or go to DLQ based on attempts
-      message.retry();
-    }
-  }
+  // 1. Kill switch and monthly limit: ack (or retry on a D1 error)
+  // 2. Per message, preflight against the live row (isStillCurrent): ack
+  //    without spending quota if the row is missing, not pending,
+  //    hand-verified, or its hash, name or brewer no longer match
+  // 3. Reserve a daily Perplexity slot atomically; ack if none is left
+  // 4. Call Perplexity; on its explicit "unknown", recheck the row and
+  //    (if enabled and within EXA_DAILY_LIMIT) try the Exa Untappd fallback
+  // 5. Write the result guarded on the same live-row conditions; a row
+  //    that changed meanwhile is left alone. Errors retry, then go to the DLQ
 }
 ```
 
