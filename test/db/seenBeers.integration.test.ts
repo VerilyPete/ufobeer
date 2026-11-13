@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { markCleanupQueued, recordSeenBeers } from '../../src/db/seenBeers';
 import type { SeenBeer } from '../../src/db/seenBeers';
 import { handleCleanupBatch } from '../../src/queue/cleanup';
+import { sendCleanupAndMark } from '../../src/queue/helpers';
 import { hashDescription } from '../../src/utils/hash';
 import type { CleanupMessage, Env } from '../../src/types';
 
@@ -428,14 +429,29 @@ describe('cleanup retry (D7)', () => {
     expect(await stored('b')).toMatchObject({ queued_for_cleanup_at: NOW });
   });
 
-  it('resends before the message is consumed when the mark failed, and stops once cleaned', async () => {
-    await seed({ id: 'b' });
+  it('resends a sent row whose mark batch failed after an earlier one committed, until it is consumed', async () => {
+    const all = Array.from({ length: 150 }, (_, i) => `b${String(i).padStart(3, '0')}`);
+    for (const id of all) await seed({ id });
+    await env.DB.prepare(
+      "CREATE TRIGGER abort_write BEFORE UPDATE OF queued_for_cleanup_at ON enriched_beers WHEN NEW.id = 'b120' BEGIN SELECT RAISE(ABORT, 'test abort'); END"
+    ).run();
+    const sent: CleanupMessage[] = [];
+    const worker = {
+      ...env,
+      CLEANUP_QUEUE: { sendBatch: vi.fn(async (messages: readonly { readonly body: CleanupMessage }[]) => { sent.push(...messages.map(m => m.body)); }) },
+    } as unknown as Env;
 
-    const first = await see([beer('b')]);
-    expect(ids((await see([beer('b')])).cleanup)).toEqual(['b']);
+    const first = await see(all.map(id => beer(id)));
+    const { queued, markError } = await sendCleanupAndMark(worker, first.cleanup, 'request-1', NOW);
+    await env.DB.prepare('DROP TRIGGER abort_write').run();
 
-    await consume(first.cleanup.map(item => ({ beerId: item.id, beerName: item.brew_name, brewer: item.brewer, brewDescription: item.brew_description, descriptionHash: item.descriptionHash })));
-    expect((await see([beer('b')])).cleanup).toEqual([]);
+    expect(queued).toBe(150);
+    expect(markError).toBeInstanceOf(Error);
+    const unmarked = all.slice(100);
+    expect(ids((await see(all.map(id => beer(id)))).cleanup)).toEqual(unmarked);
+
+    await consume(sent.filter(message => unmarked.includes(message.beerId)));
+    expect((await see(all.map(id => beer(id)))).cleanup).toEqual([]);
   });
 });
 

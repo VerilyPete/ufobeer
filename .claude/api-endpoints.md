@@ -92,9 +92,12 @@ the last valid item, but every valid item counts toward `synced`.
   unverified row to `pending`, and queues cleanup. It is written only if the
   row still holds the description this request read; otherwise it changes
   nothing and queues nothing.
-- An **unchanged, empty or omitted description** updates only the name,
-  brewer and `last_seen_at`. An uncleaned description is re-queued for
-  cleanup at most once per 24 hours.
+- An **unchanged, empty or omitted description** updates the name, brewer
+  and `last_seen_at`, never the stored text. A blocklisted, unverified
+  pending row with no ABV is also marked `skipped`.
+- Any sighting of a row whose stored description is still uncleaned
+  re-queues it for cleanup at most once per 24 hours, first storing the hash
+  of the stored text if the stored hash is missing or wrong.
 - An omitted brewer keeps the stored one.
 
 **Request Body:** (at most 50 beers, `SYNC_CONSTANTS.MAX_BATCH_SIZE`)
