@@ -10,6 +10,7 @@
  * Extracted from index.ts as part of Phase 7 refactoring.
  */
 
+import { unlessVerified } from '../db/verified';
 import type {
   Env,
   RequestContext,
@@ -746,6 +747,10 @@ export type SyncBatchResult = {
   readonly succeeded: number;
   readonly failed: number;
   readonly errors: readonly string[];
+  /** Per statement: it ran without error. */
+  readonly statementSucceeded: readonly boolean[];
+  /** Per statement: it ran and its RETURNING clause produced a row. */
+  readonly statementReturnedRow: readonly boolean[];
 };
 
 /**
@@ -759,6 +764,8 @@ export async function syncBeersWithBatchHandling(
   const errors: string[] = [];
   let succeeded = 0;
   let failed = 0;
+  const statementSucceeded = statements.map(() => false);
+  const statementReturnedRow = statements.map(() => false);
 
   try {
     const results = await db.batch(statements);
@@ -769,6 +776,8 @@ export async function syncBeersWithBatchHandling(
       if (!result) continue;
       if (result.success) {
         succeeded++;
+        statementSucceeded[i] = true;
+        statementReturnedRow[i] = (result.results?.length ?? 0) > 0;
       } else {
         failed++;
         console.error(`Sync statement ${i} failed:`, result.error);
@@ -782,7 +791,7 @@ export async function syncBeersWithBatchHandling(
     errors.push('Database write failed for batch');
   }
 
-  return { succeeded, failed, errors };
+  return { succeeded, failed, errors, statementSucceeded, statementReturnedRow };
 }
 
 /**
@@ -793,8 +802,9 @@ export async function syncBeersWithBatchHandling(
  *
  * This endpoint allows the mobile client to sync beers that were missing
  * from the enriched_beers table (identified via the batch lookup endpoint).
- * Beers are synced with ON CONFLICT DO UPDATE to update last_seen_at.
- * Beers with descriptions are queued for cleanup.
+ * A changed description replaces the stored text and hash together, guarded
+ * on what this request read, and is queued for cleanup only if written. An
+ * unchanged or omitted description updates names and last_seen_at only.
  */
 export async function handleBeerSync(
   request: Request,
@@ -858,34 +868,40 @@ export async function handleBeerSync(
       );
     }
 
+    // Duplicate ids collapse to the last valid occurrence; each input item
+    // still counts toward `synced` when its surviving beer is written.
+    const occurrences = new Map<string, number>();
+    const lastById = new Map<string, typeof validBeers[number]>();
+    for (const beer of validBeers) {
+      occurrences.set(beer.id, (occurrences.get(beer.id) ?? 0) + 1);
+      lastById.set(beer.id, beer);
+    }
+    const uniqueBeers = [...lastById.values()];
+
     const now = Date.now();
     const statements: D1PreparedStatement[] = [];
-    const needsCleanup: Array<{
-      id: string;
-      brew_name: string;
-      brewer: string;
-      brew_description: string;
-      /**
-       * Hash of brew_description above, computed the same way as
-       * db/helpers.ts's categorizeBeer. Carried alongside the beer so a
-       * cleanup-message producer can bind the outgoing message to the exact
-       * description version it was built from (stale-result binding).
-       * NOTE: queueBeersForCleanup (src/queue/helpers.ts) does not yet read
-       * or forward this field onto the CleanupMessage it sends -- see the
-       * handler-level comment below.
-       */
-      descriptionHash: string;
-    }> = [];
+    type CleanupCandidate = {
+      readonly id: string;
+      readonly brew_name: string;
+      readonly brewer: string;
+      readonly brew_description: string;
+      readonly descriptionHash: string;
+    };
+    // Per statement: the beer to queue for cleanup, and whether the queueing
+    // depends on the statement having changed a row (a description change).
+    const cleanupByStatement: Array<{ readonly candidate: CleanupCandidate; readonly requiresWrite: boolean } | null> = [];
 
-    // Check existing records to determine queueing behavior
-    const existingIds = validBeers.map(b => b.id);
+    // Check existing records to determine the conflict arm and queueing
+    const existingIds = uniqueBeers.map(b => b.id);
     const placeholders = existingIds.map(() => '?').join(',');
     const { results: existingRecords } = await env.DB.prepare(
-      `SELECT id, description_cleaned_at, queued_for_cleanup_at, brewer
+      `SELECT id, brew_description_original, description_hash, description_cleaned_at, queued_for_cleanup_at, brewer
        FROM enriched_beers
        WHERE id IN (${placeholders})`
     ).bind(...existingIds).all<{
       id: string;
+      brew_description_original: string | null;
+      description_hash: string | null;
       description_cleaned_at: number | null;
       queued_for_cleanup_at: number | null;
       brewer: string | null;
@@ -895,70 +911,94 @@ export async function handleBeerSync(
 
     // A sync item may omit brewer. Fall back to the stored brewer, repaired,
     // so the row and any queued cleanup work agree.
-    const beersWithBrewer = validBeers.map(beer => beer.brewer !== null
+    const beersWithBrewer = uniqueBeers.map(beer => beer.brewer !== null
       ? beer
       : cleanBeerNames({ ...beer, brewer: existingMap.get(beer.id)?.brewer ?? null }));
 
-    // Build statements and determine cleanup needs
     for (const beer of beersWithBrewer) {
-      const descriptionHash = beer.brew_description
-        ? await hashDescription(beer.brew_description)
-        : null;
+      const existing = existingMap.get(beer.id);
+      const description = beer.brew_description || null;
 
-      // Use ON CONFLICT DO UPDATE to properly update last_seen_at
-      // Note: is_verified defaults to 0 on INSERT but is NOT updated on conflict
-      // to preserve manual verifications
-      //
-      // description_hash is refreshed on conflict (COALESCE'd like brewer,
-      // so a sync call that omits a description doesn't null out an
-      // existing hash) -- previously this SET clause left description_hash
-      // untouched for existing IDs, so a later `WHERE ... AND
-      // description_hash = ?` staleness check on a queued cleanup result
-      // would compare against a stale column that never matched the
-      // description the cleanup message was actually built from.
+      // Compared as text, not by hash, so a row whose hash already matches
+      // but whose stored text is stale is repaired too.
+      if (description !== null && description !== (existing?.brew_description_original ?? null)) {
+        const descriptionHash = await hashDescription(description);
+        // The new text and its hash land together, guarded on the original
+        // and hash this request read: a request that lost a race to another
+        // writer changes nothing and queues nothing. is_verified defaults to
+        // 0 on INSERT and is never updated here.
+        statements.push(
+          env.DB.prepare(`
+            INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at, is_verified)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            ON CONFLICT(id) DO UPDATE SET
+              last_seen_at = excluded.last_seen_at,
+              brew_name = excluded.brew_name,
+              brewer = COALESCE(excluded.brewer, enriched_beers.brewer),
+              brew_description_original = excluded.brew_description_original,
+              description_hash = excluded.description_hash,
+              brew_description_cleaned = NULL,
+              description_cleaned_at = NULL,
+              cleanup_source = NULL,
+              cleanup_version = NULL,
+              queued_for_cleanup_at = NULL,
+              enrichment_status = ${unlessVerified('enrichment_status', "'pending'")},
+              updated_at = excluded.updated_at
+            WHERE enriched_beers.brew_description_original IS ? AND enriched_beers.description_hash IS ?
+            RETURNING id
+          `).bind(beer.id, beer.brew_name, beer.brewer, description, descriptionHash, now, now,
+            existing?.brew_description_original ?? null, existing?.description_hash ?? null)
+        );
+        cleanupByStatement.push({
+          candidate: { id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer || '', brew_description: description, descriptionHash },
+          requiresWrite: true,
+        });
+        continue;
+      }
+
+      // Unchanged or omitted description: names and last_seen_at only, so the
+      // stored text and its hash are never split.
       statements.push(
         env.DB.prepare(`
           INSERT INTO enriched_beers (id, brew_name, brewer, brew_description_original, description_hash, last_seen_at, updated_at, is_verified)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+          VALUES (?, ?, ?, NULL, NULL, ?, ?, 0)
           ON CONFLICT(id) DO UPDATE SET
             last_seen_at = excluded.last_seen_at,
-            brew_name = COALESCE(excluded.brew_name, enriched_beers.brew_name),
-            brewer = COALESCE(excluded.brewer, enriched_beers.brewer),
-            description_hash = COALESCE(excluded.description_hash, enriched_beers.description_hash)
-        `).bind(beer.id, beer.brew_name, beer.brewer, beer.brew_description, descriptionHash, now, now)
+            brew_name = excluded.brew_name,
+            brewer = COALESCE(excluded.brewer, enriched_beers.brewer)
+        `).bind(beer.id, beer.brew_name, beer.brewer, now, now)
       );
 
-      // Queue for cleanup if description exists, not already cleaned, and not recently queued
-      const existing = existingMap.get(beer.id);
-      if (beer.brew_description &&
-          !existing?.description_cleaned_at &&
-          (!existing?.queued_for_cleanup_at ||
-           now - existing.queued_for_cleanup_at > SYNC_CONSTANTS.REQUEUE_COOLDOWN_MS)) {
-        needsCleanup.push({
-          id: beer.id,
-          brew_name: beer.brew_name,
-          brewer: beer.brewer || '',
-          brew_description: beer.brew_description, // TS narrows to string here
-          // descriptionHash is non-null here: beer.brew_description is
-          // truthy (checked above), and descriptionHash is computed from it
-          // a few lines up via hashDescription().
-          descriptionHash: descriptionHash as string,
-        });
-      }
+      // Retry: an uncleaned description not queued within the cooldown.
+      const retry = description !== null &&
+        !existing?.description_cleaned_at &&
+        (!existing?.queued_for_cleanup_at ||
+         now - existing.queued_for_cleanup_at > SYNC_CONSTANTS.REQUEUE_COOLDOWN_MS);
+      cleanupByStatement.push(retry
+        ? {
+            candidate: { id: beer.id, brew_name: beer.brew_name, brewer: beer.brewer || '', brew_description: description, descriptionHash: await hashDescription(description) },
+            requiresWrite: false,
+          }
+        : null);
     }
 
     // Execute batch insert/update
     const syncResult = await syncBeersWithBatchHandling(env.DB, statements);
+    const needsCleanup = cleanupByStatement.flatMap((entry, index) => {
+      if (entry === null || !syncResult.statementSucceeded[index]) return [];
+      if (entry.requiresWrite && !syncResult.statementReturnedRow[index]) return [];
+      return [entry.candidate];
+    });
+    const synced = beersWithBrewer.reduce(
+      (count, beer, index) => count + (syncResult.statementSucceeded[index] ? occurrences.get(beer.id) ?? 0 : 0),
+      0
+    );
 
     // Send to the cleanup queue FIRST, then mark only what was actually sent.
     // The old mark-then-send order stranded beers for REQUEUE_COOLDOWN_MS
     // (24h) whenever the queue send failed after the timestamps landed.
     let queuedForCleanup = 0;
     if (needsCleanup.length > 0) {
-      // needsCleanup entries carry descriptionHash (see the type above);
-      // queueBeersForCleanup does not yet forward it onto the CleanupMessage
-      // it sends, so it is currently dropped here rather than reaching the
-      // queue. See the module-level TODO near queueBeersForCleanup's import.
       const { queued, queuedIds } = await queueBeersForCleanup(env, needsCleanup, reqCtx.requestId);
       queuedForCleanup = queued;
       const sentSet = new Set(queuedIds ?? []);
@@ -978,13 +1018,13 @@ export async function handleBeerSync(
     const allErrors = [...validationErrors, ...syncResult.errors];
 
     logWithContext(reqCtx.requestId, 'beers.sync.complete', {
-      synced: syncResult.succeeded,
+      synced,
       queuedForCleanup: queuedForCleanup,
       validationErrors: validationErrors.length,
     });
 
     return Response.json({
-      synced: syncResult.succeeded,
+      synced,
       queued_for_cleanup: queuedForCleanup,
       requestId: reqCtx.requestId,
       ...(allErrors.length > 0 && { errors: allErrors }),
