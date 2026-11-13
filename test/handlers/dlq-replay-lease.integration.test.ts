@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { releaseStaleReplayClaims } from '../../src/handlers/dlq';
 import { DLQ_REPLAY_CLAIM_STALE_MS } from '../../src/constants';
 import { storeDlqMessage } from '../../src/queue/dlq';
+import { handleEnrichmentBatch } from '../../src/queue/enrichment';
 import type { EnrichmentMessage, Env } from '../../src/types';
 import {
   CLEANUP_BODY,
@@ -23,6 +24,33 @@ import {
 } from './dlq-replay-harness';
 
 const CLAIM_TIME = 1_800_000_000_000;
+
+function stubPerplexity(abv: string): { count: number } {
+  const calls = { count: 0 };
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (!url.startsWith('https://api.perplexity.ai/')) throw new Error(`Unexpected outbound request: ${url}`);
+    calls.count++;
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: abv } }] });
+  });
+  return calls;
+}
+
+function consumerEnv(): Env {
+  return {
+    ...env,
+    PERPLEXITY_API_KEY: 'test-perplexity-key',
+    ABV_FALLBACK_ENABLED: 'false',
+    ENRICHMENT_ENABLED: 'true',
+    DAILY_ENRICHMENT_LIMIT: '500',
+    MONTHLY_ENRICHMENT_LIMIT: '2000',
+    ANALYTICS: { writeDataPoint: vi.fn() },
+  } as Env;
+}
+
+async function reservations(): Promise<unknown> {
+  return env.DB.prepare('SELECT COALESCE(SUM(request_count), 0) AS n FROM enrichment_limits').first('n');
+}
 
 async function setVerified(beerId: string, value: number): Promise<void> {
   await env.DB.prepare('UPDATE enriched_beers SET is_verified = ? WHERE id = ?').bind(value, beerId).run();
@@ -51,6 +79,7 @@ beforeEach(async () => {
   await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
   await env.DB.prepare('DELETE FROM enriched_beers').run();
   await env.DB.prepare('DELETE FROM dlq_messages').run();
+  await env.DB.prepare('DELETE FROM enrichment_limits').run();
   await env.DB.prepare('DROP TRIGGER IF EXISTS abort_status').run();
   vi.restoreAllMocks();
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -221,22 +250,32 @@ describe('the replay lease', () => {
 });
 
 describe('an entry whose beer was resolved since it failed', () => {
-  it('is not re-sent after an ambiguous replay: send went out, finalize failed, the beer was enriched', async () => {
+  it('is not re-sent after an ambiguous replay: send went out, finalize failed, the consumer enriched the beer', async () => {
     await seedBeer('beer-1');
     const dlqId = await seedDlqEntry('m-1', 'beer-enrichment', ENRICHMENT_BODY);
     await abortWhenStatusBecomes('replayed');
     const first = queues();
 
-    await replay(first.worker, [dlqId]);
+    expect((await replayResponse(first.worker, [dlqId])).status).toBe(500);
+    expect(await dlqEntry(dlqId)).toMatchObject({ status: 'replaying' });
 
-    expect(first.enrichment).toHaveBeenCalledOnce();
     await env.DB.prepare('DROP TRIGGER abort_status').run();
-    await env.DB.prepare("UPDATE enriched_beers SET abv = 5.2, enrichment_status = 'enriched' WHERE id = 'beer-1'").run();
+    const perplexityCalls = stubPerplexity('5.2');
+    const [sent] = first.enrichment.mock.calls.map(([body]) => body);
+    const delivered = { body: sent, ack: vi.fn(), retry: vi.fn() };
+    await handleEnrichmentBatch({ messages: [delivered] } as unknown as MessageBatch<EnrichmentMessage>, consumerEnv());
+    expect(delivered.ack).toHaveBeenCalledOnce();
+    expect(await env.DB.prepare('SELECT abv FROM enriched_beers WHERE id = ?').bind('beer-1').first('abv')).toBe(5.2);
+    expect(perplexityCalls.count).toBe(1);
+    expect(await reservations()).toBe(1);
+
     await releaseStaleReplayClaims(env.DB, { now: Date.now() + DLQ_REPLAY_CLAIM_STALE_MS });
     const second = queues();
 
     expect(await replay(second.worker, [dlqId])).toMatchObject({ replayed_count: 0, skipped_resolved: [dlqId] });
     expect(second.enrichment).not.toHaveBeenCalled();
+    expect(perplexityCalls.count).toBe(1);
+    expect(await reservations()).toBe(1);
     expect(await beerStatus('beer-1')).toBe('enriched');
     expect(await dlqEntry(dlqId)).toMatchObject({ status: 'pending', replay_claim: null });
   });
