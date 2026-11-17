@@ -89,7 +89,12 @@ async function slotsUsedToday(): Promise<number> {
 
 const NOT_FOUND = { abv: null, enrichment_status: 'not_found' };
 
+// Midday UTC: far from the UTC day the quota and fallback-cap rows are keyed on.
+const MIDDAY_UTC = Date.UTC(2026, 10, 11, 12, 0, 30);
+
 beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(MIDDAY_UTC);
   await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
   for (const table of ['enriched_beers', 'abv_fallback_limits', 'enrichment_limits']) {
     await env.DB.prepare(`DELETE FROM ${table}`).run();
@@ -101,6 +106,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe('Exa fallback after a Perplexity unknown', () => {

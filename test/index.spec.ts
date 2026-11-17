@@ -1,5 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext, SELF, applyD1Migrations } from 'cloudflare:test';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Env } from '../src/types';
 import worker from '../src/index';
 
@@ -12,12 +12,19 @@ describe('Beer Enrichment Worker', () => {
 	// routing, so these tests need real tables (rate_limits, audit_log).
 	// Storage is isolated per file, not per test, so clear what the auth chain
 	// writes: otherwise the throttling test's bucket turns later 401s into 429s.
+	// Mid-minute and fixed, so the throttling test's 40 requests share one bucket.
 	beforeEach(async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(Date.UTC(2026, 10, 11, 12, 0, 30));
 		await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
 		await env.DB.batch([
 			env.DB.prepare('DELETE FROM rate_limits'),
 			env.DB.prepare('DELETE FROM audit_log'),
 		]);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
 	});
 
 	it('returns Unauthorized without API key (unit style)', async () => {
