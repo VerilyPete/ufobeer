@@ -8,8 +8,6 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  D1_MAX_PARAMS_PER_STATEMENT,
-  D1_MAX_STATEMENTS_PER_BATCH,
   SYNC_BODY_MAX_BYTES,
   SMALL_JSON_BODY_MAX_BYTES,
   FLYING_SAUCER_RESPONSE_MAX_BYTES,
@@ -19,16 +17,6 @@ import {
 } from '../src/constants';
 import { SYNC_CONSTANTS } from '../src/types';
 import { BATCH_MAX_IDS, BATCH_ID_MAX_LENGTH } from '../src/schemas/request';
-
-describe('D1 batching constants', () => {
-  it('should set D1_MAX_PARAMS_PER_STATEMENT to 90', () => {
-    expect(D1_MAX_PARAMS_PER_STATEMENT).toBe(90);
-  });
-
-  it('should set D1_MAX_STATEMENTS_PER_BATCH to 100', () => {
-    expect(D1_MAX_STATEMENTS_PER_BATCH).toBe(100);
-  });
-});
 
 // =============================================================================
 // Inbound JSON Body Limit Fixtures
