@@ -398,6 +398,13 @@ Each commit adds the group's boundary tests, then deletes that group's `expect(C
 Then list in the appendix every other test that seeds data from `Date.now()`, for example `beers.enrichmentSource.integration:42,49` and `beers.list:1201`, and say for each whether it's harmless or fix it.
 **Done when**: each file passes with the fixed time set to 11:59:59.900 into a minute and to 23:59:59.900 UTC, both forced through `setSystemTime` in a one-off local run.
 
+**Result (step 17)**: Step 17 result
+- Fixed: usage.integration and reports.integration (whole suites; Date frozen at 2026-11-11T12:00:30Z in beforeEach, restored in afterEach).
+- Also fixed from the inventory: enrichment-exa.integration (UTC-day keyed cap/slot rows), enrichment-recovery.integration (1 s margin on the 24 h miss retry), index.spec (up to 40 requests must share one pre-auth minute bucket). A one-off assertion confirmed SELF.fetch sees the fake clock (one minute_bucket row, the frozen minute).
+- Done when: with FIXED_NOW forced to 2026-11-11T11:59:59.900Z and to 23:59:59.900Z in one-off runs, usage + reports pass 70/70 each time (variants not committed).
+- Plan citations re-checked: reports default-range test :98–103, usage 7-post test :395–407 and 30-post test :420–426 matched before the edit. beers.list:1201 is now :1203 after Phase B; beers.enrichmentSource:42,49 are now :43,51.
+- No tests deleted; no map rows for step 17.
+
 ### Step 18: Restore fakes, test retry delays, and drop config-echo tests
 
 **Test**:
@@ -410,6 +417,14 @@ Then list in the appendix every other test that seeds data from `Date.now()`, fo
 **Fix**: move the `fetch` restore in `test/services/perplexity.test.ts` and the `useRealTimers` call in `test/cleanupHelpers.test.ts` into `afterEach`.
 **Delete**: as listed in the map, the Perplexity request tests that only repeat a constant (temperature, model, prompt text). Keep one test of the whole request shape.
 **Done when**: M11 and M12 fail.
+
+**Result (step 18)**: Step 18 result
+- M11 (`src/queue/enrichment.ts:168` `message.retry({ delaySeconds: 120 })` → `message.retry()`): new test `when the fallback never runs › retries a Perplexity 429 after two minutes, so the rate-limit window can reset` fails (expected `[[{ delaySeconds: 120 }]]`, got `[[]]`). The existing 500 test now asserts `retry.mock.calls` equals `[[]]`, so the reverse mutant (delay on every error, `:171`) also fails 1.
+- M12 (`src/queue/cleanupHelpers.ts:38` backoff → 0): `waits 100 ms after the first failure and 200 ms more after the second` fails. Base 50, flat 100, `2^attempt`, `3^(attempt-1)` all fail too. The old backoff test survived M12 (it only counted calls after advancing the full 300 ms).
+- Restores: `test/cleanupHelpers.test.ts` fakes only `setTimeout` in `beforeEach`; `useRealTimers` and `restoreAllMocks` in `afterEach`. `test/services/perplexity.test.ts` puts the real `fetch` back and restores console spies in a file-level `afterEach`; inline `restore()` / `mockRestore()` calls removed everywhere except the `ABV validation` describe (left alone because the Phase C agent may add a 70.1 case there; its `restore()` calls are now redundant but harmless, and `setupMockFetch` still returns `restore` so that describe compiles).
+- Kept one whole-request test, as an `it.each` over brewer / no brewer (`request › posts the whole Sonar request %s`): URL, method, `AbortSignal`, headers and the full parsed body. 11 request tests deleted (map rows above). The two no-brewer / brewer cases also replace the null-brewer test, which was a behaviour (branch), not an echo.
+- First "model" mutant hit `src/services/perplexity.ts:78` (`model: 'sonar'` in the HTTP-failure log), not the request: it survives every test. Not in scope; noted for the caller. Rerun on `:132` fails 2.
+- Plan accuracy: `enrichment-exa.integration:151–157` was the 500 retry test as described; M11 line `:165–168` and M12 line `:38` are right.
 
 ## Out of scope
 
@@ -678,7 +693,47 @@ Filled in at the start of each deletion step, before anything is deleted.
 | 16a | `test/db/helpers-typed.test.ts` asTypedRows › returns empty readonly array when results is undefined / is null | `?? []` fallback | keep | — |
 | 16b | `test/validation/storeId.test.ts` isValidStoreId › should validate against known IDs in strict mode | `isValidStoreId(id, true)` accepts only `KNOWN_STORE_IDS` | removed with an unused production feature | — (no production caller passes `strictMode`; the only caller is `isValidStoreId(storeId)` at `src/handlers/beers.ts:476`) |
 | 16b | `test/validation/storeId.test.ts` isValidStoreId › should have all known store IDs in KNOWN_STORE_IDS set | contents of `KNOWN_STORE_IDS` | removed with an unused production feature | — (nothing outside the validator and this test read it; repo-wide grep finds only plan text) |
+| 18 | `test/cleanupHelpers.test.ts` batchUpdateWithRetry › succeeds on first attempt | one `batch` call with the caller's statements | batchUpdateWithRetry › returns the batch's per-statement results, so callers can see a guarded write that changed nothing | `await db.batch(statements); return [];` (`src/queue/cleanupHelpers.ts:33`): 2 fail |
+| 18 | `test/cleanupHelpers.test.ts` batchUpdateWithRetry › retries on failure and succeeds on second attempt | a failed batch is retried | batchUpdateWithRetry › waits 100 ms after the first failure and 200 ms more after the second | default `maxRetries = 1` (`:28`): 1 fails; M12: 1 fails |
+| 18 | `test/cleanupHelpers.test.ts` batchUpdateWithRetry › retries up to maxRetries times before throwing | attempt count, then the error is rethrown | batchUpdateWithRetry › throws the last error after maxRetries attempts, without waiting after the last | loop bound `attempt < maxRetries` (`:31`): 2 fail; drop `if (attempt === maxRetries) throw error;` (`:37`): 1 fails |
+| 18 | `test/cleanupHelpers.test.ts` batchUpdateWithRetry › uses exponential backoff between retries | backoff timing (it only counted calls after the full 300 ms, so M12 survived) | batchUpdateWithRetry › waits 100 ms after the first failure and 200 ms more after the second | M12 backoff `0` (`:38`): 1 fails; base `50 *`: 1 fails; `100` flat: 1 fails; `Math.pow(2, attempt)`: 2 fail; `Math.pow(3, attempt - 1)`: 2 fail |
+| 18 | `test/cleanupHelpers.test.ts` batchUpdateWithRetry › handles empty statement array | empty input passed through | not a contract: no branch on the array's length; the results test passes an empty array and checks it reaches `batch` unchanged | not a contract |
+| 18 | `test/services/perplexity.test.ts` fetchAbvFromPerplexity › prompt construction › should include brewer when provided | brewer in the prompt | request › posts the whole Sonar request with a brewer | `const prompt = false` (brewer branch never taken, `src/services/perplexity.ts:119`): 1 fails |
+| 18 | `test/services/perplexity.test.ts` fetchAbvFromPerplexity › prompt construction › should include beer name in prompt | beer name in the prompt | request › posts the whole Sonar request with a brewer (also 4 kept edge-case and prompt-injection tests) | drop `"${safeBeerName}"` from the brewer prompt (`:120`): 5 fail |
+| 18 | `test/services/perplexity.test.ts` fetchAbvFromPerplexity › prompt construction › should handle null brewer gracefully | no `by null` when brewer is null | request › posts the whole Sonar request without a brewer | null branch also appends `by ${safeBrewer}` (`:121`): 1 fails |
+| 18 | `test/services/perplexity.test.ts` fetchAbvFromPerplexity › prompt construction › should send correct request headers | `Authorization` and `Content-Type` headers | request › posts the whole Sonar request with / without a brewer | `Bearer x` (`:128`): 2 fail; `Content-Type: text/plain` (`:129`): 2 fail |
+| 18 | `test/services/perplexity.test.ts` fetchAbvFromPerplexity › prompt construction › should use sonar model | model restated | request › posts the whole Sonar request with / without a brewer | `model: 'sonar-pro'` (`:132`): 2 fail |
+| 18 | `test/services/perplexity.test.ts` fetchAbvFromPerplexity › prompt construction › should include system message for beer expertise | system message restated (only role and a substring) | request › posts the whole Sonar request with / without a brewer | `role: 'assistant'` (`:135`): 2 fail; system text changed (`:136`): 2 fail |
+| 18 | `test/services/perplexity.test.ts` fetchAbvFromPerplexity › prompt construction › should enable web search in request | `web_search_options` restated | request › posts the whole Sonar request with / without a brewer | `search_context_size: 'low'` (`:149`): 2 fail |
+| 18 | `test/services/perplexity.test.ts` fetchAbvFromPerplexity › prompt construction › should set low temperature for consistent responses | temperature restated | request › posts the whole Sonar request with / without a brewer | `temperature: 0.2` (`:144`): 2 fail |
+| 18 | `test/services/perplexity.test.ts` fetchAbvFromPerplexity › prompt construction › should set max_tokens to limit response | max_tokens restated | request › posts the whole Sonar request with / without a brewer (and kept `perplexity-outcomes.test.ts` tests that read `max_tokens` from the request) | `max_tokens: 100` (`:143`): 2 fail |
+| 18 | `test/services/perplexity.test.ts` fetchAbvFromPerplexity › API endpoint › should call correct Perplexity API endpoint | endpoint URL | request › posts the whole Sonar request with / without a brewer | URL → `/chat/completions` (`:124`): 2 fail |
+| 18 | `test/services/perplexity.test.ts` fetchAbvFromPerplexity › API endpoint › should use POST method | method | request › posts the whole Sonar request with / without a brewer | `method: 'PUT'` (`:125`): 2 fail |
 
 ## Appendix: harmless uses of the real clock
 
-Filled in at step 17.
+| Test file and line (at step 17) | Use of the real clock | Edge it could cross | Verdict |
+|---|---|---|---|
+| `test/handlers/usage.integration.test.ts` (whole suite) | `getToday()` seeds budget and counter rows; 7 and 30 posts against per-minute buckets | UTC day, minute | **fixed** at step 17: `FIXED_NOW` (midday, mid-minute) in `beforeEach` |
+| `test/handlers/reports.integration.test.ts` (`GET /reports/usage` suite) | `new Date()` for today and yesterday; 61 reads against the report bucket | UTC day, minute | **fixed** at step 17: `FIXED_NOW` in `beforeEach` |
+| `test/queue/enrichment-exa.integration.test.ts:86, 186` | `getToday()` seeds the Exa cap row and reads today's slot count after the consumer runs | UTC day | **fixed** at step 17: `MIDDAY_UTC` in the file's `beforeEach` (the midnight test still sets its own times) |
+| `test/enrichment-recovery.integration.test.ts:10, 34` | `updated_at` seeded at `ABV_LOOKUP_MISS_RETRY_MS` ± 1 s | time limit (1 s margin on the 24 h miss retry) | **fixed** at step 17: Date frozen in `beforeEach` |
+| `test/index.spec.ts:40–48` | up to 40 `SELF.fetch` calls must trip the 30/min pre-auth bucket | minute | **fixed** at step 17: Date frozen mid-minute in `beforeEach` (checked that `SELF` sees the fake clock: one `minute_bucket` row, the frozen one) |
+| `test/handlers/beers.enrichmentSource.integration.test.ts:43, 51` | cache `cached_at` = now (fresh) or now − 1 h (expired) | time limit: 5 min `CACHE_TTL_MS` | harmless: 5 min margin either way |
+| `test/handlers/beers.list.test.ts:158, 1156–1278, 1457–1527, 2170` | fake cache row `cached_at` = now or now − 1 min | time limit: 5 min TTL | harmless: ≥ 4 min margin |
+| `test/handlers/beers.list.test.ts:1328, 1552–1694, 1766, 1842, 1922, 1952, 2113, 2190, 2317` | fake cache row `cached_at` = now − 10 min (stale) | time limit: 5 min TTL | harmless: age only grows, already 5 min past the TTL |
+| `test/handlers/beers.list.test.ts:215`, and `startTime: Date.now()` in `auth.test.ts:60`, `audit.test.ts:28`, `beers.batch.test.ts:55`, `beers.sync.test.ts:155`, `dlq.handler.test.ts:15`, `enrichment.handler.test.ts:13`, `cleanupTrigger.test.ts:141`, `db/skipRecovery.integration.test.ts:44` | request-context `startTime` | none: only feeds `responseTimeMs`, which no test asserts | harmless |
+| `test/db/seenBeers.integration.test.ts:57` | one `NOW` captured at load, passed as `{ now }`; hour-throttle cases computed from it (`PERIOD_START`) | hour (throttle period) | harmless: the writer reads only the `now` it is given, and every expectation is computed from the same `NOW` |
+| `test/db/beer-names.integration.test.ts:63–124`, `test/db/seenBeers-verified.integration.test.ts:35`, `test/handlers/cleanupTrigger.integration.test.ts:96`, `test/handlers/cleanupTrigger-guards.integration.test.ts:269` | `recordSeenBeers(..., { now: Date.now() })` | none asserted: no test reads `last_seen_at` or the marker time back | harmless |
+| `test/handlers/beers.sync.description.integration.test.ts:270` | `queued_for_cleanup_at` = now, then a description change resets it | time limit: 24 h requeue window | harmless: the test relies on the reset, not on the window |
+| `test/db/skipRecovery.integration.test.ts:9, 25` | `last_seen_at` = now or now − 8 days | time limit: 7-day `ABV_LOOKUP_RECENTLY_SEEN_MS` | harmless: one-day margin |
+| `test/db/verified-sweeps.integration.test.ts:27` | `updated_at` now − 2 days, `last_seen_at` now | time limits: 24 h miss retry, 7-day recently seen | harmless: ≥ 1 day margin |
+| `test/queue/enrichment-verified.integration.test.ts:65`, `test/queue/enrichment-stale-binding.integration.test.ts:43` | `last_seen_at` = now; consumer reserves quota for today | UTC day | harmless: quota reads sum every day's rows (`SUM(request_count)`), and the 7-day window has days of margin |
+| `test/handlers/dlq-replay-lease.integration.test.ts:152, 272` | `releaseStaleReplayClaims({ now: Date.now() + DLQ_REPLAY_CLAIM_STALE_MS })` after a claim at an earlier `Date.now()` | time limit: claim lease | harmless: the release compares `replay_claimed_at <= now − STALE`, and the claim time is never later than the release's `Date.now()` |
+| `test/handlers/dlq-housekeeping.integration.test.ts:31, 166` | ages relative to `Date.now()` | retention, lease | harmless: the suite freezes Date at `NOW` (Phase B) |
+| `test/handlers/cleanupTrigger.test.ts:250, 268, 303` | cooldown last run 1, 2 or 10 min ago | time limit: 5 min cooldown | harmless: ≥ 3 min margin |
+| `test/handlers/scheduled.test.ts:278` | fake `next_run` = now + 1 h | cron due time | harmless: 1 h margin |
+| `test/db/cache.test.ts:84, 148, 162, 288, 303` | `cached_at` handed to a fake row and read back | none: opaque value | harmless |
+| `test/quota.integration.test.ts:26` | `last_updated` = now on a row keyed by the literal `TODAY` | none: `reserveEnrichmentSlot` takes the date as an argument | harmless |
+| `test/cleanup-integration.test.ts:38`, `test/queue/cleanup-stale-binding.test.ts:89`, `test/queue/enrichment-stale-binding.integration.test.ts:54` | queue message `timestamp: new Date()` | none: consumers don't read it | harmless |
+| `test/load/*.functions.js` | Artillery load scripts | not run by Vitest | out of scope |
