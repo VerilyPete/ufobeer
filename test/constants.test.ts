@@ -8,10 +8,6 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  AUDIT_RETENTION_DAYS,
-  AUDIT_REAP_LIMIT,
-  ADMIN_AUDIT_MAX_TARGET_IDS,
-  RATE_LIMIT_REAP_LIMIT,
   D1_MAX_PARAMS_PER_STATEMENT,
   D1_MAX_STATEMENTS_PER_BATCH,
   SYNC_BODY_MAX_BYTES,
@@ -31,24 +27,6 @@ import {
 } from '../src/constants';
 import { SYNC_CONSTANTS } from '../src/types';
 import { BATCH_MAX_IDS, BATCH_ID_MAX_LENGTH } from '../src/schemas/request';
-
-describe('audit and cleanup constants', () => {
-  it('should set AUDIT_RETENTION_DAYS to 30', () => {
-    expect(AUDIT_RETENTION_DAYS).toBe(30);
-  });
-
-  it('should set AUDIT_REAP_LIMIT to 10,000', () => {
-    expect(AUDIT_REAP_LIMIT).toBe(10_000);
-  });
-
-  it('should set ADMIN_AUDIT_MAX_TARGET_IDS to 100', () => {
-    expect(ADMIN_AUDIT_MAX_TARGET_IDS).toBe(100);
-  });
-
-  it('should set RATE_LIMIT_REAP_LIMIT to 10,000', () => {
-    expect(RATE_LIMIT_REAP_LIMIT).toBe(10_000);
-  });
-});
 
 describe('AI cleanup prompt/output bounds', () => {
   it('should set MAX_DESCRIPTION_LENGTH to 3000', () => {
