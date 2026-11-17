@@ -6,6 +6,13 @@ const env = { PERPLEXITY_API_KEY: 'secret-test-key' } as Env;
 const lookup = () => fetchAbvFromPerplexity(env, 'Florida Seltzer Navel Orange Yuzu (CAN)', 'Untitled Art');
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
+const answerOfBytes = (bytes: number): string => {
+  const answer = { choices: [{ message: { content: '5' }, finish_reason: 'stop' }], padding: '' };
+  const body = JSON.stringify({ ...answer, padding: 'x'.repeat(bytes - JSON.stringify(answer).length) });
+  if (new TextEncoder().encode(body).length !== bytes) throw new Error(`fixture is not ${bytes} bytes`);
+  return body;
+};
+
 describe('Perplexity outcome distinctions', () => {
   it.each([
     ['missing choices', {}],
@@ -63,6 +70,24 @@ describe('Perplexity outcome distinctions', () => {
     expect(logs).toContain('max_tokens');
     expect(logs).not.toContain('secret-test-key');
     expect(logs).not.toContain('sensitive prompt');
+  });
+
+  it('resolves a response body of exactly 32 KiB', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(answerOfBytes(32 * 1024))));
+    await expect(lookup()).resolves.toBe(5);
+  });
+
+  it('rejects a response body one byte over 32 KiB', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(answerOfBytes(32 * 1024 + 1))));
+    await expect(lookup()).rejects.toMatchObject({ kind: 'invalid_response' });
+  });
+
+  it('cuts the beer name in the prompt to 300 characters', async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json({ choices: [{ message: { content: '5' } }] }));
+    vi.stubGlobal('fetch', fetch);
+    await fetchAbvFromPerplexity(env, `${'A'.repeat(300)}B`, null);
+    const prompt: string = JSON.parse(fetch.mock.calls[0]![1].body).messages[1].content;
+    expect(prompt.match(/beer "([^"]*)"/)?.[1]).toBe('A'.repeat(300));
   });
 
   it.each(['not json', 'x'.repeat(100_000)])('rejects malformed or oversized response bodies', async body => {

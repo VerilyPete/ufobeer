@@ -5,11 +5,6 @@ import {
   FlyingSaucerResponseSchema,
   isFlyingSaucerBeerRecordWithinSizeCap,
 } from '../../src/schemas/external';
-import {
-  MAX_FLYING_SAUCER_FIELD_LENGTH,
-  MAX_FLYING_SAUCER_RESPONSE_ITEMS,
-  MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES,
-} from '../../src/constants';
 
 describe('PerplexityResponseSchema', () => {
   it('accepts missing choices with default empty array', () => {
@@ -87,67 +82,67 @@ describe('FlyingSaucerBeerSchema', () => {
   // Bounds (Cloudflare security review Phase 1, item 5: unbounded upstream)
   // ==========================================================================
 
-  it('rejects id longer than MAX_FLYING_SAUCER_FIELD_LENGTH', () => {
+  it('rejects id longer than 5,000 characters', () => {
     const result = FlyingSaucerBeerSchema.safeParse({
-      id: 'x'.repeat(MAX_FLYING_SAUCER_FIELD_LENGTH + 1),
+      id: 'x'.repeat(5001),
       brew_name: 'Test',
     });
     expect(result.success).toBe(false);
   });
 
-  it('accepts id at exactly MAX_FLYING_SAUCER_FIELD_LENGTH', () => {
+  it('accepts an id of exactly 5,000 characters', () => {
     const result = FlyingSaucerBeerSchema.safeParse({
-      id: 'x'.repeat(MAX_FLYING_SAUCER_FIELD_LENGTH),
+      id: 'x'.repeat(5000),
       brew_name: 'Test',
     });
     expect(result.success).toBe(true);
   });
 
-  it('rejects brew_name longer than MAX_FLYING_SAUCER_FIELD_LENGTH', () => {
+  it('rejects brew_name longer than 5,000 characters', () => {
     const result = FlyingSaucerBeerSchema.safeParse({
       id: 'beer-1',
-      brew_name: 'x'.repeat(MAX_FLYING_SAUCER_FIELD_LENGTH + 1),
+      brew_name: 'x'.repeat(5001),
     });
     expect(result.success).toBe(false);
   });
 
-  it('rejects brew_description longer than MAX_FLYING_SAUCER_FIELD_LENGTH', () => {
+  it('rejects brew_description longer than 5,000 characters', () => {
     const result = FlyingSaucerBeerSchema.safeParse({
       id: 'beer-1',
       brew_name: 'Test',
-      brew_description: 'x'.repeat(MAX_FLYING_SAUCER_FIELD_LENGTH + 1),
+      brew_description: 'x'.repeat(5001),
     });
     expect(result.success).toBe(false);
   });
 
-  it('rejects brewer longer than MAX_FLYING_SAUCER_FIELD_LENGTH', () => {
+  it('rejects brewer longer than 5,000 characters', () => {
     const result = FlyingSaucerBeerSchema.safeParse({
       id: 'beer-1',
       brew_name: 'Test',
-      brewer: 'x'.repeat(MAX_FLYING_SAUCER_FIELD_LENGTH + 1),
+      brewer: 'x'.repeat(5001),
     });
     expect(result.success).toBe(false);
   });
 
-  it('rejects container_type longer than MAX_FLYING_SAUCER_FIELD_LENGTH', () => {
+  it('rejects container_type longer than 5,000 characters', () => {
     const result = FlyingSaucerBeerSchema.safeParse({
       id: 'beer-1',
       brew_name: 'Test',
-      container_type: 'x'.repeat(MAX_FLYING_SAUCER_FIELD_LENGTH + 1),
+      container_type: 'x'.repeat(5001),
     });
     expect(result.success).toBe(false);
   });
 });
 
 describe('FlyingSaucerResponseSchema', () => {
-  it('accepts an array at exactly MAX_FLYING_SAUCER_RESPONSE_ITEMS', () => {
-    const items = Array.from({ length: MAX_FLYING_SAUCER_RESPONSE_ITEMS }, () => ({}));
+  it('accepts an array of exactly 5,000 items', () => {
+    const items = Array.from({ length: 5000 }, () => ({}));
     const result = FlyingSaucerResponseSchema.safeParse(items);
     expect(result.success).toBe(true);
   });
 
-  it('rejects an array longer than MAX_FLYING_SAUCER_RESPONSE_ITEMS', () => {
-    const items = Array.from({ length: MAX_FLYING_SAUCER_RESPONSE_ITEMS + 1 }, () => ({}));
+  it('rejects an array of 5,001 items', () => {
+    const items = Array.from({ length: 5001 }, () => ({}));
     const result = FlyingSaucerResponseSchema.safeParse(items);
     expect(result.success).toBe(false);
   });
@@ -170,18 +165,19 @@ describe('isFlyingSaucerBeerRecordWithinSizeCap', () => {
       // A single well-formed known field cannot exceed the cap (it's
       // bounded independently), but an attacker-controlled passthrough
       // field is not enumerated by the schema and must be caught here.
-      suspicious_passthrough_blob: 'x'.repeat(MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES),
+      suspicious_passthrough_blob: 'x'.repeat(20_000),
     };
     expect(isFlyingSaucerBeerRecordWithinSizeCap(record)).toBe(false);
   });
 
-  it('accepts a record at exactly the aggregate cap', () => {
-    // Build a record whose JSON.stringify length is exactly the cap.
+  it.each([
+    [20_000, true],
+    [20_001, false],
+  ])('a record serializing to %i characters is within the cap: %s', (length, expected) => {
     const overhead = JSON.stringify({ id: '1', blob: '' }).length;
-    const blob = 'x'.repeat(MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES - overhead);
-    const record = { id: '1', blob };
-    expect(JSON.stringify(record).length).toBeLessThanOrEqual(MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES);
-    expect(isFlyingSaucerBeerRecordWithinSizeCap(record)).toBe(true);
+    const record = { id: '1', blob: 'x'.repeat(length - overhead) };
+    expect(JSON.stringify(record).length).toBe(length);
+    expect(isFlyingSaucerBeerRecordWithinSizeCap(record)).toBe(expected);
   });
 
   it('handles a value that cannot be serialized without throwing', () => {

@@ -145,6 +145,11 @@ describe('description cleanup consumer (real D1)', () => {
     expect(sendBatch).not.toHaveBeenCalled();
   });
 
+  it('cleans only the first 3,000 characters of a description', async () => {
+    const { row } = await clean(`${'x'.repeat(3000)}y`);
+    expect(row).toMatchObject({ brew_description_cleaned: `${'x'.repeat(3000)}.` });
+  });
+
   it('stores the sanitized source unchanged when nothing needs fixing', async () => {
     const { row } = await clean('A crisp &amp; dry finish!');
     expect(row).toMatchObject({ brew_description_cleaned: 'A crisp & dry finish!' });

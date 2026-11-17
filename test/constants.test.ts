@@ -12,14 +12,6 @@ import {
   D1_MAX_STATEMENTS_PER_BATCH,
   SYNC_BODY_MAX_BYTES,
   SMALL_JSON_BODY_MAX_BYTES,
-  MAX_DESCRIPTION_LENGTH,
-  MAX_CLEANED_OUTPUT_LENGTH,
-  MAX_PROMPT_FIELD_LENGTH,
-  MAX_PERPLEXITY_RESPONSE_BYTES,
-  MAX_LOGGED_ERROR_BODY_LENGTH,
-  MAX_FLYING_SAUCER_FIELD_LENGTH,
-  MAX_FLYING_SAUCER_RESPONSE_ITEMS,
-  MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES,
   FLYING_SAUCER_RESPONSE_MAX_BYTES,
   USAGE_POSTS_SINCE,
   USAGE_DROP_COUNTERS_SINCE,
@@ -27,44 +19,6 @@ import {
 } from '../src/constants';
 import { SYNC_CONSTANTS } from '../src/types';
 import { BATCH_MAX_IDS, BATCH_ID_MAX_LENGTH } from '../src/schemas/request';
-
-describe('AI cleanup prompt/output bounds', () => {
-  it('should set MAX_DESCRIPTION_LENGTH to 3000', () => {
-    expect(MAX_DESCRIPTION_LENGTH).toBe(3000);
-  });
-
-  it('should set MAX_CLEANED_OUTPUT_LENGTH to 3200', () => {
-    expect(MAX_CLEANED_OUTPUT_LENGTH).toBe(3200);
-  });
-});
-
-describe('Perplexity constants', () => {
-  it('should set MAX_PROMPT_FIELD_LENGTH to 300', () => {
-    expect(MAX_PROMPT_FIELD_LENGTH).toBe(300);
-  });
-
-  it('should set MAX_PERPLEXITY_RESPONSE_BYTES to 32 KiB', () => {
-    expect(MAX_PERPLEXITY_RESPONSE_BYTES).toBe(32 * 1024);
-  });
-
-  it('should set MAX_LOGGED_ERROR_BODY_LENGTH to 500', () => {
-    expect(MAX_LOGGED_ERROR_BODY_LENGTH).toBe(500);
-  });
-});
-
-describe('Flying Saucer upstream bounds', () => {
-  it('should set MAX_FLYING_SAUCER_FIELD_LENGTH to 5000', () => {
-    expect(MAX_FLYING_SAUCER_FIELD_LENGTH).toBe(5000);
-  });
-
-  it('should set MAX_FLYING_SAUCER_RESPONSE_ITEMS to 5000', () => {
-    expect(MAX_FLYING_SAUCER_RESPONSE_ITEMS).toBe(5000);
-  });
-
-  it('should set MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES to 20,000', () => {
-    expect(MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES).toBe(20_000);
-  });
-});
 
 describe('D1 batching constants', () => {
   it('should set D1_MAX_PARAMS_PER_STATEMENT to 90', () => {
