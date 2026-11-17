@@ -1,5 +1,6 @@
 import type { D1Migration } from 'cloudflare:test';
 import type { Env as WorkerEnv } from '../src/types';
+import type { QueueConsumerSettings } from './support/queueConsumerSettings';
 
 declare global {
 	namespace Cloudflare {
@@ -7,5 +8,12 @@ declare global {
 			/** Full ./migrations chain, available in the non-golden workers-pool run */
 			REAL_MIGRATIONS: D1Migration[];
 		}
+	}
+}
+
+declare module 'vitest' {
+	interface ProvidedContext {
+		/** Every queue consumer's retry settings, from wrangler.jsonc */
+		queueConsumers: QueueConsumerSettings[];
 	}
 }

@@ -387,6 +387,7 @@ Filled in at the start of each deletion step, before anything is deleted.
 | 2 | `test/analytics.test.ts` trackCleanupTrigger › sets double2 to 0 (reserved, formerly beers_skipped) | slot layout | the full data point each tracker writes › trackCleanupTrigger | M3 swap of that slot (sweep below) |
 | 2 | `test/analytics.test.ts` trackCleanupTrigger › sets double3 to the beersReset value | slot layout | the full data point each tracker writes › trackCleanupTrigger | M3 swap of that slot (sweep below) |
 | 2 | `test/analytics.test.ts` trackCleanupTrigger › sets double4 to the durationMs value | slot layout | the full data point each tracker writes › trackCleanupTrigger | M3 swap of that slot (sweep below) |
+| 3 | `test/constants.test.ts` DLQ consumer constants › should set MAX_DLQ_CONSUMER_ATTEMPTS to 3, matching wrangler.jsonc max_retries | DLQ retry count matches config | `test/queue-config.test.ts` › retries each work queue, then dead-letters it… | M4 (DLQ `max_retries` 3 → 4) |
 
 ## Appendix: harmless uses of the real clock
 

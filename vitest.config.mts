@@ -1,6 +1,7 @@
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin';
 import { configDefaults, defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
+import { readQueueConsumers } from './test/support/queueConsumers.mts';
 
 // BeerSelector's golden /usage request fixtures (contract-test/
 // usageReport.contract.test.ts). USAGE_CONTRACT_FIXTURES_DIR overrides the
@@ -39,6 +40,7 @@ export default defineConfig({
 	test: {
 		testTimeout: 30000,
 		clearMocks: true,
+		provide: { queueConsumers: readQueueConsumers() },
 		...(isGoldenContract
 			? { include: ['contract-test/**/*.contract.test.ts'] }
 			: { exclude: [...configDefaults.exclude, 'contract-test/**'] }),
