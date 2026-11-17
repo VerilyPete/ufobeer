@@ -1,9 +1,8 @@
 /**
- * Tests for application-wide constants.
- *
- * Documents the exact values of all exported constants from src/constants.ts.
- * These tests catch inadvertent changes to values that affect business logic
- * across the codebase (cleanup thresholds, ABV validation, rate limiting, etc.).
+ * Worst-case size fixtures for the inbound and upstream byte limits in
+ * src/constants.ts. Each measures the largest legitimate payload and checks
+ * the limit leaves headroom above it. Constants that change behaviour are
+ * tested through that behaviour, not by restating their values here.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -11,9 +10,6 @@ import {
   SYNC_BODY_MAX_BYTES,
   SMALL_JSON_BODY_MAX_BYTES,
   FLYING_SAUCER_RESPONSE_MAX_BYTES,
-  USAGE_POSTS_SINCE,
-  USAGE_DROP_COUNTERS_SINCE,
-  USAGE_DROP_COUNTER_DAILY_CEILING,
 } from '../src/constants';
 import { SYNC_CONSTANTS } from '../src/types';
 import { BATCH_MAX_IDS, BATCH_ID_MAX_LENGTH } from '../src/schemas/request';
@@ -121,19 +117,5 @@ describe('SMALL_JSON_BODY_MAX_BYTES fixture', () => {
     expect(SMALL_JSON_BODY_MAX_BYTES).toBeGreaterThan(measuredBytes);
     const headroomRatio = SMALL_JSON_BODY_MAX_BYTES / measuredBytes;
     expect(headroomRatio).toBeGreaterThan(4); // more than 4x headroom
-  });
-});
-
-describe('Usage telemetry history constants', () => {
-  it('starts the daily posts history on the oldest usage_ingest_daily day in production', () => {
-    expect(USAGE_POSTS_SINCE).toBe('2026-11-10');
-  });
-
-  it('starts the drop counters on the first full UTC day after they were deployed', () => {
-    expect(USAGE_DROP_COUNTERS_SINCE).toBe('2026-11-12');
-  });
-
-  it('stops each usage drop counter at 10,000 a day', () => {
-    expect(USAGE_DROP_COUNTER_DAILY_CEILING).toBe(10_000);
   });
 });
