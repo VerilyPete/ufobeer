@@ -181,6 +181,14 @@ describe('abvFromPage', () => {
   it('returns null for an out-of-range ABV', () => {
     expect(abvFromPage(page(`${counters} 71% ABV \n\n 30 IBU`), target)).toBeNull();
   });
+
+  it.each([
+    ['0%', 0],
+    ['70%', 70],
+    ['70.1%', null],
+  ])('accepts an ABV from 0 to 70 inclusive: %s gives %j', (field, expected) => {
+    expect(abvFromPage(page(`${counters} ${field} ABV \n\n 30 IBU`), target)).toBe(expected);
+  });
 });
 
 describe('recorded Exa responses', () => {

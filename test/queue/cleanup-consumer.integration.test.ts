@@ -62,6 +62,13 @@ describe('description cleanup consumer (real D1)', () => {
     expect(sendBatch).not.toHaveBeenCalled();
   });
 
+  it('records an ABV read from the description as enriched from the description with confidence 0.9', async () => {
+    await clean('A crisp lager. 4.9% ABV');
+    expect(await env.DB.prepare(
+      'SELECT abv, confidence, enrichment_source, enrichment_status FROM enriched_beers WHERE id = ?'
+    ).bind('beer-1').first()).toEqual({ abv: 4.9, confidence: 0.9, enrichment_source: 'description', enrichment_status: 'enriched' });
+  });
+
   it('queues a beer whose description has no ABV for Perplexity', async () => {
     const { row, sendBatch } = await clean('A crisp, clean pour');
     expect(row).toEqual({ brew_description_cleaned: 'A crisp, clean pour.', cleanup_source: 'deterministic', abv: null });

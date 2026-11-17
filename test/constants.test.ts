@@ -8,10 +8,6 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  ABV_CONFIDENCE_FROM_DESCRIPTION,
-  ABV_CONFIDENCE_FROM_PERPLEXITY,
-  MAX_BEER_ABV,
-  MIN_BEER_ABV,
   AUDIT_RETENTION_DAYS,
   AUDIT_REAP_LIMIT,
   ADMIN_AUDIT_MAX_TARGET_IDS,
@@ -35,26 +31,6 @@ import {
 } from '../src/constants';
 import { SYNC_CONSTANTS } from '../src/types';
 import { BATCH_MAX_IDS, BATCH_ID_MAX_LENGTH } from '../src/schemas/request';
-
-describe('ABV confidence constants', () => {
-  it('should set ABV_CONFIDENCE_FROM_DESCRIPTION to 0.9', () => {
-    expect(ABV_CONFIDENCE_FROM_DESCRIPTION).toBe(0.9);
-  });
-
-  it('should set ABV_CONFIDENCE_FROM_PERPLEXITY to 0.7', () => {
-    expect(ABV_CONFIDENCE_FROM_PERPLEXITY).toBe(0.7);
-  });
-});
-
-describe('ABV validation constants', () => {
-  it('should set MAX_BEER_ABV to 70', () => {
-    expect(MAX_BEER_ABV).toBe(70);
-  });
-
-  it('should set MIN_BEER_ABV to 0', () => {
-    expect(MIN_BEER_ABV).toBe(0);
-  });
-});
 
 describe('audit and cleanup constants', () => {
   it('should set AUDIT_RETENTION_DAYS to 30', () => {
