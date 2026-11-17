@@ -101,6 +101,8 @@ This plan covers the rest. Line numbers are for `main` at `479cf99`.
 
 **Result (step 2)**: 470 pairwise swaps across all 9 trackers. All 395 swaps of differing expressions fail a test. The other 75 swap two identical literals (`''`, `0`, `1`, or a repeated name such as `'cron'`), so they are equivalent for every input.
 
+**Review fix (step 2)**: Codex found that one input per tracker let a pass-through slot be replaced by the fixture's own value (for example the DLQ consumer index hard-coded to `beer-enrichment`). Every row now uses its own value for every input, and the cron rows run at different dates. Replacing each of the 35 inputs with the first row's value fails a test.
+
 ### Step 3: Read the queue settings from `wrangler.jsonc` instead of restating them
 
 **Mechanism**:
@@ -527,8 +529,8 @@ Filled in at the start of each deletion step, before anything is deleted.
 | 5 | `test/pipeline.integration.test.ts` Pipeline Integration › extractABV › should return null for descriptions without ABV | no ABV → null | move: `test/db/extractABV.test.ts` extractABV basic notations › returns null for %j; › returns null when there is no description | moved verbatim |
 | 5 | `test/pipeline.integration.test.ts` Pipeline Integration › extractABV › should handle edge cases | 0, 20, 21 bounds | move: `test/db/extractABV.test.ts` extractABV basic notations › reads %j as %d; › returns null for %j | moved verbatim |
 | 5 | `test/pipeline.integration.test.ts` Pipeline Integration › error handling › should handle getEnrichmentForBeerIds errors gracefully | batch failure → empty map, logged | move: `test/db/enrichmentLookup.test.ts` getEnrichmentForBeerIds edge branches › returns an empty result and logs the failure when the batch fails | `throw error` added in the `catch`: 1 fails |
-| 6 | `test/handlers/dlq.handler.test.ts` handleDlqList › returns a Response with status 200 on success | list succeeds | `test/handlers/dlq-housekeeping.integration.test.ts` handleDlqList › lists pending entries by default, newest failure first, without the raw message | `replayed_at`/`acknowledged_at` swapped in the message mapping: 1 fails |
-| 6 | `test/handlers/dlq.handler.test.ts` handleDlqList › response body has success true | not a contract: echoes a literal over a fake's empty result | same (whole body via `toEqual` on `data`) | not a contract |
+| 6 | `test/handlers/dlq.handler.test.ts` handleDlqList › returns a Response with status 200 on success | list responds 200 | `test/handlers/dlq-housekeeping.integration.test.ts`: the `list` helper asserts status 200, `success: true` and the request ID on every call | successful list returns HTTP 500: 4 fail (review fix; before it, 0 failed) |
+| 6 | `test/handlers/dlq.handler.test.ts` handleDlqList › response body has success true | response envelope | same | `success: true` → `false`: 4 fail; request ID replaced: 4 fail (review fix; the earlier "not a contract" was wrong) |
 | 6 | `test/handlers/dlq.handler.test.ts` handleDlqList › response body has data.messages as an array | not a contract: shape check | same | not a contract |
 | 6 | `test/handlers/dlq.handler.test.ts` handleDlqList › response body has data.total_count | total for the filtered status | same; › filters by status and beer ID, and status=all lists every status | count query ignores the status filter: 3 fail |
 | 6 | `test/handlers/dlq.handler.test.ts` handleDlqList › response body has data.has_more | not a contract: `typeof has_more` | › pages through entries that share a failure time in id order, with no duplicates or gaps | M7 (`results.length > limit` → `>=`): 1 fails |

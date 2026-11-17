@@ -110,7 +110,9 @@ type ListData = {
 
 const list = async (params: Record<string, string>): Promise<ListData> => {
   const response = await handleDlqList(env, {}, reqCtx, new URLSearchParams(params));
-  const body: { readonly data: ListData } = await response.json();
+  const body: { readonly success: boolean; readonly requestId: string; readonly data: ListData } = await response.json();
+  expect({ status: response.status, success: body.success, requestId: body.requestId })
+    .toEqual({ status: 200, success: true, requestId: 'dlq-housekeeping' });
   return body.data;
 };
 
