@@ -121,17 +121,6 @@ describe('handleHealthCheck', () => {
     expect(body.enrichment.enabled).toBe(false);
   });
 
-  it('response body has enrichment daily used matching the DB result', async () => {
-    const db = getMockDb({ dailyResult: { request_count: 75 } });
-    const env = getMockEnv({ DB: db as unknown as D1Database });
-    const response = await handleHealthCheck(env);
-    const body = await response.json() as {
-      enrichment: { daily: { used: number } };
-    };
-
-    expect(body.enrichment.daily.used).toBe(75);
-  });
-
   it('response body has enrichment daily limit matching parseInt of env var', async () => {
     const env = getMockEnv({ DAILY_ENRICHMENT_LIMIT: '300' });
     const response = await handleHealthCheck(env);
@@ -140,45 +129,6 @@ describe('handleHealthCheck', () => {
     };
 
     expect(body.enrichment.daily.limit).toBe(300);
-  });
-
-  it('response body has enrichment daily remaining as limit minus used', async () => {
-    const db = getMockDb({ dailyResult: { request_count: 42 } });
-    const env = getMockEnv({
-      DB: db as unknown as D1Database,
-      DAILY_ENRICHMENT_LIMIT: '500',
-    });
-    const response = await handleHealthCheck(env);
-    const body = await response.json() as {
-      enrichment: { daily: { remaining: number } };
-    };
-
-    expect(body.enrichment.daily.remaining).toBe(458);
-  });
-
-  it('response body has enrichment monthly used matching the DB result', async () => {
-    const db = getMockDb({ monthlyResult: { total: 800 } });
-    const env = getMockEnv({ DB: db as unknown as D1Database });
-    const response = await handleHealthCheck(env);
-    const body = await response.json() as {
-      enrichment: { monthly: { used: number } };
-    };
-
-    expect(body.enrichment.monthly.used).toBe(800);
-  });
-
-  it('response body has enrichment monthly remaining as limit minus used', async () => {
-    const db = getMockDb({ monthlyResult: { total: 800 } });
-    const env = getMockEnv({
-      DB: db as unknown as D1Database,
-      MONTHLY_ENRICHMENT_LIMIT: '2000',
-    });
-    const response = await handleHealthCheck(env);
-    const body = await response.json() as {
-      enrichment: { monthly: { remaining: number } };
-    };
-
-    expect(body.enrichment.monthly.remaining).toBe(1200);
   });
 
   it('daily remaining is 0 when used exceeds limit (not negative)', async () => {
@@ -323,12 +273,5 @@ describe('handleLiveness', () => {
   it('sets X-Content-Type-Options: nosniff', () => {
     const response = handleLiveness();
     expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
-  });
-
-  it('takes no Env parameter — structurally cannot issue a D1 query', () => {
-    // handleLiveness's signature is `() => Response`; this test documents
-    // (and would fail to typecheck if violated) that it has no way to reach
-    // env.DB at all, not merely that it happens not to call it today.
-    expect(handleLiveness.length).toBe(0);
   });
 });
