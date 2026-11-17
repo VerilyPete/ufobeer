@@ -4,7 +4,7 @@
  * @module test/analytics.test
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import {
   trackRequest,
@@ -15,6 +15,7 @@ import {
   trackDlqConsumer,
   trackAdminTrigger,
   trackCleanupTrigger,
+  trackUsageIngest,
 } from '../src/analytics';
 import type {
   AnalyticsEngineDataset,
@@ -99,24 +100,170 @@ const getCleanupTriggerMetrics = (overrides?: Partial<CleanupTriggerMetrics>): C
 });
 
 // ============================================================================
+// Whole data points
+//
+// Each input uses distinct values for every field it controls, so swapping
+// any two slots that can differ fails a test. Trackers that derive a slot
+// from success get a successful and a failed input.
+// ============================================================================
+
+const NOW = new Date('2026-03-01T18:30:00Z');
+
+function writtenBy(track: (analytics: AnalyticsEngineDataset) => void): unknown {
+  const analytics = getMockAnalytics();
+  track(analytics);
+  expect(analytics.writeDataPoint).toHaveBeenCalledTimes(1);
+  return analytics.writeDataPoint.mock.calls[0]![0];
+}
+
+describe('the full data point each tracker writes', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each([
+    [200, '2xx', 'success', 0, 0],
+    [500, '5xx', 'server_error', 1, 0],
+    [429, '4xx', 'rate_limit', 1, 1],
+  ])('trackRequest with status %i', (statusCode, category, errorType, errorCount, rateLimited) => {
+    const written = writtenBy(a => trackRequest(a, {
+      endpoint: '/beers',
+      method: 'GET',
+      storeId: '13879',
+      statusCode,
+      clientId: 'client-abc',
+      responseTimeMs: 123,
+      beersReturned: 37,
+      cacheOutcome: 'stale',
+      upstreamLatencyMs: 88,
+    }));
+
+    expect(written).toEqual({
+      indexes: ['client-abc:/beers'],
+      blobs: ['/beers', 'GET', '13879', category, errorType, 'client-abc', 'request', '', 'stale'],
+      doubles: [123, 1, 37, 0, 0, errorCount, rateLimited, 88],
+    });
+  });
+
+  it.each([
+    ['perplexity', true, '2xx', 'success', 0, 0],
+    ['cache', true, '2xx', 'success', 1, 0],
+    ['exa', false, '5xx', 'enrichment_fail', 0, 1],
+  ] as const)('trackEnrichment from %s, success %s', (source, success, category, errorType, cacheHit, errorCount) => {
+    const written = writtenBy(a => trackEnrichment(a, { beerId: 'beer-123', source, success, durationMs: 450 }));
+
+    expect(written).toEqual({
+      indexes: [`enrichment:${source}`],
+      blobs: ['', '', '', category, errorType, '', 'enrichment', source],
+      doubles: [450, 1, 0, 1, cacheHit, errorCount, 0, 0],
+    });
+  });
+
+  it.each([
+    [true, '2xx', 'success', 0],
+    [false, '5xx', 'cron_error', 1],
+  ])('trackCron with success %s', (success, category, outcome, errorCount) => {
+    const written = writtenBy(a => trackCron(a, {
+      beersQueued: 7, dailyRemaining: 490, monthlyRemaining: 1990, durationMs: 2000, success,
+    }));
+
+    expect(written).toEqual({
+      indexes: ['cron:2026-03-01'],
+      blobs: ['cron', '', '', category, outcome, '', 'cron', ''],
+      doubles: [2000, 1, 0, 7, 0, errorCount, 0, 0, 490, 1990],
+    });
+  });
+
+  it('trackRateLimit', () => {
+    expect(writtenBy(a => trackRateLimit(a, 'client-abc', '/beers'))).toEqual({
+      indexes: ['ratelimit:client-abc'],
+      blobs: ['/beers', '', '', '4xx', 'rate_limit', 'client-abc', 'rate_limit', ''],
+      doubles: [0, 1, 0, 0, 0, 1, 1, 0],
+    });
+  });
+
+  it.each([
+    ['dlq_replay', true, 'POST', '2xx', 'success', 0],
+    ['dlq_list', false, 'GET', '5xx', 'admin_error', 1],
+  ] as const)('trackAdminDlq %s with success %s', (operation, success, method, category, outcome, errorCount) => {
+    const written = writtenBy(a => trackAdminDlq(a, { operation, success, messageCount: 12, durationMs: 34 }));
+
+    expect(written).toEqual({
+      indexes: [`admin:${operation}`],
+      blobs: ['/admin/dlq', method, '', category, outcome, '', 'admin', ''],
+      doubles: [34, 1, 0, 12, 0, errorCount, 0, 0],
+    });
+  });
+
+  it.each([
+    [true, '2xx', 'success', 0],
+    [false, '5xx', 'dlq_store_error', 1],
+  ])('trackDlqConsumer with success %s', (success, category, outcome, errorCount) => {
+    const written = writtenBy(a => trackDlqConsumer(a, {
+      beerId: 'beer-abc', attempts: 4, sourceQueue: 'beer-enrichment', success, durationMs: 50,
+    }));
+
+    expect(written).toEqual({
+      indexes: ['dlq_consumer:beer-enrichment'],
+      blobs: ['dlq_consumer', '', '', category, outcome, '', 'dlq_consumer', ''],
+      doubles: [50, 1, 0, 4, 0, errorCount, 0, 0],
+    });
+  });
+
+  it.each([
+    [true, '2xx', 'success', 0],
+    [false, '5xx', 'trigger_error', 1],
+  ])('trackAdminTrigger with success %s', (success, category, outcome, errorCount) => {
+    const written = writtenBy(a => trackAdminTrigger(a, {
+      beersQueued: 25, dailyRemaining: 475, monthlyRemaining: 1975, durationMs: 300, success,
+    }));
+
+    expect(written).toEqual({
+      indexes: ['admin:enrich_trigger'],
+      blobs: ['/admin/enrich/trigger', 'POST', '', category, outcome, '', 'admin_trigger', ''],
+      doubles: [300, 1, 0, 25, 0, errorCount, 0, 0, 475, 1975],
+    });
+  });
+
+  it('trackCleanupTrigger', () => {
+    const written = writtenBy(a => trackCleanupTrigger(a, {
+      action: 'cleanup_trigger', mode: 'all', beersQueued: 99, beersReset: 3, durationMs: 999, dryRun: false,
+    }));
+
+    expect(written).toEqual({
+      indexes: ['execute'],
+      blobs: ['cleanup_trigger', 'all'],
+      doubles: [99, 0, 3, 999],
+    });
+  });
+
+  it('trackUsageIngest', () => {
+    const written = writtenBy(a => trackUsageIngest(a, { outcome: 'daily_post_cap', eventsAccepted: 5, eventsDropped: 3 }));
+
+    expect(written).toEqual({
+      indexes: ['usage:daily_post_cap'],
+      blobs: ['/usage', 'POST', '', '2xx', 'daily_post_cap', '', 'usage_ingest', ''],
+      doubles: [5, 3],
+    });
+  });
+});
+
+describe('trackUsageIngest', () => {
+  it('does not throw when analytics is undefined', () => {
+    expect(() => trackUsageIngest(undefined, { outcome: 'admitted', eventsAccepted: 2, eventsDropped: 0 })).not.toThrow();
+  });
+});
+
+// ============================================================================
 // trackRequest Tests
 // ============================================================================
 
 describe('trackRequest', () => {
-  it('calls writeDataPoint once with the correct shape', () => {
-    const analytics = getMockAnalytics();
-    trackRequest(analytics, getRequestMetrics());
-    expect(analytics.writeDataPoint).toHaveBeenCalledTimes(1);
-    const call = analytics.writeDataPoint.mock.calls[0]![0] as {
-      indexes: string[];
-      blobs: string[];
-      doubles: number[];
-    };
-    expect(call.indexes).toBeDefined();
-    expect(call.blobs).toBeDefined();
-    expect(call.doubles).toBeDefined();
-  });
-
   // --- blob4 (status_category) via getStatusCategory ---
 
   it('sets blob4 to "2xx" for status 200', () => {
@@ -228,46 +375,11 @@ describe('trackRequest', () => {
     expect(doubles[5]).toBe(1);
   });
 
-  it('sets double6 (error_count) to 0 for status 200', () => {
-    const analytics = getMockAnalytics();
-    trackRequest(analytics, getRequestMetrics({ statusCode: 200 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[5]).toBe(0);
-  });
-
-  it('sets double7 (rate_limit_triggered) to 1 for status 429', () => {
-    const analytics = getMockAnalytics();
-    trackRequest(analytics, getRequestMetrics({ statusCode: 429 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[6]).toBe(1);
-  });
-
-  it('sets double7 (rate_limit_triggered) to 0 for status 200', () => {
-    const analytics = getMockAnalytics();
-    trackRequest(analytics, getRequestMetrics({ statusCode: 200 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[6]).toBe(0);
-  });
-
   it('sets double3 (beers_returned) to 0 when beersReturned is undefined', () => {
     const analytics = getMockAnalytics();
     trackRequest(analytics, getRequestMetrics({ beersReturned: undefined }));
     const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
     expect(doubles[2]).toBe(0);
-  });
-
-  it('sets double3 (beers_returned) to the beersReturned value when provided', () => {
-    const analytics = getMockAnalytics();
-    trackRequest(analytics, getRequestMetrics({ beersReturned: 42 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[2]).toBe(42);
-  });
-
-  it('sets blob9 to cacheOutcome value when provided', () => {
-    const analytics = getMockAnalytics();
-    trackRequest(analytics, getRequestMetrics({ cacheOutcome: 'hit' }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[8]).toBe('hit');
   });
 
   it('sets blob9 to empty string when cacheOutcome is undefined', () => {
@@ -277,28 +389,11 @@ describe('trackRequest', () => {
     expect(blobs[8]).toBe('');
   });
 
-  it('tracks all four cache outcomes in blob9', () => {
-    const outcomes = ['hit', 'miss', 'stale', 'bypass'] as const;
-    for (const outcome of outcomes) {
-      const analytics = getMockAnalytics();
-      trackRequest(analytics, getRequestMetrics({ cacheOutcome: outcome }));
-      const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-      expect(blobs[8]).toBe(outcome);
-    }
-  });
-
   it('sets double8 (upstream_latency_ms) to 0 when upstreamLatencyMs is undefined', () => {
     const analytics = getMockAnalytics();
     trackRequest(analytics, getRequestMetrics({ upstreamLatencyMs: undefined }));
     const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
     expect(doubles[7]).toBe(0);
-  });
-
-  it('sets indexes[0] to "${clientId}:${endpoint}"', () => {
-    const analytics = getMockAnalytics();
-    trackRequest(analytics, getRequestMetrics({ clientId: 'my-client', endpoint: '/health' }));
-    const indexes = (analytics.writeDataPoint.mock.calls[0]![0] as { indexes: string[] }).indexes;
-    expect(indexes[0]).toBe('my-client:/health');
   });
 
   it('sets blob3 (store_id) to empty string when storeId is undefined', () => {
@@ -336,104 +431,6 @@ describe('trackRequest', () => {
 // ============================================================================
 
 describe('trackEnrichment', () => {
-  it('calls writeDataPoint once with correct shape', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics());
-    expect(analytics.writeDataPoint).toHaveBeenCalledTimes(1);
-    const call = analytics.writeDataPoint.mock.calls[0]![0] as {
-      indexes: string[];
-      blobs: string[];
-      doubles: number[];
-    };
-    expect(call.indexes).toBeDefined();
-    expect(call.blobs).toBeDefined();
-    expect(call.doubles).toBeDefined();
-  });
-
-  it('sets blob4 to "2xx" when success is true', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ success: true }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[3]).toBe('2xx');
-  });
-
-  it('sets blob4 to "5xx" when success is false', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ success: false }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[3]).toBe('5xx');
-  });
-
-  it('sets blob5 to "success" when success is true', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ success: true }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[4]).toBe('success');
-  });
-
-  it('sets blob5 to "enrichment_fail" when success is false', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ success: false }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[4]).toBe('enrichment_fail');
-  });
-
-  it('sets blob8 (enrichment_source) to "perplexity" when source is "perplexity"', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ source: 'perplexity' }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[7]).toBe('perplexity');
-  });
-
-  it('sets blob8 (enrichment_source) to "cache" when source is "cache"', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ source: 'cache' }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[7]).toBe('cache');
-  });
-
-  it('sets double5 (cache_hit) to 1 when source is "cache"', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ source: 'cache' }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[4]).toBe(1);
-  });
-
-  it('sets double5 (cache_hit) to 0 when source is "perplexity"', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ source: 'perplexity' }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[4]).toBe(0);
-  });
-
-  it('sets double6 (error_count) to 0 when success is true', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ success: true }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[5]).toBe(0);
-  });
-
-  it('sets double6 (error_count) to 1 when success is false', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ success: false }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[5]).toBe(1);
-  });
-
-  it('sets indexes[0] to "enrichment:perplexity" for perplexity source', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ source: 'perplexity' }));
-    const indexes = (analytics.writeDataPoint.mock.calls[0]![0] as { indexes: string[] }).indexes;
-    expect(indexes[0]).toBe('enrichment:perplexity');
-  });
-
-  it('sets indexes[0] to "enrichment:cache" for cache source', () => {
-    const analytics = getMockAnalytics();
-    trackEnrichment(analytics, getEnrichmentMetrics({ source: 'cache' }));
-    const indexes = (analytics.writeDataPoint.mock.calls[0]![0] as { indexes: string[] }).indexes;
-    expect(indexes[0]).toBe('enrichment:cache');
-  });
-
   it('does not throw when analytics is undefined', () => {
     expect(() => trackEnrichment(undefined, getEnrichmentMetrics())).not.toThrow();
   });
@@ -444,20 +441,6 @@ describe('trackEnrichment', () => {
 // ============================================================================
 
 describe('trackCron', () => {
-  it('calls writeDataPoint once with correct shape', () => {
-    const analytics = getMockAnalytics();
-    trackCron(analytics, getCronMetrics());
-    expect(analytics.writeDataPoint).toHaveBeenCalledTimes(1);
-    const call = analytics.writeDataPoint.mock.calls[0]![0] as {
-      indexes: string[];
-      blobs: string[];
-      doubles: number[];
-    };
-    expect(call.indexes).toBeDefined();
-    expect(call.blobs).toBeDefined();
-    expect(call.doubles).toBeDefined();
-  });
-
   it('sets blob5 to the errorType value when errorType is provided', () => {
     const analytics = getMockAnalytics();
     trackCron(analytics, getCronMetrics({ errorType: 'timeout_error', success: false }));
@@ -514,34 +497,6 @@ describe('trackCron', () => {
     expect(blobs[4]).toBe('exception');
   });
 
-  it('sets double9 (daily_remaining) to the dailyRemaining value', () => {
-    const analytics = getMockAnalytics();
-    trackCron(analytics, getCronMetrics({ dailyRemaining: 123 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[8]).toBe(123);
-  });
-
-  it('sets double10 (monthly_remaining) to the monthlyRemaining value', () => {
-    const analytics = getMockAnalytics();
-    trackCron(analytics, getCronMetrics({ monthlyRemaining: 456 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[9]).toBe(456);
-  });
-
-  it('sets double4 (beers_queued) to the beersQueued value', () => {
-    const analytics = getMockAnalytics();
-    trackCron(analytics, getCronMetrics({ beersQueued: 77 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[3]).toBe(77);
-  });
-
-  it('sets indexes[0] starting with "cron:"', () => {
-    const analytics = getMockAnalytics();
-    trackCron(analytics, getCronMetrics());
-    const indexes = (analytics.writeDataPoint.mock.calls[0]![0] as { indexes: string[] }).indexes;
-    expect(indexes[0]).toMatch(/^cron:/);
-  });
-
   it('does not throw when analytics is undefined', () => {
     expect(() => trackCron(undefined, getCronMetrics())).not.toThrow();
   });
@@ -552,54 +507,6 @@ describe('trackCron', () => {
 // ============================================================================
 
 describe('trackRateLimit', () => {
-  it('calls writeDataPoint once', () => {
-    const analytics = getMockAnalytics();
-    trackRateLimit(analytics, 'client-xyz', '/beers');
-    expect(analytics.writeDataPoint).toHaveBeenCalledTimes(1);
-  });
-
-  it('sets blob5 to "rate_limit"', () => {
-    const analytics = getMockAnalytics();
-    trackRateLimit(analytics, 'client-xyz', '/beers');
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[4]).toBe('rate_limit');
-  });
-
-  it('sets blob4 to "4xx"', () => {
-    const analytics = getMockAnalytics();
-    trackRateLimit(analytics, 'client-xyz', '/beers');
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[3]).toBe('4xx');
-  });
-
-  it('sets double7 (rate_limit_triggered) to 1', () => {
-    const analytics = getMockAnalytics();
-    trackRateLimit(analytics, 'client-xyz', '/beers');
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[6]).toBe(1);
-  });
-
-  it('sets double6 (error_count) to 1', () => {
-    const analytics = getMockAnalytics();
-    trackRateLimit(analytics, 'client-xyz', '/beers');
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[5]).toBe(1);
-  });
-
-  it('sets indexes[0] to "ratelimit:${clientId}"', () => {
-    const analytics = getMockAnalytics();
-    trackRateLimit(analytics, 'client-xyz', '/beers');
-    const indexes = (analytics.writeDataPoint.mock.calls[0]![0] as { indexes: string[] }).indexes;
-    expect(indexes[0]).toBe('ratelimit:client-xyz');
-  });
-
-  it('sets blob1 (endpoint) to the provided endpoint string', () => {
-    const analytics = getMockAnalytics();
-    trackRateLimit(analytics, 'client-xyz', '/health');
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[0]).toBe('/health');
-  });
-
   it('does not throw when analytics is undefined', () => {
     expect(() => trackRateLimit(undefined, 'client-xyz', '/beers')).not.toThrow();
   });
@@ -638,20 +545,6 @@ describe('trackAdminDlq', () => {
     expect(blobs[1]).toBe('POST');
   });
 
-  it('sets blob4 to "2xx" when success is true', () => {
-    const analytics = getMockAnalytics();
-    trackAdminDlq(analytics, getAdminDlqMetrics({ success: true }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[3]).toBe('2xx');
-  });
-
-  it('sets blob4 to "5xx" when success is false', () => {
-    const analytics = getMockAnalytics();
-    trackAdminDlq(analytics, getAdminDlqMetrics({ success: false }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[3]).toBe('5xx');
-  });
-
   it('sets blob5 to "success" when success is true and no errorType', () => {
     const analytics = getMockAnalytics();
     trackAdminDlq(analytics, getAdminDlqMetrics({ success: true }));
@@ -673,20 +566,6 @@ describe('trackAdminDlq', () => {
     expect(blobs[4]).toBe('db_timeout');
   });
 
-  it('sets double4 (message_count) to the messageCount value', () => {
-    const analytics = getMockAnalytics();
-    trackAdminDlq(analytics, getAdminDlqMetrics({ messageCount: 42 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[3]).toBe(42);
-  });
-
-  it('sets indexes[0] to "admin:${operation}"', () => {
-    const analytics = getMockAnalytics();
-    trackAdminDlq(analytics, getAdminDlqMetrics({ operation: 'dlq_replay' }));
-    const indexes = (analytics.writeDataPoint.mock.calls[0]![0] as { indexes: string[] }).indexes;
-    expect(indexes[0]).toBe('admin:dlq_replay');
-  });
-
   it('does not throw when analytics is undefined', () => {
     expect(() => trackAdminDlq(undefined, getAdminDlqMetrics())).not.toThrow();
   });
@@ -697,20 +576,6 @@ describe('trackAdminDlq', () => {
 // ============================================================================
 
 describe('trackDlqConsumer', () => {
-  it('sets blob4 to "2xx" when success is true', () => {
-    const analytics = getMockAnalytics();
-    trackDlqConsumer(analytics, getDlqConsumerMetrics({ success: true }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[3]).toBe('2xx');
-  });
-
-  it('sets blob4 to "5xx" when success is false', () => {
-    const analytics = getMockAnalytics();
-    trackDlqConsumer(analytics, getDlqConsumerMetrics({ success: false }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[3]).toBe('5xx');
-  });
-
   it('sets blob5 to "success" when success is true and no errorType', () => {
     const analytics = getMockAnalytics();
     trackDlqConsumer(analytics, getDlqConsumerMetrics({ success: true }));
@@ -730,20 +595,6 @@ describe('trackDlqConsumer', () => {
     trackDlqConsumer(analytics, getDlqConsumerMetrics({ errorType: 'd1_write_fail', success: false }));
     const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
     expect(blobs[4]).toBe('d1_write_fail');
-  });
-
-  it('sets double4 (attempt count) to the attempts value', () => {
-    const analytics = getMockAnalytics();
-    trackDlqConsumer(analytics, getDlqConsumerMetrics({ attempts: 7 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[3]).toBe(7);
-  });
-
-  it('sets indexes[0] to "dlq_consumer:${sourceQueue}"', () => {
-    const analytics = getMockAnalytics();
-    trackDlqConsumer(analytics, getDlqConsumerMetrics({ sourceQueue: 'description-cleanup' }));
-    const indexes = (analytics.writeDataPoint.mock.calls[0]![0] as { indexes: string[] }).indexes;
-    expect(indexes[0]).toBe('dlq_consumer:description-cleanup');
   });
 
   it('does not throw when analytics is undefined', () => {
@@ -805,34 +656,6 @@ describe('trackAdminTrigger', () => {
     expect(blobs[4]).toBe('trigger_error');
   });
 
-  it('sets double9 to the dailyRemaining value', () => {
-    const analytics = getMockAnalytics();
-    trackAdminTrigger(analytics, getAdminTriggerMetrics({ dailyRemaining: 333 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[8]).toBe(333);
-  });
-
-  it('sets double10 to the monthlyRemaining value', () => {
-    const analytics = getMockAnalytics();
-    trackAdminTrigger(analytics, getAdminTriggerMetrics({ monthlyRemaining: 888 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[9]).toBe(888);
-  });
-
-  it('sets double4 to the beersQueued value', () => {
-    const analytics = getMockAnalytics();
-    trackAdminTrigger(analytics, getAdminTriggerMetrics({ beersQueued: 50 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[3]).toBe(50);
-  });
-
-  it('sets indexes[0] to "admin:enrich_trigger"', () => {
-    const analytics = getMockAnalytics();
-    trackAdminTrigger(analytics, getAdminTriggerMetrics());
-    const indexes = (analytics.writeDataPoint.mock.calls[0]![0] as { indexes: string[] }).indexes;
-    expect(indexes[0]).toBe('admin:enrich_trigger');
-  });
-
   it('does not throw when analytics is undefined', () => {
     expect(() => trackAdminTrigger(undefined, getAdminTriggerMetrics())).not.toThrow();
   });
@@ -855,48 +678,6 @@ describe('trackCleanupTrigger', () => {
     trackCleanupTrigger(analytics, getCleanupTriggerMetrics({ dryRun: true }));
     const indexes = (analytics.writeDataPoint.mock.calls[0]![0] as { indexes: string[] }).indexes;
     expect(indexes[0]).toBe('dry_run');
-  });
-
-  it('sets blob1 to the action value', () => {
-    const analytics = getMockAnalytics();
-    trackCleanupTrigger(analytics, getCleanupTriggerMetrics({ action: 'cleanup_trigger' }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[0]).toBe('cleanup_trigger');
-  });
-
-  it('sets blob2 to the mode value', () => {
-    const analytics = getMockAnalytics();
-    trackCleanupTrigger(analytics, getCleanupTriggerMetrics({ mode: 'all' }));
-    const blobs = (analytics.writeDataPoint.mock.calls[0]![0] as { blobs: string[] }).blobs;
-    expect(blobs[1]).toBe('all');
-  });
-
-  it('sets double1 to the beersQueued value', () => {
-    const analytics = getMockAnalytics();
-    trackCleanupTrigger(analytics, getCleanupTriggerMetrics({ beersQueued: 99 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[0]).toBe(99);
-  });
-
-  it('sets double2 to 0 (reserved, formerly beers_skipped)', () => {
-    const analytics = getMockAnalytics();
-    trackCleanupTrigger(analytics, getCleanupTriggerMetrics());
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[1]).toBe(0);
-  });
-
-  it('sets double3 to the beersReset value', () => {
-    const analytics = getMockAnalytics();
-    trackCleanupTrigger(analytics, getCleanupTriggerMetrics({ beersReset: 3 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[2]).toBe(3);
-  });
-
-  it('sets double4 to the durationMs value', () => {
-    const analytics = getMockAnalytics();
-    trackCleanupTrigger(analytics, getCleanupTriggerMetrics({ durationMs: 999 }));
-    const doubles = (analytics.writeDataPoint.mock.calls[0]![0] as { doubles: number[] }).doubles;
-    expect(doubles[3]).toBe(999);
   });
 
   it('does not throw when analytics is undefined', () => {

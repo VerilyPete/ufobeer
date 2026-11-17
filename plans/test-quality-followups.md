@@ -99,6 +99,8 @@ This plan covers the rest. Line numbers are for `main` at `479cf99`.
 **Delete**: the per-slot pass-through tests and the `toBeDefined` shape tests that the whole-row checks replace, as listed in the map.
 **Done when**: every distinguishable M3 swap fails, and any equivalent swaps are listed.
 
+**Result (step 2)**: 470 pairwise swaps across all 9 trackers. All 395 swaps of differing expressions fail a test. The other 75 swap two identical literals (`''`, `0`, `1`, or a repeated name such as `'cron'`), so they are equivalent for every input.
+
 ### Step 3: Read the queue settings from `wrangler.jsonc` instead of restating them
 
 **Mechanism**:
@@ -334,6 +336,57 @@ Filled in at the start of each deletion step, before anything is deleted.
 | 1 | `test/utils/hash.test.ts` buildCombinedEtag › output is valid ETag format (matches "..." pattern) | quoting | fixed values | M2 |
 | 1 | `test/utils/hash.test.ts` buildCombinedEtag › is deterministic for same inputs | determinism | fixed values imply it | not a contract beyond the fixed values |
 | 1 | `test/utils/hash.test.ts` buildCombinedEtag › stops matching ETags issued before the current taplist format | format-version bump invalidates old ETags | keep | — |
+| 2 | `test/analytics.test.ts` trackRequest › calls writeDataPoint once with the correct shape | not a contract: `toBeDefined` shape check | the full data point each tracker writes › trackRequest | not a contract |
+| 2 | `test/analytics.test.ts` trackRequest › sets double6 (error_count) to 0 for status 200 | slot layout | the full data point each tracker writes › trackRequest | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRequest › sets double7 (rate_limit_triggered) to 1 for status 429 | slot layout | the full data point each tracker writes › trackRequest | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRequest › sets double7 (rate_limit_triggered) to 0 for status 200 | slot layout | the full data point each tracker writes › trackRequest | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRequest › sets double3 (beers_returned) to the beersReturned value when provided | slot layout | the full data point each tracker writes › trackRequest | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRequest › sets blob9 to cacheOutcome value when provided | slot layout | the full data point each tracker writes › trackRequest | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRequest › tracks all four cache outcomes in blob9 | slot layout | the full data point each tracker writes › trackRequest | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRequest › sets indexes[0] to "${clientId}:${endpoint}" | slot layout | the full data point each tracker writes › trackRequest | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › calls writeDataPoint once with correct shape | not a contract: `toBeDefined` shape check | the full data point each tracker writes › trackEnrichment | not a contract |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets blob4 to "2xx" when success is true | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets blob4 to "5xx" when success is false | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets blob5 to "success" when success is true | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets blob5 to "enrichment_fail" when success is false | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets blob8 (enrichment_source) to "perplexity" when source is "perplexity" | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets blob8 (enrichment_source) to "cache" when source is "cache" | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets double5 (cache_hit) to 1 when source is "cache" | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets double5 (cache_hit) to 0 when source is "perplexity" | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets double6 (error_count) to 0 when success is true | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets double6 (error_count) to 1 when success is false | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets indexes[0] to "enrichment:perplexity" for perplexity source | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackEnrichment › sets indexes[0] to "enrichment:cache" for cache source | slot layout | the full data point each tracker writes › trackEnrichment | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackCron › calls writeDataPoint once with correct shape | not a contract: `toBeDefined` shape check | the full data point each tracker writes › trackCron | not a contract |
+| 2 | `test/analytics.test.ts` trackCron › sets double9 (daily_remaining) to the dailyRemaining value | slot layout | the full data point each tracker writes › trackCron | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackCron › sets double10 (monthly_remaining) to the monthlyRemaining value | slot layout | the full data point each tracker writes › trackCron | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackCron › sets double4 (beers_queued) to the beersQueued value | slot layout | the full data point each tracker writes › trackCron | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackCron › sets indexes[0] starting with "cron:" | slot layout | the full data point each tracker writes › trackCron | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRateLimit › calls writeDataPoint once | not a contract: `toBeDefined` shape check | the full data point each tracker writes › trackRateLimit | not a contract |
+| 2 | `test/analytics.test.ts` trackRateLimit › sets blob5 to "rate_limit" | slot layout | the full data point each tracker writes › trackRateLimit | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRateLimit › sets blob4 to "4xx" | slot layout | the full data point each tracker writes › trackRateLimit | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRateLimit › sets double7 (rate_limit_triggered) to 1 | slot layout | the full data point each tracker writes › trackRateLimit | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRateLimit › sets double6 (error_count) to 1 | slot layout | the full data point each tracker writes › trackRateLimit | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRateLimit › sets indexes[0] to "ratelimit:${clientId}" | slot layout | the full data point each tracker writes › trackRateLimit | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackRateLimit › sets blob1 (endpoint) to the provided endpoint string | slot layout | the full data point each tracker writes › trackRateLimit | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackAdminDlq › sets blob4 to "2xx" when success is true | slot layout | the full data point each tracker writes › trackAdminDlq | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackAdminDlq › sets blob4 to "5xx" when success is false | slot layout | the full data point each tracker writes › trackAdminDlq | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackAdminDlq › sets double4 (message_count) to the messageCount value | slot layout | the full data point each tracker writes › trackAdminDlq | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackAdminDlq › sets indexes[0] to "admin:${operation}" | slot layout | the full data point each tracker writes › trackAdminDlq | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackDlqConsumer › sets blob4 to "2xx" when success is true | slot layout | the full data point each tracker writes › trackDlqConsumer | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackDlqConsumer › sets blob4 to "5xx" when success is false | slot layout | the full data point each tracker writes › trackDlqConsumer | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackDlqConsumer › sets double4 (attempt count) to the attempts value | slot layout | the full data point each tracker writes › trackDlqConsumer | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackDlqConsumer › sets indexes[0] to "dlq_consumer:${sourceQueue}" | slot layout | the full data point each tracker writes › trackDlqConsumer | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackAdminTrigger › sets double9 to the dailyRemaining value | slot layout | the full data point each tracker writes › trackAdminTrigger | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackAdminTrigger › sets double10 to the monthlyRemaining value | slot layout | the full data point each tracker writes › trackAdminTrigger | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackAdminTrigger › sets double4 to the beersQueued value | slot layout | the full data point each tracker writes › trackAdminTrigger | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackAdminTrigger › sets indexes[0] to "admin:enrich_trigger" | slot layout | the full data point each tracker writes › trackAdminTrigger | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackCleanupTrigger › sets blob1 to the action value | slot layout | the full data point each tracker writes › trackCleanupTrigger | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackCleanupTrigger › sets blob2 to the mode value | slot layout | the full data point each tracker writes › trackCleanupTrigger | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackCleanupTrigger › sets double1 to the beersQueued value | slot layout | the full data point each tracker writes › trackCleanupTrigger | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackCleanupTrigger › sets double2 to 0 (reserved, formerly beers_skipped) | slot layout | the full data point each tracker writes › trackCleanupTrigger | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackCleanupTrigger › sets double3 to the beersReset value | slot layout | the full data point each tracker writes › trackCleanupTrigger | M3 swap of that slot (sweep below) |
+| 2 | `test/analytics.test.ts` trackCleanupTrigger › sets double4 to the durationMs value | slot layout | the full data point each tracker writes › trackCleanupTrigger | M3 swap of that slot (sweep below) |
 
 ## Appendix: harmless uses of the real clock
 
