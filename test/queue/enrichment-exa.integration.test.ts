@@ -159,7 +159,17 @@ describe('when the fallback never runs', () => {
     const calls = stubUpstreams({ perplexity: () => Response.json({}, { status: 500 }) });
     const msg = await run(workerEnv());
     expect(calls.exa).toBe(0);
-    expect(msg.retry).toHaveBeenCalledOnce();
+    expect(msg.retry.mock.calls).toEqual([[]]);
+    expect(await row()).toMatchObject({ enrichment_status: 'pending' });
+  });
+
+  it('retries a Perplexity 429 after two minutes, so the rate-limit window can reset', async () => {
+    await seedRow();
+    const calls = stubUpstreams({ perplexity: () => Response.json({}, { status: 429 }) });
+    const msg = await run(workerEnv());
+    expect(calls.exa).toBe(0);
+    expect(msg.retry.mock.calls).toEqual([[{ delaySeconds: 120 }]]);
+    expect(msg.ack).not.toHaveBeenCalled();
     expect(await row()).toMatchObject({ enrichment_status: 'pending' });
   });
 
