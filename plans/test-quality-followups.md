@@ -314,6 +314,26 @@ Filled in at the start of each deletion step, before anything is deleted.
 
 | Step | Old test (file and exact title) | What it protects | Replaced by / keep / move | Mutant (fails without the old test) |
 |---|---|---|---|---|
+| 1 | `test/utils/hash.test.ts` hashDescription › returns a string of exactly 32 characters | 32-char output | fixed-value tests, `hashDescription` / `buildCombinedEtag` | M1 (`slice(1, 17)`): 7 fail |
+| 1 | `test/utils/hash.test.ts` hashDescription › returns only lowercase hex characters [0-9a-f] | hex encoding | fixed-value tests, `hashDescription` / `buildCombinedEtag` | M1 |
+| 1 | `test/utils/hash.test.ts` hashDescription › returns a deterministic result for the same input | determinism | fixed values imply it | not a contract beyond the fixed values |
+| 1 | `test/utils/hash.test.ts` hashDescription › returns different hashes for different inputs | distinct inputs differ | fixed values for three inputs | M1 |
+| 1 | `test/utils/hash.test.ts` hashDescription › handles an empty string input without throwing | empty input | fixed value for `''` | M1 |
+| 1 | `test/utils/hash.test.ts` hashDescription › handles a very long string (10,000+ characters) without throwing | long input | not a contract: SHA-256 has no length branch | not a contract |
+| 1 | `test/utils/hash.test.ts` hashDescription › returns 32 characters regardless of input length | fixed length | fixed values | M1 |
+| 1 | `test/utils/hash.test.ts` hashDescription › produces different hashes for strings that differ by one character | sensitivity | not a contract: property of SHA-256 | not a contract |
+| 1 | `test/utils/hash.test.ts` generateETag › produces a quoted 32-char hex output | ETag format | `generateETag` › quotes the description hash of the body | M1 |
+| 1 | `test/utils/hash.test.ts` generateETag › produces different outputs for different inputs | distinct inputs differ | same | M1 |
+| 1 | `test/utils/hash.test.ts` generateETag › output is always wrapped in double quotes | quoting | same | removing quotes fails it |
+| 1 | `test/utils/hash.test.ts` generateETag › handles empty string and returns valid format | empty input | fixed value for `''` (shared hash) | M1 |
+| 1 | `test/utils/hash.test.ts` generateETag › wraps the same hash that hashDescription produces | ETag = quoted hash | same | M1 |
+| 1 | `test/utils/hash.test.ts` buildCombinedEtag › changes with the content hash when enrichment hash is null | content hash is an input | fixed value, null enrichment | M2 (order): 3 fail |
+| 1 | `test/utils/hash.test.ts` buildCombinedEtag › returns a quoted hash when enrichment hash is null | format | fixed value, null enrichment | M2 |
+| 1 | `test/utils/hash.test.ts` buildCombinedEtag › returns combined hash (quoted) when both hashes are present | format | fixed value, both hashes | M2 (separator): 3 fail |
+| 1 | `test/utils/hash.test.ts` buildCombinedEtag › combined hash differs from content hash alone | enrichment hash is an input | fixed values, both and null | M2 |
+| 1 | `test/utils/hash.test.ts` buildCombinedEtag › output is valid ETag format (matches "..." pattern) | quoting | fixed values | M2 |
+| 1 | `test/utils/hash.test.ts` buildCombinedEtag › is deterministic for same inputs | determinism | fixed values imply it | not a contract beyond the fixed values |
+| 1 | `test/utils/hash.test.ts` buildCombinedEtag › stops matching ETags issued before the current taplist format | format-version bump invalidates old ETags | keep | — |
 
 ## Appendix: harmless uses of the real clock
 
