@@ -127,128 +127,136 @@ describe('the full data point each tracker writes', () => {
   });
 
   it.each([
-    [200, '2xx', 'success', 0, 0],
-    [500, '5xx', 'server_error', 1, 0],
-    [429, '4xx', 'rate_limit', 1, 1],
-  ])('trackRequest with status %i', (statusCode, category, errorType, errorCount, rateLimited) => {
+    { statusCode: 200, category: '2xx', errorType: 'success', errorCount: 0, rateLimited: 0, endpoint: '/beers', method: 'GET', storeId: '13879', clientId: 'client-abc', cacheOutcome: 'stale', responseTimeMs: 123, beersReturned: 37, upstreamLatencyMs: 88 },
+    { statusCode: 500, category: '5xx', errorType: 'server_error', errorCount: 1, rateLimited: 0, endpoint: '/beers/batch', method: 'POST', storeId: '13885', clientId: 'client-def', cacheOutcome: 'miss', responseTimeMs: 456, beersReturned: 12, upstreamLatencyMs: 99 },
+    { statusCode: 429, category: '4xx', errorType: 'rate_limit', errorCount: 1, rateLimited: 1, endpoint: '/health', method: 'HEAD', storeId: '13886', clientId: 'client-ghi', cacheOutcome: 'bypass', responseTimeMs: 789, beersReturned: 5, upstreamLatencyMs: 77 },
+  ] as const)('trackRequest with status $statusCode', (c) => {
     const written = writtenBy(a => trackRequest(a, {
-      endpoint: '/beers',
-      method: 'GET',
-      storeId: '13879',
-      statusCode,
-      clientId: 'client-abc',
-      responseTimeMs: 123,
-      beersReturned: 37,
-      cacheOutcome: 'stale',
-      upstreamLatencyMs: 88,
+      endpoint: c.endpoint,
+      method: c.method,
+      storeId: c.storeId,
+      statusCode: c.statusCode,
+      clientId: c.clientId,
+      responseTimeMs: c.responseTimeMs,
+      beersReturned: c.beersReturned,
+      cacheOutcome: c.cacheOutcome,
+      upstreamLatencyMs: c.upstreamLatencyMs,
     }));
 
     expect(written).toEqual({
-      indexes: ['client-abc:/beers'],
-      blobs: ['/beers', 'GET', '13879', category, errorType, 'client-abc', 'request', '', 'stale'],
-      doubles: [123, 1, 37, 0, 0, errorCount, rateLimited, 88],
+      indexes: [`${c.clientId}:${c.endpoint}`],
+      blobs: [c.endpoint, c.method, c.storeId, c.category, c.errorType, c.clientId, 'request', '', c.cacheOutcome],
+      doubles: [c.responseTimeMs, 1, c.beersReturned, 0, 0, c.errorCount, c.rateLimited, c.upstreamLatencyMs],
     });
   });
 
   it.each([
-    ['perplexity', true, '2xx', 'success', 0, 0],
-    ['cache', true, '2xx', 'success', 1, 0],
-    ['exa', false, '5xx', 'enrichment_fail', 0, 1],
-  ] as const)('trackEnrichment from %s, success %s', (source, success, category, errorType, cacheHit, errorCount) => {
-    const written = writtenBy(a => trackEnrichment(a, { beerId: 'beer-123', source, success, durationMs: 450 }));
+    ['perplexity', true, 450, '2xx', 'success', 0, 0],
+    ['cache', true, 560, '2xx', 'success', 1, 0],
+    ['exa', false, 670, '5xx', 'enrichment_fail', 0, 1],
+  ] as const)('trackEnrichment from %s, success %s', (source, success, durationMs, category, errorType, cacheHit, errorCount) => {
+    const written = writtenBy(a => trackEnrichment(a, { beerId: 'beer-123', source, success, durationMs }));
 
     expect(written).toEqual({
       indexes: [`enrichment:${source}`],
       blobs: ['', '', '', category, errorType, '', 'enrichment', source],
-      doubles: [450, 1, 0, 1, cacheHit, errorCount, 0, 0],
+      doubles: [durationMs, 1, 0, 1, cacheHit, errorCount, 0, 0],
     });
   });
 
   it.each([
-    [true, '2xx', 'success', 0],
-    [false, '5xx', 'cron_error', 1],
-  ])('trackCron with success %s', (success, category, outcome, errorCount) => {
+    { success: true, now: '2026-03-01T18:30:00Z', day: '2026-03-01', category: '2xx', outcome: 'success', errorCount: 0, beersQueued: 7, dailyRemaining: 490, monthlyRemaining: 1990, durationMs: 2000 },
+    { success: false, now: '2026-04-02T06:15:00Z', day: '2026-04-02', category: '5xx', outcome: 'cron_error', errorCount: 1, beersQueued: 8, dailyRemaining: 380, monthlyRemaining: 1880, durationMs: 3000 },
+  ])('trackCron with success $success', (c) => {
+    vi.setSystemTime(new Date(c.now));
     const written = writtenBy(a => trackCron(a, {
-      beersQueued: 7, dailyRemaining: 490, monthlyRemaining: 1990, durationMs: 2000, success,
+      beersQueued: c.beersQueued, dailyRemaining: c.dailyRemaining, monthlyRemaining: c.monthlyRemaining, durationMs: c.durationMs, success: c.success,
     }));
 
     expect(written).toEqual({
-      indexes: ['cron:2026-03-01'],
-      blobs: ['cron', '', '', category, outcome, '', 'cron', ''],
-      doubles: [2000, 1, 0, 7, 0, errorCount, 0, 0, 490, 1990],
+      indexes: [`cron:${c.day}`],
+      blobs: ['cron', '', '', c.category, c.outcome, '', 'cron', ''],
+      doubles: [c.durationMs, 1, 0, c.beersQueued, 0, c.errorCount, 0, 0, c.dailyRemaining, c.monthlyRemaining],
     });
   });
 
-  it('trackRateLimit', () => {
-    expect(writtenBy(a => trackRateLimit(a, 'client-abc', '/beers'))).toEqual({
-      indexes: ['ratelimit:client-abc'],
-      blobs: ['/beers', '', '', '4xx', 'rate_limit', 'client-abc', 'rate_limit', ''],
+  it.each([
+    ['client-abc', '/beers'],
+    ['client-def', '/beers/batch'],
+  ])('trackRateLimit for %s on %s', (clientId, endpoint) => {
+    expect(writtenBy(a => trackRateLimit(a, clientId, endpoint))).toEqual({
+      indexes: [`ratelimit:${clientId}`],
+      blobs: [endpoint, '', '', '4xx', 'rate_limit', clientId, 'rate_limit', ''],
       doubles: [0, 1, 0, 0, 0, 1, 1, 0],
     });
   });
 
   it.each([
-    ['dlq_replay', true, 'POST', '2xx', 'success', 0],
-    ['dlq_list', false, 'GET', '5xx', 'admin_error', 1],
-  ] as const)('trackAdminDlq %s with success %s', (operation, success, method, category, outcome, errorCount) => {
-    const written = writtenBy(a => trackAdminDlq(a, { operation, success, messageCount: 12, durationMs: 34 }));
+    ['dlq_replay', true, 'POST', '2xx', 'success', 0, 12, 34],
+    ['dlq_list', false, 'GET', '5xx', 'admin_error', 1, 23, 45],
+  ] as const)('trackAdminDlq %s with success %s', (operation, success, method, category, outcome, errorCount, messageCount, durationMs) => {
+    const written = writtenBy(a => trackAdminDlq(a, { operation, success, messageCount, durationMs }));
 
     expect(written).toEqual({
       indexes: [`admin:${operation}`],
       blobs: ['/admin/dlq', method, '', category, outcome, '', 'admin', ''],
-      doubles: [34, 1, 0, 12, 0, errorCount, 0, 0],
+      doubles: [durationMs, 1, 0, messageCount, 0, errorCount, 0, 0],
     });
   });
 
   it.each([
-    [true, '2xx', 'success', 0],
-    [false, '5xx', 'dlq_store_error', 1],
-  ])('trackDlqConsumer with success %s', (success, category, outcome, errorCount) => {
-    const written = writtenBy(a => trackDlqConsumer(a, {
-      beerId: 'beer-abc', attempts: 4, sourceQueue: 'beer-enrichment', success, durationMs: 50,
-    }));
+    [true, 'beer-enrichment', '2xx', 'success', 0, 4, 50],
+    [false, 'description-cleanup', '5xx', 'dlq_store_error', 1, 5, 60],
+  ])('trackDlqConsumer with success %s from %s', (success, sourceQueue, category, outcome, errorCount, attempts, durationMs) => {
+    const written = writtenBy(a => trackDlqConsumer(a, { beerId: 'beer-abc', attempts, sourceQueue, success, durationMs }));
 
     expect(written).toEqual({
-      indexes: ['dlq_consumer:beer-enrichment'],
+      indexes: [`dlq_consumer:${sourceQueue}`],
       blobs: ['dlq_consumer', '', '', category, outcome, '', 'dlq_consumer', ''],
-      doubles: [50, 1, 0, 4, 0, errorCount, 0, 0],
+      doubles: [durationMs, 1, 0, attempts, 0, errorCount, 0, 0],
     });
   });
 
   it.each([
-    [true, '2xx', 'success', 0],
-    [false, '5xx', 'trigger_error', 1],
-  ])('trackAdminTrigger with success %s', (success, category, outcome, errorCount) => {
+    { success: true, category: '2xx', outcome: 'success', errorCount: 0, beersQueued: 25, dailyRemaining: 475, monthlyRemaining: 1975, durationMs: 300 },
+    { success: false, category: '5xx', outcome: 'trigger_error', errorCount: 1, beersQueued: 26, dailyRemaining: 365, monthlyRemaining: 1865, durationMs: 400 },
+  ])('trackAdminTrigger with success $success', (c) => {
     const written = writtenBy(a => trackAdminTrigger(a, {
-      beersQueued: 25, dailyRemaining: 475, monthlyRemaining: 1975, durationMs: 300, success,
+      beersQueued: c.beersQueued, dailyRemaining: c.dailyRemaining, monthlyRemaining: c.monthlyRemaining, durationMs: c.durationMs, success: c.success,
     }));
 
     expect(written).toEqual({
       indexes: ['admin:enrich_trigger'],
-      blobs: ['/admin/enrich/trigger', 'POST', '', category, outcome, '', 'admin_trigger', ''],
-      doubles: [300, 1, 0, 25, 0, errorCount, 0, 0, 475, 1975],
+      blobs: ['/admin/enrich/trigger', 'POST', '', c.category, c.outcome, '', 'admin_trigger', ''],
+      doubles: [c.durationMs, 1, 0, c.beersQueued, 0, c.errorCount, 0, 0, c.dailyRemaining, c.monthlyRemaining],
     });
   });
 
-  it('trackCleanupTrigger', () => {
+  it.each([
+    { action: 'cleanup_trigger', mode: 'all', beersQueued: 99, beersReset: 3, durationMs: 999, dryRun: false, index: 'execute' },
+    { action: 'cleanup_preview', mode: 'missing', beersQueued: 88, beersReset: 4, durationMs: 777, dryRun: true, index: 'dry_run' },
+  ])('trackCleanupTrigger $action in $mode mode', (c) => {
     const written = writtenBy(a => trackCleanupTrigger(a, {
-      action: 'cleanup_trigger', mode: 'all', beersQueued: 99, beersReset: 3, durationMs: 999, dryRun: false,
+      action: c.action, mode: c.mode, beersQueued: c.beersQueued, beersReset: c.beersReset, durationMs: c.durationMs, dryRun: c.dryRun,
     }));
 
     expect(written).toEqual({
-      indexes: ['execute'],
-      blobs: ['cleanup_trigger', 'all'],
-      doubles: [99, 0, 3, 999],
+      indexes: [c.index],
+      blobs: [c.action, c.mode],
+      doubles: [c.beersQueued, 0, c.beersReset, c.durationMs],
     });
   });
 
-  it('trackUsageIngest', () => {
-    const written = writtenBy(a => trackUsageIngest(a, { outcome: 'daily_post_cap', eventsAccepted: 5, eventsDropped: 3 }));
+  it.each([
+    ['daily_post_cap', 5, 3],
+    ['new_install_cap', 6, 2],
+  ])('trackUsageIngest with outcome %s', (outcome, eventsAccepted, eventsDropped) => {
+    const written = writtenBy(a => trackUsageIngest(a, { outcome, eventsAccepted, eventsDropped }));
 
     expect(written).toEqual({
-      indexes: ['usage:daily_post_cap'],
-      blobs: ['/usage', 'POST', '', '2xx', 'daily_post_cap', '', 'usage_ingest', ''],
-      doubles: [5, 3],
+      indexes: [`usage:${outcome}`],
+      blobs: ['/usage', 'POST', '', '2xx', outcome, '', 'usage_ingest', ''],
+      doubles: [eventsAccepted, eventsDropped],
     });
   });
 });

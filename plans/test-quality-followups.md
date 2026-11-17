@@ -101,6 +101,8 @@ This plan covers the rest. Line numbers are for `main` at `479cf99`.
 
 **Result (step 2)**: 470 pairwise swaps across all 9 trackers. All 395 swaps of differing expressions fail a test. The other 75 swap two identical literals (`''`, `0`, `1`, or a repeated name such as `'cron'`), so they are equivalent for every input.
 
+**Review fix (step 2)**: Codex found that one input per tracker let a pass-through slot be replaced by the fixture's own value (for example the DLQ consumer index hard-coded to `beer-enrichment`). Every row now uses its own value for every input, and the cron rows run at different dates. Replacing each of the 35 inputs with the first row's value fails a test.
+
 ### Step 3: Read the queue settings from `wrangler.jsonc` instead of restating them
 
 **Mechanism**:
