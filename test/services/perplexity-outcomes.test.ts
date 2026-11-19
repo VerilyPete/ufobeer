@@ -72,6 +72,27 @@ describe('Perplexity outcome distinctions', () => {
     expect(logs).not.toContain('sensitive prompt');
   });
 
+  it('logs an HTTP failure with its status, model and provider identifiers', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error: {
+      type: 'rate_limit', code: 'too_many_requests', param: 'model',
+    } }, { status: 429, headers: { 'x-request-id': 'req-429' } })));
+    await expect(lookup()).rejects.toMatchObject({ kind: 'http', status: 429 });
+    expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([{
+      event: 'perplexity.http_error',
+      status: 429,
+      model: 'sonar',
+      requestId: 'req-429',
+      providerType: 'rate_limit',
+      providerCode: 'too_many_requests',
+      parameter: 'model',
+    }, {
+      event: 'perplexity.failure',
+      kind: 'http',
+      status: 429,
+    }]);
+  });
+
   it('resolves a response body of exactly 32 KiB', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(answerOfBytes(32 * 1024))));
     await expect(lookup()).resolves.toBe(5);
