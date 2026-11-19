@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { handleScheduledEnrichment } from '../../src/handlers/scheduled';
 import type { Env } from '../../src/types';
@@ -155,6 +155,10 @@ function createMockCtx(): ExecutionContext {
 // ============================================================================
 
 describe('handleScheduledEnrichment', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('queries pending work and bounded expired lookup misses', async () => {
     const db = buildSequencedDb([
       ...SCHEDULE_DUE_CONFIGS,
@@ -498,6 +502,8 @@ describe('handleScheduledEnrichment', () => {
   });
 
   it('reaps abv_fallback_limits rows older than 90 days alongside enrichment_limits', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-06-15T12:00:00Z'));
     const db = buildSequencedDb([
       ...SCHEDULE_DUE_CONFIGS,
       { firstResult: { total: 0 } },
@@ -509,10 +515,8 @@ describe('handleScheduledEnrichment', () => {
 
     await handleScheduledEnrichment(env, createMockCtx());
 
-    const ninetyDaysAgo = new Date();
-    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
     const reap = (table: string) => db.preparedStatements.find(s => s.sql.includes(`DELETE FROM ${table} WHERE date < ?`));
-    expect(reap('enrichment_limits')?.boundArgs).toEqual([ninetyDaysAgo.toISOString().slice(0, 10)]);
-    expect(reap('abv_fallback_limits')?.boundArgs).toEqual(reap('enrichment_limits')?.boundArgs);
+    expect(reap('enrichment_limits')?.boundArgs).toEqual(['2026-03-17']);
+    expect(reap('abv_fallback_limits')?.boundArgs).toEqual(['2026-03-17']);
   });
 });

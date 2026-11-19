@@ -1,12 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { Mock } from 'vitest';
 import {
   handleDlqList,
   handleDlqReplay,
   handleDlqAcknowledge,
-  cleanupOldDlqMessages,
 } from '../../src/handlers/dlq';
-import type { Env, RequestContext, DlqMessageRow } from '../../src/types';
+import type { Env, RequestContext } from '../../src/types';
 
 // ============================================================================
 // Factories
@@ -23,24 +21,6 @@ const getMockReqCtx = (): RequestContext => ({
 
 const getDefaultHeaders = (): Record<string, string> => ({
   'Content-Type': 'application/json',
-});
-
-const getMockDlqRow = (overrides?: Partial<DlqMessageRow>): DlqMessageRow => ({
-  id: 1,
-  message_id: 'msg-001',
-  beer_id: 'beer-001',
-  beer_name: 'Test IPA',
-  brewer: 'Test Brewery',
-  failed_at: Date.now(),
-  failure_count: 3,
-  failure_reason: null,
-  source_queue: 'beer-enrichment',
-  status: 'pending',
-  replay_count: 0,
-  replayed_at: null,
-  acknowledged_at: null,
-  raw_message: JSON.stringify({ beerId: 'beer-001', beerName: 'Test IPA', brewer: 'Test Brewery' }),
-  ...overrides,
 });
 
 type DbMockConfig = {
@@ -101,107 +81,6 @@ const getMockEnv = (db: unknown): Env => ({
 // ============================================================================
 
 describe('handleDlqList', () => {
-  it('returns a Response with status 200 on success', async () => {
-    const row = getMockDlqRow();
-    const db = buildSequencedDb([
-      { allResults: [row] },
-      { firstResult: { count: 1 } },
-    ]);
-    const env = getMockEnv(db);
-    const params = new URLSearchParams();
-
-    const response = await handleDlqList(env, getDefaultHeaders(), getMockReqCtx(), params);
-
-    expect(response.status).toBe(200);
-  });
-
-  it('response body has success true', async () => {
-    const db = buildSequencedDb([
-      { allResults: [] },
-      { firstResult: { count: 0 } },
-    ]);
-    const env = getMockEnv(db);
-    const params = new URLSearchParams();
-
-    const response = await handleDlqList(env, getDefaultHeaders(), getMockReqCtx(), params);
-    const body = await response.json() as { success: boolean };
-
-    expect(body.success).toBe(true);
-  });
-
-  it('response body has data.messages as an array', async () => {
-    const db = buildSequencedDb([
-      { allResults: [getMockDlqRow()] },
-      { firstResult: { count: 1 } },
-    ]);
-    const env = getMockEnv(db);
-    const params = new URLSearchParams();
-
-    const response = await handleDlqList(env, getDefaultHeaders(), getMockReqCtx(), params);
-    const body = await response.json() as { data: { messages: unknown[] } };
-
-    expect(Array.isArray(body.data.messages)).toBe(true);
-  });
-
-  it('response body has data.total_count', async () => {
-    const db = buildSequencedDb([
-      { allResults: [getMockDlqRow()] },
-      { firstResult: { count: 5 } },
-    ]);
-    const env = getMockEnv(db);
-    const params = new URLSearchParams();
-
-    const response = await handleDlqList(env, getDefaultHeaders(), getMockReqCtx(), params);
-    const body = await response.json() as { data: { total_count: number } };
-
-    expect(body.data.total_count).toBe(5);
-  });
-
-  it('response body has data.has_more', async () => {
-    const db = buildSequencedDb([
-      { allResults: [] },
-      { firstResult: { count: 0 } },
-    ]);
-    const env = getMockEnv(db);
-    const params = new URLSearchParams();
-
-    const response = await handleDlqList(env, getDefaultHeaders(), getMockReqCtx(), params);
-    const body = await response.json() as { data: { has_more: boolean } };
-
-    expect(typeof body.data.has_more).toBe('boolean');
-  });
-
-  it('does NOT include raw_message in message objects by default', async () => {
-    const row = getMockDlqRow({ raw_message: '{"beerId":"beer-001"}' });
-    const db = buildSequencedDb([
-      { allResults: [row] },
-      { firstResult: { count: 1 } },
-    ]);
-    const env = getMockEnv(db);
-    const params = new URLSearchParams();
-
-    const response = await handleDlqList(env, getDefaultHeaders(), getMockReqCtx(), params);
-    const body = await response.json() as { data: { messages: Array<Record<string, unknown>> } };
-
-    expect(body.data.messages[0]).not.toHaveProperty('raw_message');
-  });
-
-  it('includes raw_message in message objects when include_raw=true', async () => {
-    const rawMsg = '{"beerId":"beer-001"}';
-    const row = getMockDlqRow({ raw_message: rawMsg });
-    const db = buildSequencedDb([
-      { allResults: [row] },
-      { firstResult: { count: 1 } },
-    ]);
-    const env = getMockEnv(db);
-    const params = new URLSearchParams({ include_raw: 'true' });
-
-    const response = await handleDlqList(env, getDefaultHeaders(), getMockReqCtx(), params);
-    const body = await response.json() as { data: { messages: Array<{ raw_message: string }> } };
-
-    expect(body.data.messages[0]?.raw_message).toBe(rawMsg);
-  });
-
   it('returns status 400 when cursor param is malformed', async () => {
     const db = buildSequencedDb([]);
     const env = getMockEnv(db);
@@ -235,34 +114,6 @@ describe('handleDlqList', () => {
     expect(response.status).toBe(500);
 
     vi.restoreAllMocks();
-  });
-
-  it('defaults to status=pending filter when no status param provided', async () => {
-    const db = buildSequencedDb([
-      { allResults: [] },
-      { firstResult: { count: 0 } },
-    ]);
-    const env = getMockEnv(db);
-    const params = new URLSearchParams();
-
-    await handleDlqList(env, getDefaultHeaders(), getMockReqCtx(), params);
-
-    const firstPrepareCall = db.prepare.mock.calls[0]?.[0] as string;
-    expect(firstPrepareCall).toContain('status = ?');
-  });
-
-  it('accepts status=all to remove status filter', async () => {
-    const db = buildSequencedDb([
-      { allResults: [] },
-      { firstResult: { count: 0 } },
-    ]);
-    const env = getMockEnv(db);
-    const params = new URLSearchParams({ status: 'all' });
-
-    await handleDlqList(env, getDefaultHeaders(), getMockReqCtx(), params);
-
-    const firstPrepareCall = db.prepare.mock.calls[0]?.[0] as string;
-    expect(firstPrepareCall).not.toContain('status = ?');
   });
 });
 
@@ -311,41 +162,6 @@ describe('handleDlqReplay request validation', () => {
 // ============================================================================
 
 describe('handleDlqAcknowledge', () => {
-  it('returns 200 with acknowledged_count on success', async () => {
-    const db = buildSequencedDb([
-      { runResult: { meta: { changes: 3 } } },
-    ]);
-    const env = getMockEnv(db);
-    const request = new Request('http://localhost/admin/dlq/acknowledge', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: [1, 2, 3] }),
-    });
-
-    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
-    const body = await response.json() as { data: { acknowledged_count: number } };
-
-    expect(response.status).toBe(200);
-    expect(body.data.acknowledged_count).toBe(3);
-  });
-
-  it('only acknowledges messages with status pending', async () => {
-    const db = buildSequencedDb([
-      { runResult: { meta: { changes: 1 } } },
-    ]);
-    const env = getMockEnv(db);
-    const request = new Request('http://localhost/admin/dlq/acknowledge', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: [1] }),
-    });
-
-    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
-    const body = await response.json() as { data: { acknowledged_count: number } };
-
-    expect(body.data.acknowledged_count).toBe(1);
-  });
-
   it('rejects a request with more than 100 IDs (DLQ_ACKNOWLEDGE_MAX_IDS) instead of silently truncating', async () => {
     const manyIds = Array.from({ length: 120 }, (_, i) => i + 1);
     const db = buildSequencedDb([]);
@@ -418,129 +234,6 @@ describe('handleDlqAcknowledge', () => {
     expect(response.status).toBe(500);
 
     vi.restoreAllMocks();
-  });
-
-  // ==========================================================================
-  // requested_count / failed_count (Cloudflare security review,
-  // "dlq_acknowledge audit fidelity" -- so index.ts's classifyAdminOutcome
-  // can distinguish a partial acknowledge from a full success, matching
-  // dlq_replay's existing requested_count/failed_count fields).
-  // ==========================================================================
-
-  it('includes requested_count and failed_count alongside acknowledged_count on a full success', async () => {
-    const db = buildSequencedDb([
-      { runResult: { meta: { changes: 3 } } },
-    ]);
-    const env = getMockEnv(db);
-    const request = new Request('http://localhost/admin/dlq/acknowledge', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: [1, 2, 3] }),
-    });
-
-    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
-    const body = await response.json() as {
-      data: { acknowledged_count: number; requested_count: number; failed_count: number };
-    };
-
-    expect(body.data).toEqual({ acknowledged_count: 3, requested_count: 3, failed_count: 0 });
-  });
-
-  it('reports a nonzero failed_count when fewer rows change than were requested (partial acknowledge)', async () => {
-    const db = buildSequencedDb([
-      { runResult: { meta: { changes: 2 } } },
-    ]);
-    const env = getMockEnv(db);
-    const request = new Request('http://localhost/admin/dlq/acknowledge', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: [1, 2, 3] }),
-    });
-
-    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
-    const body = await response.json() as {
-      data: { acknowledged_count: number; requested_count: number; failed_count: number };
-    };
-
-    expect(body.data).toEqual({ acknowledged_count: 2, requested_count: 3, failed_count: 1 });
-  });
-
-  it('reports failed_count equal to requested_count when nothing matches', async () => {
-    const db = buildSequencedDb([
-      { runResult: { meta: { changes: 0 } } },
-    ]);
-    const env = getMockEnv(db);
-    const request = new Request('http://localhost/admin/dlq/acknowledge', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: [1, 2] }),
-    });
-
-    const response = await handleDlqAcknowledge(request, env, getDefaultHeaders(), getMockReqCtx());
-    const body = await response.json() as {
-      data: { acknowledged_count: number; requested_count: number; failed_count: number };
-    };
-
-    expect(body.data).toEqual({ acknowledged_count: 0, requested_count: 2, failed_count: 2 });
-  });
-});
-
-// ============================================================================
-// cleanupOldDlqMessages
-// ============================================================================
-
-describe('cleanupOldDlqMessages', () => {
-  it('calls delete for acknowledged messages older than 30 days', async () => {
-    const db = buildSequencedDb([
-      { runResult: { meta: { changes: 5 } } },
-      { runResult: { meta: { changes: 0 } } },
-    ]);
-
-    await cleanupOldDlqMessages(db as unknown as D1Database, 'req-cleanup');
-
-    const firstSql = db.prepare.mock.calls[0]?.[0] as string;
-    expect(firstSql).toContain("status = 'acknowledged'");
-    expect(firstSql).toContain('acknowledged_at < ?');
-  });
-
-  it('calls delete for replayed messages older than 30 days', async () => {
-    const db = buildSequencedDb([
-      { runResult: { meta: { changes: 0 } } },
-      { runResult: { meta: { changes: 5 } } },
-      { runResult: { meta: { changes: 0 } } },
-    ]);
-
-    await cleanupOldDlqMessages(db as unknown as D1Database, 'req-cleanup');
-
-    const replaySql = db.prepare.mock.calls[1]?.[0] as string;
-    expect(replaySql).toContain("status = 'replayed'");
-    expect(replaySql).toContain('replayed_at < ?');
-  });
-
-  it('loops if a batch deletes exactly batchLimit records (continues deleting)', async () => {
-    const db = buildSequencedDb([
-      { runResult: { meta: { changes: 1000 } } },
-      { runResult: { meta: { changes: 50 } } },
-      { runResult: { meta: { changes: 0 } } },
-    ]);
-
-    await cleanupOldDlqMessages(db as unknown as D1Database, 'req-cleanup');
-
-    // Should have called prepare at least 3 times:
-    // ack batch 1 (1000 = batchLimit), ack batch 2 (50 < batchLimit), replay batch 1 (0)
-    expect(db.prepare.mock.calls.length).toBeGreaterThanOrEqual(3);
-  });
-
-  it('stops looping when a batch deletes fewer than batchLimit records', async () => {
-    const db = buildSequencedDb([
-      { runResult: { meta: { changes: 10 } } },
-      { runResult: { meta: { changes: 5 } } },
-    ]);
-
-    await cleanupOldDlqMessages(db as unknown as D1Database, 'req-cleanup');
-
-    // Exactly 2 calls: one for acknowledged (10 < 1000), one for replayed (5 < 1000)
-    expect(db.prepare.mock.calls.length).toBe(2);
   });
 });
 

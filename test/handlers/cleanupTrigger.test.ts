@@ -2,19 +2,18 @@
  * Unit tests for handleCleanupTrigger function.
  *
  * Tests cover:
- * - Request validation (mode, limit, confirm)
- * - Mode: missing behavior
- * - Mode: all behavior with confirmation
+ * - Request validation (mode, confirm, body)
+ * - Mode: all confirmation gate
  * - Cooldown enforcement
  * - Dry run mode
- * - Quota reporting
+ *
+ * Row selection, the 500-beer clamp, hashes and marks run against real D1 in
+ * cleanupTrigger.integration.test.ts.
  */
 
-import { describe, it, expect, vi } from 'vitest';
-import type { Mock } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { handleCleanupTrigger } from '../../src/handlers/cleanupTrigger';
 import type { Env, RequestContext } from '../../src/types';
-import { hashDescription } from '../../src/utils/hash';
 
 // Mock the queue module
 vi.mock('../../src/queue', () => ({
@@ -162,6 +161,9 @@ function resetMocks() {
 }
 
 describe('handleCleanupTrigger', () => {
+  beforeEach(() => {
+    resetMocks();
+  });
 
   // --------------------------------------------------------------------------
   // Validation Tests
@@ -193,137 +195,6 @@ describe('handleCleanupTrigger', () => {
       expect(body.error.code).toBe('INVALID_MODE');
     });
 
-    it('clamps limit to valid range (1-500)', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-        ],
-      });
-      const request = createMockRequest({ mode: 'missing', limit: 1000, dry_run: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      expect(response.status).toBe(200);
-      // Limit should be clamped to 500
-    });
-  });
-
-  describe('send-then-mark ordering', () => {
-    it('does not write queued_for_cleanup_at when the queue send delivered nothing', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-        ],
-      });
-      vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 0, queuedIds: [] });
-      const request = createMockRequest({ mode: 'missing' });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { beers_queued: number } };
-
-      expect(response.status).toBe(200);
-      expect(body.data.beers_queued).toBe(0);
-      const prepare = (env.DB as unknown as { prepare: Mock }).prepare;
-      const sqls = (prepare.mock.calls as unknown[][]).map(c => String(c[0]));
-      expect(sqls.some(sql => sql.includes('UPDATE enriched_beers SET') && sql.includes('queued_for_cleanup_at'))).toBe(false);
-    });
-  });
-
-  // --------------------------------------------------------------------------
-  // Mode: missing Tests
-  // --------------------------------------------------------------------------
-
-  describe('mode: missing', () => {
-    it('selects only beers with NULL brew_description_cleaned', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc 1', brew_description_cleaned: null },
-          { id: '2', brew_name: 'Beer 2', brewer: 'Brewer', brew_description_original: 'Desc 2', brew_description_cleaned: 'Cleaned' },
-        ],
-      });
-      const request = createMockRequest({ mode: 'missing', dry_run: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { beers_queued: number } };
-
-      expect(response.status).toBe(200);
-      expect(body.data.beers_queued).toBe(1);
-    });
-
-    it('does not include beers_reset in response', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-        ],
-      });
-      const request = createMockRequest({ mode: 'missing', dry_run: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { beers_reset?: number } };
-
-      expect(response.status).toBe(200);
-      expect(body.data.beers_reset).toBeUndefined();
-    });
-
-    it('returns no_eligible_beers when all have cleaned descriptions', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: 'Cleaned' },
-        ],
-      });
-      const request = createMockRequest({ mode: 'missing' });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { skip_reason: string } };
-
-      expect(response.status).toBe(200);
-      expect(body.data.skip_reason).toBe('no_eligible_beers');
-    });
-
-    it('does not return beers with queued_for_cleanup_at already set', async () => {
-      const env = createMockEnv({
-        beers: [
-          // Beer 1: eligible - no cleaned description and not yet queued
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc 1', brew_description_cleaned: null, queued_for_cleanup_at: null },
-          // Beer 2: already queued - should be excluded
-          { id: '2', brew_name: 'Beer 2', brewer: 'Brewer', brew_description_original: 'Desc 2', brew_description_cleaned: null, queued_for_cleanup_at: Date.now() - 60000 },
-          // Beer 3: eligible - no cleaned description and not yet queued
-          { id: '3', brew_name: 'Beer 3', brewer: 'Brewer', brew_description_original: 'Desc 3', brew_description_cleaned: null },
-        ],
-      });
-      const request = createMockRequest({ mode: 'missing', dry_run: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { beers_queued: number } };
-
-      expect(response.status).toBe(200);
-      // Only Beer 1 and Beer 3 should be eligible (Beer 2 is already queued)
-      expect(body.data.beers_queued).toBe(2);
-    });
-
-    it('returns no_eligible_beers when all missing beers are already queued', async () => {
-      const env = createMockEnv({
-        beers: [
-          // All beers missing cleaned description but already queued
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc 1', brew_description_cleaned: null, queued_for_cleanup_at: Date.now() - 60000 },
-          { id: '2', brew_name: 'Beer 2', brewer: 'Brewer', brew_description_original: 'Desc 2', brew_description_cleaned: null, queued_for_cleanup_at: Date.now() - 30000 },
-        ],
-      });
-      const request = createMockRequest({ mode: 'missing', dry_run: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { beers_queued: number; skip_reason?: string } };
-
-      expect(response.status).toBe(200);
-      expect(body.data.beers_queued).toBe(0);
-      expect(body.data.skip_reason).toBe('no_eligible_beers');
-    });
   });
 
   // --------------------------------------------------------------------------
@@ -346,53 +217,6 @@ describe('handleCleanupTrigger', () => {
       expect(response.status).toBe(400);
       expect(body.error.code).toBe('CONFIRMATION_REQUIRED');
       expect(body.preview).toBeDefined();
-    });
-
-    it('includes preview counts in CONFIRMATION_REQUIRED response', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: 'Cleaned' },
-        ],
-      });
-      const request = createMockRequest({ mode: 'all' });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { preview: { beers_would_reset: number } };
-
-      expect(body.preview.beers_would_reset).toBeDefined();
-    });
-
-    it('succeeds with confirm: true', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: 'Cleaned' },
-        ],
-      });
-      const request = createMockRequest({ mode: 'all', confirm: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { success: boolean };
-
-      expect(response.status).toBe(200);
-      expect(body.success).toBe(true);
-    });
-
-    it('includes beers_reset in response', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: 'Cleaned' },
-        ],
-      });
-      const request = createMockRequest({ mode: 'all', confirm: true, dry_run: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { beers_reset: number } };
-
-      expect(response.status).toBe(200);
-      expect(body.data.beers_reset).toBe(1);
     });
 
     it('allows mode: all with dry_run without confirm', async () => {
@@ -500,7 +324,6 @@ describe('handleCleanupTrigger', () => {
 
   describe('dry run', () => {
     it('does not call queue sendBatch', async () => {
-      resetMocks();
       const env = createMockEnv({
         beers: [
           { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
@@ -543,129 +366,6 @@ describe('handleCleanupTrigger', () => {
 
       expect(body.data.dry_run).toBe(true);
       expect(body.data.beers_queued).toBe(2);
-    });
-  });
-
-  // --------------------------------------------------------------------------
-  // Quota Tests
-  // --------------------------------------------------------------------------
-
-  describe('no daily limit', () => {
-    it('queues every eligible beer with no daily limit', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-          { id: '2', brew_name: 'Beer 2', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-        ],
-      });
-      const request = createMockRequest({ mode: 'missing' });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { success: boolean; data: Record<string, unknown> };
-
-      expect(response.status).toBe(200);
-      expect(body.success).toBe(true);
-      const [, queuedBeers] = vi.mocked(queueBeersForCleanup).mock.calls[0]!;
-      expect(queuedBeers).toHaveLength(2);
-      expect(body.data).not.toHaveProperty('quota');
-    });
-
-    it('reports no quota when nothing is eligible', async () => {
-      const env = createMockEnv({ beers: [] });
-      const request = createMockRequest({ mode: 'missing' });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: Record<string, unknown> };
-
-      expect(body.data['skip_reason']).toBe('no_eligible_beers');
-      expect(body.data).not.toHaveProperty('quota');
-    });
-  });
-
-  // --------------------------------------------------------------------------
-  // Blocklist Tests (blocklist no longer applies to cleanup)
-  // --------------------------------------------------------------------------
-
-  describe('blocklist does not filter cleanup', () => {
-    it('queues blocklisted beers for cleanup (flights)', async () => {
-      resetMocks();
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Regular Beer', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-          { id: '2', brew_name: 'Flight Paddle', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-        ],
-      });
-      const request = createMockRequest({ mode: 'missing', dry_run: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { beers_queued: number } };
-
-      expect(body.data.beers_queued).toBe(2);
-      expect(body.data).not.toHaveProperty('beers_skipped');
-    });
-
-    it('queues all beers even if all would have been blocklisted', async () => {
-      resetMocks();
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Texas Flight', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-          { id: '2', brew_name: 'Flight Sampler', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-        ],
-      });
-      const request = createMockRequest({ mode: 'missing', dry_run: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { beers_queued: number } };
-
-      expect(body.data.beers_queued).toBe(2);
-      expect(body.data).not.toHaveProperty('beers_skipped');
-    });
-  });
-
-  // --------------------------------------------------------------------------
-  // Operation ID Tests
-  // --------------------------------------------------------------------------
-
-  describe('operation tracking', () => {
-    it('includes operation_id in response', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Desc', brew_description_cleaned: null },
-        ],
-      });
-      const request = createMockRequest({ mode: 'missing', dry_run: true });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { data: { operation_id: string } };
-
-      expect(body.data.operation_id).toMatch(/^cleanup-trigger-\d+$/);
-    });
-  });
-
-  // --------------------------------------------------------------------------
-  // Empty Results Tests
-  // --------------------------------------------------------------------------
-
-  describe('empty results handling', () => {
-    it('handles empty database gracefully', async () => {
-      const env = createMockEnv({
-        beers: [],
-      });
-      const request = createMockRequest({ mode: 'missing' });
-      const ctx = createMockContext();
-
-      const response = await handleCleanupTrigger(request, env, headers, ctx);
-      const body = await response.json() as { success: boolean; data: { beers_queued: number; skip_reason?: string } };
-
-      expect(response.status).toBe(200);
-      expect(body.success).toBe(true);
-      expect(body.data.beers_queued).toBe(0);
-      expect(body.data.skip_reason).toBe('no_eligible_beers');
     });
   });
 
@@ -776,34 +476,6 @@ describe('handleCleanupTrigger', () => {
 
       expect(response.status).toBe(413);
       expect(json.error.code).toBe('PAYLOAD_TOO_LARGE');
-    });
-  });
-
-  // --------------------------------------------------------------------------
-  // Producer-side stale-result binding: descriptionHash on queued beers
-  // --------------------------------------------------------------------------
-
-  describe('descriptionHash on beers handed to queueBeersForCleanup', () => {
-    it('attaches the same descriptionHash used for the D1 write to every queued beer, for mode: missing', async () => {
-      const env = createMockEnv({
-        beers: [
-          { id: '1', brew_name: 'Beer 1', brewer: 'Brewer', brew_description_original: 'Description one', brew_description_cleaned: null },
-          { id: '2', brew_name: 'Beer 2', brewer: 'Brewer', brew_description_original: 'Description two', brew_description_cleaned: null },
-        ],
-      });
-      vi.mocked(queueBeersForCleanup).mockResolvedValue({ queued: 2, queuedIds: ['1', '2'] });
-
-      const response = await handleCleanupTrigger(createMockRequest({ mode: 'missing' }), env, headers, createMockContext());
-      expect(response.status).toBe(200);
-
-      expect(queueBeersForCleanup).toHaveBeenCalledTimes(1);
-      const [, queuedBeers] = vi.mocked(queueBeersForCleanup).mock.calls[0]!;
-      const byId = new Map((queuedBeers as unknown as Array<{ id: string; descriptionHash: string }>).map(b => [b.id, b.descriptionHash]));
-
-      const expectedHash1 = await hashDescription('Description one');
-      const expectedHash2 = await hashDescription('Description two');
-      expect(byId.get('1')).toBe(expectedHash1);
-      expect(byId.get('2')).toBe(expectedHash2);
     });
   });
 });

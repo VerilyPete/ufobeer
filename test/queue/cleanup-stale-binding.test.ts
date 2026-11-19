@@ -5,10 +5,11 @@
  * mismatch acks without writing").
  *
  * Every terminal UPDATE this consumer issues is bound with
- * `WHERE id = ? AND description_hash = ?`. This file proves that binding
- * end-to-end through `handleCleanupBatch` against an in-memory fake D1
- * that actually applies (or rejects) writes based on hash equality, rather
- * than a mock that always reports success regardless of arguments.
+ * `WHERE id = ? AND description_hash = ?`. A hash mismatch, and the
+ * Perplexity forwarding it suppresses, run against real D1 in
+ * cleanup-consumer.integration.test.ts. This file keeps duplicate
+ * delivery, the hash-less message, and the producer-to-consumer seam,
+ * against an in-memory fake D1 that applies writes only on hash equality.
  *
  * @module test/queue/cleanup-stale-binding.test
  */
@@ -116,30 +117,6 @@ beforeEach(() => {
 });
 
 describe('consumer-side stale-result binding', () => {
-  it('acks without writing when the message descriptionHash does not match the current row', async () => {
-    const description = 'A hoppy IPA from Testville with citrus notes';
-    const { db, rows } = createFakeD1({
-      'beer-1': { description_hash: 'hash-CURRENT', brew_description_cleaned: null, abv: null, cleanup_source: null },
-    });
-    const env = createEnv(db);
-
-    // This message was produced from an older description version --
-    // its hash does not match the row's current (post-change) hash.
-    const message = createMessage({
-      beerId: 'beer-1',
-      beerName: 'Test IPA',
-      brewer: 'Test Brewery',
-      brewDescription: description,
-      descriptionHash: 'hash-STALE',
-    });
-
-    await handleCleanupBatch(createBatch([message]), env);
-
-    expect(rows.get('beer-1')!.brew_description_cleaned).toBeNull();
-    expect(message.ack).toHaveBeenCalledOnce();
-    expect(message.retry).not.toHaveBeenCalled();
-  });
-
   it('writes exactly once (idempotently) across a duplicate delivery of the same message', async () => {
     const description = 'A hoppy IPA from Testville with citrus notes';
     const { db, rows } = createFakeD1({
@@ -175,38 +152,6 @@ describe('consumer-side stale-result binding', () => {
     expect(duplicate.retry).not.toHaveBeenCalled();
   });
 
-  it('acks without writing when a DLQ-replayed message is older than the current row', async () => {
-    const staleDescription = 'A hoppy IPA (original, pre-edit description)';
-    const currentDescription = 'A hoppy IPA (already cleaned by a newer run)';
-    const { db, rows } = createFakeD1({
-      // The row already reflects a newer, successfully-cleaned run.
-      'beer-4': {
-        description_hash: 'hash-v2',
-        brew_description_cleaned: currentDescription,
-        abv: null,
-        cleanup_source: 'workers-ai',
-      },
-    });
-    const env = createEnv(db);
-
-    // Simulates handlers/dlq.ts replaying a dlq_messages.raw_message that
-    // was captured (and failed) back when the row was still at hash-v1.
-    const replayedMessage = createMessage({
-      beerId: 'beer-4',
-      beerName: 'Test IPA',
-      brewer: 'Test Brewery',
-      brewDescription: staleDescription,
-      descriptionHash: 'hash-v1',
-    });
-
-    await handleCleanupBatch(createBatch([replayedMessage]), env);
-
-    // The newer, already-persisted value must survive the stale replay.
-    expect(rows.get('beer-4')!.brew_description_cleaned).toBe(currentDescription);
-    expect(replayedMessage.ack).toHaveBeenCalledOnce();
-    expect(replayedMessage.retry).not.toHaveBeenCalled();
-  });
-
   it('acks without writing, and without an in-flight drop mislabeling it, when the message has no descriptionHash at all', async () => {
     // Only possible for messages already queued before the deploy that
     // introduced CleanupMessage.descriptionHash -- treated as stale rather
@@ -230,32 +175,6 @@ describe('consumer-side stale-result binding', () => {
     expect(rows.get('beer-5')!.brew_description_cleaned).toBeNull();
     expect(message.ack).toHaveBeenCalledOnce();
     expect(message.retry).not.toHaveBeenCalled();
-  });
-});
-
-describe('Perplexity forwarding after a stale write', () => {
-  it('does not enqueue Perplexity work for a beer whose write was stale', async () => {
-    const { db, rows } = createFakeD1({
-      'beer-6': { description_hash: 'hash-CURRENT', brew_description_cleaned: null, abv: null, cleanup_source: null },
-    });
-    const sendBatch = vi.fn().mockResolvedValue(undefined);
-    const env = {
-      DB: db,
-      ENRICHMENT_QUEUE: { sendBatch },
-    } as unknown as Env;
-
-    const message = createMessage({
-      beerId: 'beer-6',
-      beerName: 'Unrated Beer With No ABV',
-      brewer: 'Test Brewery',
-      brewDescription: 'No ABV mentioned here at all',
-      descriptionHash: 'hash-STALE',
-    });
-
-    await handleCleanupBatch(createBatch([message]), env);
-
-    expect(rows.get('beer-6')!.brew_description_cleaned).toBeNull();
-    expect(sendBatch).not.toHaveBeenCalled();
   });
 });
 

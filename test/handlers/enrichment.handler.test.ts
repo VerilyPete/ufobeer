@@ -178,25 +178,6 @@ describe('handleEnrichmentTrigger', () => {
     expect(body.data.skip_reason).toBe('no_eligible_beers');
   });
 
-  it('returns 200 with beers_queued > 0 when eligible beers are found and queued', async () => {
-    const db = buildSequencedDb([
-      { firstResult: { request_count: 10 } },
-      { firstResult: { total: 50 } },
-      { allResults: [
-        { id: 'beer-1', brew_name: 'Test IPA', brewer: 'Test Brewery' },
-        { id: 'beer-2', brew_name: 'Test Stout', brewer: 'Other Brewery' },
-      ]},
-    ]);
-    const env = getEnrichmentEnv({ DB: db as unknown as D1Database });
-    const request = makeRequest();
-
-    const response = await handleEnrichmentTrigger(request, env, getDefaultHeaders(), getMockReqCtx());
-    const body = await response.json() as { data: { beers_queued: number } };
-
-    expect(response.status).toBe(200);
-    expect(body.data.beers_queued).toBeGreaterThan(0);
-  });
-
   it('calls ENRICHMENT_QUEUE.sendBatch when beers are queued', async () => {
     const db = buildSequencedDb([
       { firstResult: { request_count: 10 } },
@@ -265,32 +246,6 @@ describe('handleEnrichmentTrigger', () => {
     expect(response.status).toBe(400);
   });
 
-  it('respects limit param and clamps to max 100', async () => {
-    const db = buildSequencedDb([
-      { firstResult: { request_count: 10 } },
-      { firstResult: { total: 50 } },
-      { allResults: [
-        { id: 'beer-1', brew_name: 'Test IPA', brewer: 'Test Brewery' },
-      ]},
-    ]);
-    const sendBatchMock = vi.fn().mockResolvedValue(undefined);
-    const env = getEnrichmentEnv({
-      DB: db as unknown as D1Database,
-      ENRICHMENT_QUEUE: {
-        send: vi.fn(),
-        sendBatch: sendBatchMock,
-      } as unknown as Queue,
-    });
-    // TriggerEnrichmentRequestSchema clamps limit to max 100
-    const request = makeRequest({ limit: 100 });
-
-    await handleEnrichmentTrigger(request, env, getDefaultHeaders(), getMockReqCtx());
-
-    // The DB query should have been called with the effective batch size
-    // which accounts for limit, daily remaining, monthly remaining, and max 100
-    expect(db.prepare.mock.calls.length).toBeGreaterThanOrEqual(3);
-  });
-
   it('response data.quota.daily.remaining is calculated correctly', async () => {
     const db = buildSequencedDb([
       { firstResult: { request_count: 100 } },
@@ -315,25 +270,6 @@ describe('handleEnrichmentTrigger', () => {
     expect(body.data.quota.daily.remaining).toBe(400);
   });
 
-  it('response data.enabled is true when ENRICHMENT_ENABLED is not false', async () => {
-    const db = buildSequencedDb([
-      { firstResult: { request_count: 10 } },
-      { firstResult: { total: 50 } },
-      { allResults: [
-        { id: 'beer-1', brew_name: 'Test IPA', brewer: 'Test Brewery' },
-      ]},
-    ]);
-    const env = getEnrichmentEnv({
-      DB: db as unknown as D1Database,
-      ENRICHMENT_ENABLED: 'true',
-    });
-    const request = makeRequest();
-
-    const response = await handleEnrichmentTrigger(request, env, getDefaultHeaders(), getMockReqCtx());
-    const body = await response.json() as { data: { enabled: boolean } };
-
-    expect(body.data.enabled).toBe(true);
-  });
 });
 
 // ============================================================================

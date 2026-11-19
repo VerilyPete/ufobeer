@@ -6,7 +6,8 @@
 import { applyD1Migrations, createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
-import type { Env } from '../../src/types';
+import { handleBeerList } from '../../src/handlers/beers';
+import type { Env, RequestContext } from '../../src/types';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 const API_KEY = 'enrichment-source-test-key';
@@ -58,9 +59,9 @@ function stubUpstream(mode: Upstream): void {
     : Response.json({ error: 'unavailable' }, { status: 503 }));
 }
 
-async function invoke(request: Request): Promise<Response> {
+async function invoke(request: Request, workerEnv: Env = testEnv): Promise<Response> {
   const ctx = createExecutionContext();
-  const response = await worker.fetch(request, testEnv, ctx);
+  const response = await worker.fetch(request, workerEnv, ctx);
   await waitOnExecutionContext(ctx);
   return response;
 }
@@ -208,5 +209,143 @@ describe('POST /beers/batch', () => {
     const body = await (await invoke(batchRequest({}, ['beer-pplx', 'beer-unknown']))).json<BatchBody>();
 
     expect(Object.keys(body.enrichments)).toEqual(['beer-pplx']);
+  });
+});
+
+// Known buildCombinedEtag outputs for content hash 'abc123', pinned in
+// test/utils/hash.test.ts.
+const STORED_CONTENT_HASH = 'abc123';
+const PINNED_ETAGS = [
+  { enrichmentHash: 'def456', etag: '"93c716548884edbe2d401a649fc94fbe"' },
+  { enrichmentHash: null, etag: '"869726fac5200468bd9157965bf77503"' },
+] as const;
+
+const FIXED_NOW = Date.UTC(2026, 10, 17, 18, 30, 15);
+
+function fixTheClock(): void {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(FIXED_NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+}
+
+async function seedCacheHashes(ageMs: number, enrichmentHash: string | null): Promise<void> {
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO store_taplist_cache (store_id, response_json, cached_at, content_hash, enrichment_hash)
+     VALUES (?, ?, ?, ?, ?)`
+  ).bind(STORE_ID, JSON.stringify(cachedBeers), Date.now() - ageMs, STORED_CONTENT_HASH, enrichmentHash).run();
+}
+
+type Served = { readonly status: number; readonly source: unknown; readonly etag: string | null; readonly cacheControl: string | null };
+
+async function served(response: Response): Promise<Served> {
+  const body = await response.json<{ source: unknown }>();
+  return { status: response.status, source: body.source, etag: response.headers.get('ETag'), cacheControl: response.headers.get('Cache-Control') };
+}
+
+async function getWith(upstream: Upstream | null, headers: Record<string, string> = {}, workerEnv: Env = testEnv): Promise<Response> {
+  if (upstream) stubUpstream(upstream);
+  const response = await invoke(beersRequest(headers), workerEnv);
+  vi.restoreAllMocks();
+  return response;
+}
+
+describe.each([
+  { name: 'cache hit', source: 'cache', ageMs: FRESH, upstream: null },
+  { name: 'stale fallback', source: 'stale', ageMs: EXPIRED, upstream: 'down' },
+] as const)('GET /beers $name ETag', ({ source, ageMs, upstream }) => {
+  fixTheClock();
+
+  it.each(PINNED_ETAGS)('is built from the stored content hash and enrichment hash $enrichmentHash', async ({ enrichmentHash, etag }) => {
+    await seedCacheHashes(ageMs, enrichmentHash);
+
+    const response = await getWith(upstream);
+
+    expect(await served(response)).toEqual({ status: 200, source, etag, cacheControl: 'private, max-age=300' });
+  });
+});
+
+describe('GET /beers live path ETag and cache write', () => {
+  fixTheClock();
+
+  it('serves the same ETag and cache headers live as from the cache row it writes', async () => {
+    await seedEnrichment();
+
+    const live = await served(await getWith('taplist'));
+    const cached = await served(await getWith(null));
+
+    expect({ ...live, source: 'cache' }).toEqual(cached);
+    expect(live.source).toBe('live');
+  });
+
+  it('rewrites the cache when only enrichment changed, so the next cache hit serves the new ABV', async () => {
+    await seedEnrichment();
+    await getWith('taplist');
+    await env.DB.prepare("UPDATE enriched_beers SET abv = 7.3 WHERE id = 'beer-pplx'").run();
+    await expireCache();
+    await getWith('taplist');
+
+    const cacheHit = await getWith(null);
+
+    expect(await cacheHit.clone().json()).toMatchObject({ source: 'cache' });
+    expect(await labels(cacheHit)).toEqual({ ...HIDDEN, 'beer-pplx': { ...HIDDEN['beer-pplx'], enriched_abv: 7.3 } });
+  });
+});
+
+describe.each(paths)('GET /beers $name path 304 analytics', (path) => {
+  fixTheClock();
+
+  it('records a 304 as a conditional answer with no beers returned', async () => {
+    await path.setup();
+    await path.beforeEachRequest();
+    const etag = (await getWith(path.upstream)).headers.get('ETag') ?? '';
+    const points: AnalyticsEngineDataPoint[] = [];
+    const analytics = { writeDataPoint: (point?: AnalyticsEngineDataPoint) => { if (point) points.push(point); } };
+    await path.beforeEachRequest();
+
+    const notModified = await getWith(path.upstream, { 'If-None-Match': etag }, { ...testEnv, ANALYTICS: analytics });
+
+    expect(notModified.status).toBe(304);
+    expect(points.filter(point => point.blobs?.[6] === 'request').map(point => ({
+      cacheOutcome: point.blobs?.[8], beersReturned: point.doubles?.[2],
+    }))).toEqual([{ cacheOutcome: 'conditional', beersReturned: 0 }]);
+  });
+});
+
+describe('GET /beers store ID checks', () => {
+  it('rejects a store that is not enabled before anything reaches upstream', async () => {
+    stubUpstream('taplist');
+    const response = await invoke(new IncomingRequest('https://api.ufobeer.test/beers?sid=abc', { headers: { 'X-API-Key': API_KEY } }));
+    const upstreamCalls = vi.mocked(globalThis.fetch).mock.calls.length;
+    vi.restoreAllMocks();
+
+    expect({ status: response.status, body: await response.json(), upstreamCalls }).toEqual({
+      status: 400,
+      body: { error: 'Invalid store ID', requestId: response.headers.get('X-Request-ID') },
+      upstreamCalls: 0,
+    });
+  });
+
+  it('has the handler itself reject a malformed store ID without fetching upstream', async () => {
+    stubUpstream('taplist');
+    const reqCtx: RequestContext = {
+      requestId: 'request-41', startTime: 0, clientIdentifier: 'client', apiKeyHash: 'hash', clientIp: '127.0.0.1', userAgent: 'test',
+    };
+    const ctx = createExecutionContext();
+    const result = await handleBeerList(
+      new Request('https://api.ufobeer.test/beers?sid=abc'), testEnv, ctx, {}, reqCtx, 'abc'
+    );
+    await waitOnExecutionContext(ctx);
+    const upstreamCalls = vi.mocked(globalThis.fetch).mock.calls.length;
+    vi.restoreAllMocks();
+
+    expect({ status: result.response.status, body: await result.response.json(), upstreamCalls }).toEqual({
+      status: 400,
+      body: { error: 'Invalid store ID format', code: 'INVALID_STORE_ID', requestId: 'request-41' },
+      upstreamCalls: 0,
+    });
   });
 });

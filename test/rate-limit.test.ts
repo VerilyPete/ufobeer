@@ -4,8 +4,9 @@
  * Tests getEndpointRateLimitKey function for correct key generation
  * to enable per-endpoint rate limiting.
  *
- * Tests checkRateLimit function for rate limit enforcement including
- * edge cases, database error handling, and cleanup logic.
+ * Tests checkRateLimit's missing-count fallback, database error handling
+ * and resetAt calculation. Limit enforcement, client and minute isolation
+ * and reaping against real D1 live in rate-limit.integration.test.ts.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -139,87 +140,7 @@ const createMockDb = () => {
 };
 
 describe('checkRateLimit', () => {
-  describe('basic functionality', () => {
-    it('should allow requests under limit', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 5 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(result.allowed).toBe(true);
-      expect(result.remaining).toBe(95);
-    });
-
-    it('should reject requests over limit', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 101 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(result.allowed).toBe(false);
-      expect(result.remaining).toBe(0);
-    });
-
-    it('should track remaining count correctly', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 75 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(result.remaining).toBe(25);
-    });
-
-    it('should use a different rate limit bucket when the minute changes', async () => {
-      const mockDb = createMockDb();
-      const time1 = new Date('2025-01-15T10:00:30.000Z').getTime();
-      const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(time1);
-      mockDb.first.mockResolvedValueOnce({ request_count: 50 });
-
-      const result1 = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-      expect(result1.remaining).toBe(50);
-
-      const time2 = new Date('2025-01-15T10:01:30.000Z').getTime();
-      dateNowSpy.mockReturnValue(time2);
-      mockDb.first.mockResolvedValueOnce({ request_count: 1 });
-
-      const result2 = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-      expect(result2.remaining).toBe(99);
-
-      dateNowSpy.mockRestore();
-    });
-  });
-
   describe('edge cases', () => {
-    it('should allow request exactly at limit (count === limit)', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 100 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(result.allowed).toBe(true);
-      expect(result.remaining).toBe(0);
-    });
-
-    it('should reject request one over limit (count === limit + 1)', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 101 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(result.allowed).toBe(false);
-      expect(result.remaining).toBe(0);
-    });
-
-    it('should handle first request (count = 1)', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 1 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(result.allowed).toBe(true);
-      expect(result.remaining).toBe(99);
-    });
-
     it('should handle null result from database (default to count = 1)', async () => {
       const mockDb = createMockDb();
       mockDb.first.mockResolvedValueOnce(null);
@@ -239,84 +160,9 @@ describe('checkRateLimit', () => {
       expect(result.allowed).toBe(true);
       expect(result.remaining).toBe(99);
     });
-
-    it('should handle limit of 1', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 1 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 1);
-
-      expect(result.allowed).toBe(true);
-      expect(result.remaining).toBe(0);
-    });
-
-    it('should reject second request when limit is 1', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 2 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 1);
-
-      expect(result.allowed).toBe(false);
-      expect(result.remaining).toBe(0);
-    });
-
-    it('should handle very high request count (far over limit)', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 10000 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(result.allowed).toBe(false);
-      expect(result.remaining).toBe(0);
-    });
-
-    it('should handle very high limit', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 500 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 10000);
-
-      expect(result.allowed).toBe(true);
-      expect(result.remaining).toBe(9500);
-    });
-
-    it('should ensure remaining never goes negative', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 200 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(result.remaining).toBe(0);
-      expect(result.remaining).toBeGreaterThanOrEqual(0);
-    });
   });
 
   describe('minute boundary transitions', () => {
-    it('should use different minute buckets across minute boundary', async () => {
-      const mockDb = createMockDb();
-      const time1 = new Date('2025-01-15T10:00:59.000Z').getTime();
-      const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(time1);
-      mockDb.first.mockResolvedValueOnce({ request_count: 99 });
-
-      const result1 = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-      expect(result1.remaining).toBe(1);
-
-      const firstMinuteBucket = Math.floor(time1 / 60000);
-
-      const time2 = new Date('2025-01-15T10:01:01.000Z').getTime();
-      dateNowSpy.mockReturnValue(time2);
-      mockDb.first.mockResolvedValueOnce({ request_count: 1 });
-
-      const result2 = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-      expect(result2.remaining).toBe(99);
-
-      const secondMinuteBucket = Math.floor(time2 / 60000);
-
-      expect(secondMinuteBucket).toBe(firstMinuteBucket + 1);
-
-      dateNowSpy.mockRestore();
-    });
-
     it('should maintain same minute bucket within same minute', async () => {
       const mockDb = createMockDb();
       const time1 = new Date('2025-01-15T10:00:00.000Z').getTime();
@@ -353,15 +199,6 @@ describe('checkRateLimit', () => {
       const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
 
       expect(result.degraded).toBe(true);
-    });
-
-    it('returns degraded: false on successful check', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 5 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(result.degraded).toBe(false);
     });
 
     it('should return zero remaining on database error', async () => {
@@ -410,90 +247,6 @@ describe('checkRateLimit', () => {
       const result2 = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
       expect(result2.allowed).toBe(false);
       expect(result2.degraded).toBe(true);
-    });
-  });
-
-  describe('per-endpoint isolation', () => {
-    it('should maintain separate limits for different endpoints', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 101 });
-      const result1 = await checkRateLimit(
-        mockDb as unknown as D1Database,
-        getEndpointRateLimitKey('client-1', '/beers'),
-        100
-      );
-      expect(result1.allowed).toBe(false);
-
-      mockDb.first.mockResolvedValueOnce({ request_count: 1 });
-      const result2 = await checkRateLimit(
-        mockDb as unknown as D1Database,
-        getEndpointRateLimitKey('client-1', '/sync'),
-        100
-      );
-      expect(result2.allowed).toBe(true);
-    });
-
-    it('should track each endpoint independently', async () => {
-      const mockDb = createMockDb();
-      const client = 'client-abc';
-
-      mockDb.first.mockResolvedValueOnce({ request_count: 50 });
-      const beersResult = await checkRateLimit(
-        mockDb as unknown as D1Database,
-        getEndpointRateLimitKey(client, 'beers'),
-        100
-      );
-      expect(beersResult.remaining).toBe(50);
-
-      mockDb.first.mockResolvedValueOnce({ request_count: 5 });
-      const syncResult = await checkRateLimit(
-        mockDb as unknown as D1Database,
-        getEndpointRateLimitKey(client, 'sync'),
-        10
-      );
-      expect(syncResult.remaining).toBe(5);
-    });
-  });
-
-  describe('cleanup logic', () => {
-    // Row-growth cleanup was previously probabilistic (1% of requests) and
-    // ran inline here. It has moved to reapOldRateLimits(), called
-    // deterministically from the cron handler — see the describe block
-    // below. checkRateLimit() itself never issues a second prepare call now.
-    it('never issues a second (cleanup) prepare call regardless of Math.random', async () => {
-      const mockDb = createMockDb();
-      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0); // would have tripped the old 1% probabilistic cleanup
-      mockDb.first.mockResolvedValueOnce({ request_count: 1 });
-
-      await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(mockDb.prepare).toHaveBeenCalledTimes(1);
-
-      randomSpy.mockRestore();
-    });
-
-    it('still computes the correct allowed/remaining result now that cleanup is out-of-band', async () => {
-      const mockDb = createMockDb();
-      const testTime = new Date('2025-06-01T14:30:00.000Z').getTime();
-      const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(testTime);
-      mockDb.first.mockResolvedValueOnce({ request_count: 3 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(mockDb.prepare).toHaveBeenCalledTimes(1);
-      expect(result.allowed).toBe(true);
-      expect(result.remaining).toBe(97);
-
-      dateNowSpy.mockRestore();
-    });
-
-    it('does not issue a cleanup prepare call when the request is rejected', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 101 });
-
-      await checkRateLimit(mockDb as unknown as D1Database, 'client-1', 100);
-
-      expect(mockDb.prepare).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -620,40 +373,6 @@ describe('checkRateLimit', () => {
       expect(result2.resetAt).toBe(result3.resetAt);
 
       dateNowSpy.mockRestore();
-    });
-  });
-
-  describe('special client identifiers', () => {
-    it('should handle client identifiers with special characters', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 1 });
-
-      const result = await checkRateLimit(
-        mockDb as unknown as D1Database,
-        'client:with:colons:and/slashes',
-        100
-      );
-
-      expect(result.allowed).toBe(true);
-    });
-
-    it('should handle very long client identifiers', async () => {
-      const mockDb = createMockDb();
-      const longId = 'x'.repeat(500);
-      mockDb.first.mockResolvedValueOnce({ request_count: 1 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, longId, 100);
-
-      expect(result.allowed).toBe(true);
-    });
-
-    it('should handle empty client identifier', async () => {
-      const mockDb = createMockDb();
-      mockDb.first.mockResolvedValueOnce({ request_count: 1 });
-
-      const result = await checkRateLimit(mockDb as unknown as D1Database, '', 100);
-
-      expect(result.allowed).toBe(true);
     });
   });
 });

@@ -105,3 +105,34 @@ describe('extractABV', () => {
     expect(extractABV('Dark lager with a malty aroma; high alcohol content.')).toBeNull();
   });
 });
+
+describe('extractABV basic notations', () => {
+  it.each([
+    ['A beer with 5.2% alcohol', 5.2],
+    ['Strong IPA at 8%', 8],
+    ['Light beer 3.5%', 3.5],
+    ['ABV: 6.5', 6.5],
+    ['5.0 ABV', 5.0],
+    ['This beer has ABV 7', 7],
+    ['<p>A great beer with 5.5% ABV</p>', 5.5],
+    ['<br/>Strong at 8%<br/>', 8],
+    ['0% alcohol free beer', 0],
+    ['20% imperial stout', 20],
+  ])('reads %j as %d', (description, expected) => {
+    expect(extractABV(description)).toBe(expected);
+  });
+
+  it.each([
+    '100% satisfaction guaranteed',
+    '25% off today',
+    '21% is too high',
+    'A delicious craft beer',
+    '',
+  ])('returns null for %j', (description) => {
+    expect(extractABV(description)).toBeNull();
+  });
+
+  it('returns null when there is no description', () => {
+    expect(extractABV(undefined)).toBeNull();
+  });
+});
