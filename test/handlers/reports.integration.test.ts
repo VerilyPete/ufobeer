@@ -6,7 +6,7 @@
  */
 
 import { applyD1Migrations, createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../../src/index';
 import type { Env } from '../../src/types';
 import { parseUsageReportQuery } from '../../src/handlers/reports';
@@ -14,6 +14,10 @@ import { parseUsageReportQuery } from '../../src/handlers/reports';
 // Per-minute limit for report reads, plans/usage-dashboards.md (Read endpoint).
 const REPORT_RATE_LIMIT_RPM = 60;
 const VIEWS = ['daily', 'events', 'adoption', 'breakdown'] as const;
+
+// Midday UTC and mid-minute: far from the day edge the default range and
+// "today" depend on, and from the minute edge the rate-limit tests depend on.
+const FIXED_NOW = Date.UTC(2026, 10, 11, 12, 0, 30);
 
 const API_KEY = 'reports-test-key';
 const REPORT_TOKEN = 'reports-test-token';
@@ -80,9 +84,15 @@ const quietly = async <T>(run: () => Promise<T>): Promise<T> => {
 
 describe('GET /reports/usage', () => {
   beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(FIXED_NOW);
     await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
     await env.DB.batch(['rate_limits', 'audit_log', 'usage_daily', 'usage_installs', 'usage_ingest_daily']
       .map((table) => env.DB.prepare(`DELETE FROM ${table}`)));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe('authorized reads', () => {

@@ -1,5 +1,5 @@
 import { applyD1Migrations, env } from 'cloudflare:test';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { selectAndQueuePendingEnrichment } from '../src/handlers/enrichment';
 import type { Env } from '../src/types';
 const day = 86400000;
@@ -15,8 +15,14 @@ function context() {
   return {sendBatch,worker:{...env,ENRICHMENT_QUEUE:{sendBatch}} as unknown as Env};
 }
 describe('recover temporary ABV lookup misses',()=>{
+  // Seeds sit one second either side of the one-day cooldown, so the clock must not move.
   beforeEach(async()=>{
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.UTC(2026, 10, 11, 12, 0, 30));
     await env.DB.prepare('DELETE FROM enriched_beers').run();
+  });
+  afterEach(()=>{
+    vi.useRealTimers();
   });
   it('requeues an expired recently seen miss with original identity and hash',async()=>{
     await seed('21720679','not_found',day+1000);

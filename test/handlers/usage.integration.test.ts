@@ -6,7 +6,7 @@
  */
 
 import { applyD1Migrations, createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker from '../../src/index';
 import type { Env } from '../../src/types';
 import { SMALL_JSON_BODY_MAX_BYTES, USAGE_RATE_LIMIT_RPM } from '../../src/constants';
@@ -18,6 +18,10 @@ const NEW_INSTALL_DAILY_CAP = 100;
 // Daily ceiling for each drop counter, plans/usage-dashboards.md (slice 2).
 const DROP_COUNTER_DAILY_CEILING = 10_000;
 import { getToday } from '../../src/utils/date';
+
+// Midday UTC and mid-minute: far from the UTC day the budgets and counters
+// are keyed on, and from the minute edge the rate-limit tests depend on.
+const FIXED_NOW = Date.UTC(2026, 10, 11, 12, 0, 30);
 
 const API_KEY = 'usage-test-key';
 const INSTALL_ID = '3f2b8c1e-5d4a-4e7b-9c0f-1a2b3c4d5e6f';
@@ -112,10 +116,16 @@ const streamOf = (bytes: Uint8Array, chunkSize: number): ReadableStream<Uint8Arr
 
 describe('POST /usage', () => {
   beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(FIXED_NOW);
     await applyD1Migrations(env.DB, env.REAL_MIGRATIONS);
     await env.DB.batch([
       'rate_limits', 'audit_log', 'usage_daily', 'usage_installs', 'usage_batches', 'usage_ingest_daily',
     ].map((table) => env.DB.prepare(`DELETE FROM ${table}`)));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe('accepted reports', () => {

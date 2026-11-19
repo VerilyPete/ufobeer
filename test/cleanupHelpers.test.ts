@@ -4,79 +4,79 @@
  * @module test/cleanupHelpers.test
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { batchUpdateWithRetry } from '../src/queue/cleanupHelpers';
 
+const writeResult = (changes: number): D1Result => ({
+  success: true,
+  results: [],
+  meta: {
+    duration: 1,
+    size_after: 0,
+    rows_read: 1,
+    rows_written: changes,
+    last_row_id: 0,
+    changed_db: changes > 0,
+    changes,
+  },
+});
+
+type Batch = (statements: D1PreparedStatement[]) => Promise<D1Result[]>;
+
+// The helper only calls `batch`; the rest of D1Database is never touched.
+const dbWith = (batch: Batch): D1Database => ({ batch }) as unknown as D1Database;
+
 describe('batchUpdateWithRetry', () => {
-  it('succeeds on first attempt', async () => {
-    const mockBatch = vi.fn().mockResolvedValue([]);
-    const mockDb = { batch: mockBatch } as unknown as D1Database;
-    const mockStatements = [{ sql: 'UPDATE test' }] as unknown as D1PreparedStatement[];
-
-    await batchUpdateWithRetry(mockDb, mockStatements);
-
-    expect(mockBatch).toHaveBeenCalledTimes(1);
-    expect(mockBatch).toHaveBeenCalledWith(mockStatements);
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
-  it('retries on failure and succeeds on second attempt', async () => {
-    const mockBatch = vi.fn()
-      .mockRejectedValueOnce(new Error('D1 transient error'))
-      .mockResolvedValueOnce([]);
-    const mockDb = { batch: mockBatch } as unknown as D1Database;
-    const mockStatements = [{ sql: 'UPDATE test' }] as unknown as D1PreparedStatement[];
-
-    await batchUpdateWithRetry(mockDb, mockStatements);
-
-    expect(mockBatch).toHaveBeenCalledTimes(2);
-  });
-
-  it('retries up to maxRetries times before throwing', async () => {
-    const error = new Error('D1 persistent error');
-    const mockBatch = vi.fn().mockRejectedValue(error);
-    const mockDb = { batch: mockBatch } as unknown as D1Database;
-    const mockStatements = [{ sql: 'UPDATE test' }] as unknown as D1PreparedStatement[];
-
-    await expect(batchUpdateWithRetry(mockDb, mockStatements, 3))
-      .rejects.toThrow('D1 persistent error');
-
-    expect(mockBatch).toHaveBeenCalledTimes(3);
-  });
-
-  it('uses exponential backoff between retries', async () => {
-    vi.useFakeTimers();
-
-    const mockBatch = vi.fn()
-      .mockRejectedValueOnce(new Error('error 1'))
-      .mockRejectedValueOnce(new Error('error 2'))
-      .mockResolvedValueOnce([]);
-    const mockDb = { batch: mockBatch } as unknown as D1Database;
-    const mockStatements = [{ sql: 'UPDATE test' }] as unknown as D1PreparedStatement[];
-
-    const promise = batchUpdateWithRetry(mockDb, mockStatements);
-
-    // First attempt fails immediately
-    await vi.advanceTimersByTimeAsync(0);
-
-    // First retry after 100ms
-    await vi.advanceTimersByTimeAsync(100);
-
-    // Second retry after 200ms
-    await vi.advanceTimersByTimeAsync(200);
-
-    await promise;
-
-    expect(mockBatch).toHaveBeenCalledTimes(3);
-
+  afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it('handles empty statement array', async () => {
-    const mockBatch = vi.fn().mockResolvedValue([]);
-    const mockDb = { batch: mockBatch } as unknown as D1Database;
+  it("returns the batch's per-statement results, so callers can see a guarded write that changed nothing", async () => {
+    const results = [writeResult(1), writeResult(0)];
+    const statements: D1PreparedStatement[] = [];
+    const batch = vi.fn<Batch>().mockResolvedValue(results);
 
-    await batchUpdateWithRetry(mockDb, []);
+    await expect(batchUpdateWithRetry(dbWith(batch), statements)).resolves.toBe(results);
+    expect(batch.mock.calls).toEqual([[statements]]);
+    expect(batch.mock.calls[0]?.[0]).toBe(statements);
+  });
 
-    expect(mockBatch).toHaveBeenCalledWith([]);
+  it('waits 100 ms after the first failure and 200 ms more after the second', async () => {
+    const results = [writeResult(1)];
+    const batch = vi.fn<Batch>()
+      .mockRejectedValueOnce(new Error('D1 transient error 1'))
+      .mockRejectedValueOnce(new Error('D1 transient error 2'))
+      .mockResolvedValueOnce(results);
+
+    const outcome = batchUpdateWithRetry(dbWith(batch), []);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(batch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(99);
+    expect(batch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(batch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(199);
+    expect(batch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(batch).toHaveBeenCalledTimes(3);
+    await expect(outcome).resolves.toBe(results);
+  });
+
+  it('throws the last error after maxRetries attempts, without waiting after the last', async () => {
+    const batch = vi.fn<Batch>().mockRejectedValue(new Error('D1 persistent error'));
+
+    const outcome = batchUpdateWithRetry(dbWith(batch), [], 3).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(batch).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(await outcome).toEqual(new Error('D1 persistent error'));
   });
 });
