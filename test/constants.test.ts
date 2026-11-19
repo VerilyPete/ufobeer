@@ -25,7 +25,6 @@ import {
   MAX_PROMPT_FIELD_LENGTH,
   MAX_PERPLEXITY_RESPONSE_BYTES,
   MAX_LOGGED_ERROR_BODY_LENGTH,
-  MAX_DLQ_CONSUMER_ATTEMPTS,
   MAX_FLYING_SAUCER_FIELD_LENGTH,
   MAX_FLYING_SAUCER_RESPONSE_ITEMS,
   MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES,
@@ -96,14 +95,6 @@ describe('Perplexity constants', () => {
 
   it('should set MAX_LOGGED_ERROR_BODY_LENGTH to 500', () => {
     expect(MAX_LOGGED_ERROR_BODY_LENGTH).toBe(500);
-  });
-});
-
-describe('DLQ consumer constants', () => {
-  it('should set MAX_DLQ_CONSUMER_ATTEMPTS to 3, matching wrangler.jsonc max_retries', () => {
-    // wrangler.jsonc sets max_retries: 3 for both beer-enrichment-dlq and
-    // description-cleanup-dlq consumers -- this constant must stay in sync.
-    expect(MAX_DLQ_CONSUMER_ATTEMPTS).toBe(3);
   });
 });
 

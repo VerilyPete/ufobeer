@@ -9,11 +9,13 @@
  * Usage: npm run test:unit
  */
 import { defineConfig } from 'vitest/config';
+import { readQueueConsumers } from './test/support/queueConsumers.mts';
 
 export default defineConfig({
   test: {
     testTimeout: 30000,
     clearMocks: true,
+    provide: { queueConsumers: readQueueConsumers() },
     // Use default Node.js pool instead of Cloudflare Workers pool
     pool: 'threads',
     include: ['test/**/*.test.ts'],

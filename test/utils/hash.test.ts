@@ -1,6 +1,10 @@
 /**
  * Unit tests for hash utility functions.
  *
+ * Expected values were computed outside this code, with Node's
+ * `crypto.createHash('sha256')`. These hashes are stored in D1 and sent as
+ * ETags, so a change to any of them is a breaking change.
+ *
  * @module test/utils/hash.test
  */
 
@@ -8,125 +12,35 @@ import { describe, it, expect } from 'vitest';
 import { hashDescription, generateETag, buildCombinedEtag } from '../../src/utils/hash';
 
 describe('hashDescription', () => {
-  it('returns a string of exactly 32 characters', async () => {
-    const result = await hashDescription('Some beer description');
-    expect(result).toHaveLength(32);
-  });
-
-  it('returns only lowercase hex characters [0-9a-f]', async () => {
-    const result = await hashDescription('Test input for hex validation');
-    expect(result).toMatch(/^[0-9a-f]+$/);
-  });
-
-  it('returns a deterministic result for the same input', async () => {
-    const input = 'Repeatable hash test';
-    const first = await hashDescription(input);
-    const second = await hashDescription(input);
-    expect(first).toBe(second);
-  });
-
-  it('returns different hashes for different inputs', async () => {
-    const hashA = await hashDescription('Sierra Nevada Pale Ale');
-    const hashB = await hashDescription('Guinness Draught');
-    expect(hashA).not.toBe(hashB);
-  });
-
-  it('handles an empty string input without throwing', async () => {
-    const result = await hashDescription('');
-    expect(result).toHaveLength(32);
-    expect(result).toMatch(/^[0-9a-f]+$/);
-  });
-
-  it('handles a very long string (10,000+ characters) without throwing', async () => {
-    const longInput = 'a'.repeat(10_001);
-    const result = await hashDescription(longInput);
-    expect(result).toHaveLength(32);
-    expect(result).toMatch(/^[0-9a-f]+$/);
-  });
-
-  it('returns 32 characters regardless of input length', async () => {
-    const inputs = ['', 'x', 'short', 'a'.repeat(1000), 'a'.repeat(50_000)];
-    for (const input of inputs) {
-      const result = await hashDescription(input);
-      expect(result).toHaveLength(32);
-    }
-  });
-
-  it('produces different hashes for strings that differ by one character', async () => {
-    const hashA = await hashDescription('hello world');
-    const hashB = await hashDescription('hello worle');
-    expect(hashA).not.toBe(hashB);
+  it.each([
+    ['plain ASCII', 'Some beer description', 'bcd78c93c10c8c8351f896796d1ec9dd'],
+    ['non-ASCII text, hashed as UTF-8', 'Café crème — 5,2 % vol 🍺', '194d5f3d63f8160acf10c24161a42610'],
+    ['an empty string', '', 'e3b0c44298fc1c149afbf4c8996fb924'],
+  ])('returns the first 16 bytes of SHA-256 as lowercase hex for %s', async (_case, text, expected) => {
+    expect(await hashDescription(text)).toBe(expected);
   });
 });
 
 describe('generateETag', () => {
-  it('produces a quoted 32-char hex output', async () => {
-    const etag = await generateETag('test body');
-    expect(etag).toMatch(/^"[0-9a-f]{32}"$/);
-  });
-
-  it('produces different outputs for different inputs', async () => {
-    const etagA = await generateETag('body A');
-    const etagB = await generateETag('body B');
-    expect(etagA).not.toBe(etagB);
-  });
-
-  it('output is always wrapped in double quotes', async () => {
-    const etag = await generateETag('anything');
-    expect(etag.startsWith('"')).toBe(true);
-    expect(etag.endsWith('"')).toBe(true);
-  });
-
-  it('handles empty string and returns valid format', async () => {
-    const etag = await generateETag('');
-    expect(etag).toMatch(/^"[0-9a-f]{32}"$/);
-  });
-
-  it('wraps the same hash that hashDescription produces', async () => {
-    const hash = await hashDescription('consistent');
-    const etag = await generateETag('consistent');
-    expect(etag).toBe(`"${hash}"`);
+  it('quotes the description hash of the body', async () => {
+    expect(await generateETag('Some beer description')).toBe('"bcd78c93c10c8c8351f896796d1ec9dd"');
   });
 });
 
 describe('buildCombinedEtag', () => {
+  it.each([
+    ['content and enrichment hashes', 'def456', new Set<string>(), '"93c716548884edbe2d401a649fc94fbe"'],
+    ['no enrichment hash', null, new Set<string>(), '"869726fac5200468bd9157965bf77503"'],
+    ['a negotiated source', 'def456', new Set(['exa']), '"f54e0890b9c0f6efd4633ad611a19a65"'],
+  ])('hashes the format version with %s', async (_case, enrichmentHash, sources, expected) => {
+    expect(await buildCombinedEtag('abc123', enrichmentHash, sources)).toBe(expected);
+  });
+
   it('stops matching ETags issued before the current taplist format', async () => {
     const preFormatEtags = ['"abc123"', `"${await hashDescription('abc123def456')}"`];
 
     const etags = [await buildCombinedEtag('abc123', null), await buildCombinedEtag('abc123', 'def456')];
 
     expect(etags.filter(etag => preFormatEtags.includes(etag))).toEqual([]);
-  });
-
-  it('changes with the content hash when enrichment hash is null', async () => {
-    expect(await buildCombinedEtag('abc123', null)).not.toBe(await buildCombinedEtag('abc124', null));
-  });
-
-  it('returns a quoted hash when enrichment hash is null', async () => {
-    expect(await buildCombinedEtag('abc123', null)).toMatch(/^"[0-9a-f]{32}"$/);
-  });
-
-  it('returns combined hash (quoted) when both hashes are present', async () => {
-    const result = await buildCombinedEtag('abc123', 'def456');
-    expect(result).toMatch(/^"[0-9a-f]{32}"$/);
-  });
-
-  it('combined hash differs from content hash alone', async () => {
-    const contentOnly = await buildCombinedEtag('abc123', null);
-    const combined = await buildCombinedEtag('abc123', 'def456');
-    expect(combined).not.toBe(contentOnly);
-  });
-
-  it('output is valid ETag format (matches "..." pattern)', async () => {
-    const result = await buildCombinedEtag('somehash', 'enrichhash');
-    expect(result.startsWith('"')).toBe(true);
-    expect(result.endsWith('"')).toBe(true);
-    expect(result.length).toBeGreaterThan(2);
-  });
-
-  it('is deterministic for same inputs', async () => {
-    const first = await buildCombinedEtag('abc123', 'def456');
-    const second = await buildCombinedEtag('abc123', 'def456');
-    expect(first).toBe(second);
   });
 });
