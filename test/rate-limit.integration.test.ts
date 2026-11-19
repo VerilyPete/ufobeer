@@ -1,7 +1,8 @@
 /**
  * The per-client, per-minute rate limiter against real D1: each client gets
  * its own count, each clock minute starts a new count, a broken database
- * fails closed, and the reaper keeps only the last hour of buckets.
+ * fails closed, and the reaper keeps only the last hour of buckets, deleting
+ * at most 10,000 per call.
  */
 
 import { applyD1Migrations, env } from 'cloudflare:test';
@@ -90,5 +91,19 @@ describe('reapOldRateLimits (real D1)', () => {
 
     expect(await reapOldRateLimits(env.DB, MID_MINUTE)).toBe(1);
     expect((await storedBuckets()).map((row) => row.client_identifier)).toEqual(['60-minutes-ago', '0-minutes-ago']);
+  });
+
+  it('deletes at most 10,000 old buckets per call', async () => {
+    const oldBucket = Math.floor(MID_MINUTE / MINUTE_MS) - 61;
+    await env.DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10002)
+       INSERT INTO rate_limits (client_identifier, minute_bucket, request_count)
+       SELECT 'old-' || i, ?, 1 FROM n`,
+    ).bind(oldBucket).run();
+
+    const deleted = await reapOldRateLimits(env.DB, MID_MINUTE);
+
+    const remaining = await env.DB.prepare('SELECT COUNT(*) AS n FROM rate_limits').first<{ n: number }>();
+    expect({ deleted, remaining: remaining?.n }).toEqual({ deleted: 10_000, remaining: 2 });
   });
 });

@@ -1,126 +1,18 @@
 /**
- * Tests for application-wide constants.
- *
- * Documents the exact values of all exported constants from src/constants.ts.
- * These tests catch inadvertent changes to values that affect business logic
- * across the codebase (cleanup thresholds, ABV validation, rate limiting, etc.).
+ * Worst-case size fixtures for the inbound and upstream byte limits in
+ * src/constants.ts. Each measures the largest legitimate payload and checks
+ * the limit leaves headroom above it. Constants that change behaviour are
+ * tested through that behaviour, not by restating their values here.
  */
 
 import { describe, it, expect } from 'vitest';
 import {
-  ABV_CONFIDENCE_FROM_DESCRIPTION,
-  ABV_CONFIDENCE_FROM_PERPLEXITY,
-  MAX_BEER_ABV,
-  MIN_BEER_ABV,
-  AUDIT_RETENTION_DAYS,
-  AUDIT_REAP_LIMIT,
-  ADMIN_AUDIT_MAX_TARGET_IDS,
-  RATE_LIMIT_REAP_LIMIT,
-  D1_MAX_PARAMS_PER_STATEMENT,
-  D1_MAX_STATEMENTS_PER_BATCH,
   SYNC_BODY_MAX_BYTES,
   SMALL_JSON_BODY_MAX_BYTES,
-  MAX_DESCRIPTION_LENGTH,
-  MAX_CLEANED_OUTPUT_LENGTH,
-  MAX_PROMPT_FIELD_LENGTH,
-  MAX_PERPLEXITY_RESPONSE_BYTES,
-  MAX_LOGGED_ERROR_BODY_LENGTH,
-  MAX_FLYING_SAUCER_FIELD_LENGTH,
-  MAX_FLYING_SAUCER_RESPONSE_ITEMS,
-  MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES,
   FLYING_SAUCER_RESPONSE_MAX_BYTES,
-  USAGE_POSTS_SINCE,
-  USAGE_DROP_COUNTERS_SINCE,
-  USAGE_DROP_COUNTER_DAILY_CEILING,
 } from '../src/constants';
 import { SYNC_CONSTANTS } from '../src/types';
 import { BATCH_MAX_IDS, BATCH_ID_MAX_LENGTH } from '../src/schemas/request';
-
-describe('ABV confidence constants', () => {
-  it('should set ABV_CONFIDENCE_FROM_DESCRIPTION to 0.9', () => {
-    expect(ABV_CONFIDENCE_FROM_DESCRIPTION).toBe(0.9);
-  });
-
-  it('should set ABV_CONFIDENCE_FROM_PERPLEXITY to 0.7', () => {
-    expect(ABV_CONFIDENCE_FROM_PERPLEXITY).toBe(0.7);
-  });
-});
-
-describe('ABV validation constants', () => {
-  it('should set MAX_BEER_ABV to 70', () => {
-    expect(MAX_BEER_ABV).toBe(70);
-  });
-
-  it('should set MIN_BEER_ABV to 0', () => {
-    expect(MIN_BEER_ABV).toBe(0);
-  });
-});
-
-describe('audit and cleanup constants', () => {
-  it('should set AUDIT_RETENTION_DAYS to 30', () => {
-    expect(AUDIT_RETENTION_DAYS).toBe(30);
-  });
-
-  it('should set AUDIT_REAP_LIMIT to 10,000', () => {
-    expect(AUDIT_REAP_LIMIT).toBe(10_000);
-  });
-
-  it('should set ADMIN_AUDIT_MAX_TARGET_IDS to 100', () => {
-    expect(ADMIN_AUDIT_MAX_TARGET_IDS).toBe(100);
-  });
-
-  it('should set RATE_LIMIT_REAP_LIMIT to 10,000', () => {
-    expect(RATE_LIMIT_REAP_LIMIT).toBe(10_000);
-  });
-});
-
-describe('AI cleanup prompt/output bounds', () => {
-  it('should set MAX_DESCRIPTION_LENGTH to 3000', () => {
-    expect(MAX_DESCRIPTION_LENGTH).toBe(3000);
-  });
-
-  it('should set MAX_CLEANED_OUTPUT_LENGTH to 3200', () => {
-    expect(MAX_CLEANED_OUTPUT_LENGTH).toBe(3200);
-  });
-});
-
-describe('Perplexity constants', () => {
-  it('should set MAX_PROMPT_FIELD_LENGTH to 300', () => {
-    expect(MAX_PROMPT_FIELD_LENGTH).toBe(300);
-  });
-
-  it('should set MAX_PERPLEXITY_RESPONSE_BYTES to 32 KiB', () => {
-    expect(MAX_PERPLEXITY_RESPONSE_BYTES).toBe(32 * 1024);
-  });
-
-  it('should set MAX_LOGGED_ERROR_BODY_LENGTH to 500', () => {
-    expect(MAX_LOGGED_ERROR_BODY_LENGTH).toBe(500);
-  });
-});
-
-describe('Flying Saucer upstream bounds', () => {
-  it('should set MAX_FLYING_SAUCER_FIELD_LENGTH to 5000', () => {
-    expect(MAX_FLYING_SAUCER_FIELD_LENGTH).toBe(5000);
-  });
-
-  it('should set MAX_FLYING_SAUCER_RESPONSE_ITEMS to 5000', () => {
-    expect(MAX_FLYING_SAUCER_RESPONSE_ITEMS).toBe(5000);
-  });
-
-  it('should set MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES to 20,000', () => {
-    expect(MAX_FLYING_SAUCER_RECORD_SERIALIZED_BYTES).toBe(20_000);
-  });
-});
-
-describe('D1 batching constants', () => {
-  it('should set D1_MAX_PARAMS_PER_STATEMENT to 90', () => {
-    expect(D1_MAX_PARAMS_PER_STATEMENT).toBe(90);
-  });
-
-  it('should set D1_MAX_STATEMENTS_PER_BATCH to 100', () => {
-    expect(D1_MAX_STATEMENTS_PER_BATCH).toBe(100);
-  });
-});
 
 // =============================================================================
 // Inbound JSON Body Limit Fixtures
@@ -225,19 +117,5 @@ describe('SMALL_JSON_BODY_MAX_BYTES fixture', () => {
     expect(SMALL_JSON_BODY_MAX_BYTES).toBeGreaterThan(measuredBytes);
     const headroomRatio = SMALL_JSON_BODY_MAX_BYTES / measuredBytes;
     expect(headroomRatio).toBeGreaterThan(4); // more than 4x headroom
-  });
-});
-
-describe('Usage telemetry history constants', () => {
-  it('starts the daily posts history on the oldest usage_ingest_daily day in production', () => {
-    expect(USAGE_POSTS_SINCE).toBe('2026-11-10');
-  });
-
-  it('starts the drop counters on the first full UTC day after they were deployed', () => {
-    expect(USAGE_DROP_COUNTERS_SINCE).toBe('2026-11-12');
-  });
-
-  it('stops each usage drop counter at 10,000 a day', () => {
-    expect(USAGE_DROP_COUNTER_DAILY_CEILING).toBe(10_000);
   });
 });

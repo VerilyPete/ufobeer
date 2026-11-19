@@ -1,18 +1,18 @@
 /**
  * Audit log rows against real D1: request and admin entries read back column
  * for column, and the reaper deletes only rows past the retention window,
- * at most AUDIT_REAP_LIMIT per call.
+ * at most 10,000 per call. The 30-day window and the 10,000 limit are
+ * written as literals so a change to either constant fails here.
  */
 
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reapOldAuditLog, writeAdminAuditLog, writeAuditLog } from '../src/audit';
-import { AUDIT_REAP_LIMIT, AUDIT_RETENTION_DAYS } from '../src/constants';
 import type { RequestContext } from '../src/types';
 
 const NOW = new Date('2026-04-14T15:20:00Z').getTime();
 const ELAPSED_MS = 37;
-const RETENTION_CUTOFF = NOW - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const RETENTION_CUTOFF = NOW - 30 * 24 * 60 * 60 * 1000;
 
 type AuditRow = {
   readonly request_id: string;
@@ -167,13 +167,13 @@ describe('audit log (real D1)', () => {
       expect((await storedRows()).map((row) => row.request_id)).toEqual(['seed-1', 'seed-2', 'seed-3']);
     });
 
-    it('deletes at most AUDIT_REAP_LIMIT rows per call', async () => {
-      await seedOldRows(AUDIT_REAP_LIMIT + 2);
+    it('deletes at most 10,000 rows per call', async () => {
+      await seedOldRows(10_002);
 
       const deleted = await reapOldAuditLog(env.DB);
 
       const remaining = await env.DB.prepare('SELECT COUNT(*) AS n FROM audit_log').first<{ n: number }>();
-      expect({ deleted, remaining: remaining?.n }).toEqual({ deleted: AUDIT_REAP_LIMIT, remaining: 2 });
+      expect({ deleted, remaining: remaining?.n }).toEqual({ deleted: 10_000, remaining: 2 });
     });
   });
 });
