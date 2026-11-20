@@ -435,6 +435,13 @@ Then list in the appendix every other test that seeds data from `Date.now()`, fo
 - The contract tests. The schema-only negative cases in `contract-test/goldenTaproom.contract.test.ts` (from `:480`) test BeerSelector's schema; flag them for the mobile repo, by test name.
 - Raising Farley scores for their own sake.
 
+## Follow-ups done after the merge
+
+- The logged model name at `src/services/perplexity.ts:78` is now guarded: `test/services/perplexity-outcomes.test.ts` checks both HTTP-failure log lines as whole objects. Changing `'sonar'` to `'sonar-pro'` there fails it.
+- `MAX_LOGGED_ERROR_BODY_LENGTH` was removed from `src/constants.ts`; nothing read it.
+- The example hashes in `src/utils/hash.ts` now show the real value for `'Some beer description'` (`bcd78c93c10c8c8351f896796d1ec9dd`).
+- The six schema-only contract tests are flagged in VerilyPete/BeerSelector#83. They stay here until BeerSelector has its own copies.
+
 ## Appendix: replacement map
 
 Filled in at the start of each deletion step, before anything is deleted.

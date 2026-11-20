@@ -25,7 +25,7 @@ import { acceptedSourcesKey, type AcceptedSources } from './enrichmentSource';
  * @example
  * ```typescript
  * const hash = await hashDescription('Some beer description');
- * // Returns: '5eb63bbbe01eeed093cb22bb8f5acdc3'
+ * // Returns: 'bcd78c93c10c8c8351f896796d1ec9dd'
  * ```
  */
 export async function hashDescription(text: string): Promise<string> {
@@ -42,7 +42,7 @@ export async function hashDescription(text: string): Promise<string> {
  * Wraps the 32-char SHA-256 prefix in double quotes.
  *
  * @param body - The raw response body string to hash
- * @returns Quoted ETag string, e.g. "5eb63bbbe01eeed093cb22bb8f5acdc3"
+ * @returns Quoted ETag string, e.g. "bcd78c93c10c8c8351f896796d1ec9dd"
  */
 export async function generateETag(body: string): Promise<string> {
   const hash = await hashDescription(body);

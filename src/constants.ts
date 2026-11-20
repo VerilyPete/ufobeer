@@ -344,12 +344,6 @@ export const MAX_EXA_RESPONSE_BYTES = 256 * 1024;
 /** Default daily cap on Exa calls (about $0.007 each); override with EXA_DAILY_LIMIT. */
 export const DEFAULT_EXA_DAILY_LIMIT = 50;
 
-/**
- * Truncation length for logged upstream error bodies, independent of the
- * parser's own size cap above -- this bounds *log volume*, not memory.
- */
-export const MAX_LOGGED_ERROR_BODY_LENGTH = 500;
-
 // =============================================================================
 // DLQ Consumer Constants (src/queue/dlq.ts)
 // =============================================================================
