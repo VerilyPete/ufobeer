@@ -251,6 +251,9 @@ same clock hour, exactly the writes the throttle would skip), and each mark
 logs `seen_beers.cleanup_marked` (with `complete: false` if a later batch
 failed). A week
 of these decides slice 5's throttle (plan: ship only above 5,000 a day).
+With the throttle (branch `feat/last-seen-throttle`, held until that data is
+in), an eligible sighting is not written at all; its queue work comes from the
+row just read, and `last_seen_at` never moves backwards.
 
 ### Hand-Verified Rows
 A row with `is_verified = 1` keeps its `abv`, `confidence`, `enrichment_source`

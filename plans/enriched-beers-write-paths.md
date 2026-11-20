@@ -2,7 +2,10 @@
 
 Status: reviewed 2026-11-12, revision 6. Five Codex rounds, each in a fresh
 session: rounds 1–4 `REQUEST CHANGES`, round 5 `APPROVE WITH NITS`; its one
-minor finding and two clarifications are applied here. Not yet implemented.
+minor finding and two clarifications are applied here. Implemented
+2026-11-12 as stacked branches: slices 1–4, the slice 1 addendum, slice 5
+step 1 (`feat/seen-write-metrics`) and step 2 (`feat/last-seen-throttle`,
+held until a week of step 1's numbers clears the bar).
 
 ## Why
 
